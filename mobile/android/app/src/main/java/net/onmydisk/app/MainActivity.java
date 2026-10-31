@@ -1,0 +1,478 @@
+package net.onmydisk.app;
+
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.OpenableColumns;
+import android.util.Base64;
+import android.util.Log;
+import android.view.View;
+import android.view.WindowManager;
+import android.webkit.ServiceWorkerClient;
+import android.webkit.ServiceWorkerController;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+
+import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.BridgeWebChromeClient;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+
+public class MainActivity extends BridgeActivity {
+    private static final String TAG = "MainActivity";
+    private JSONArray pendingShareFiles = null;
+
+
+    private View customView = null;
+    private WebChromeClient.CustomViewCallback customViewCallback = null;
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(NativeStoragePlugin.class);
+        super.onCreate(savedInstanceState);
+
+        // Match system navigation bar and status bar to system dark/light theme
+        applySystemBarsTheme();
+
+        // Keep screen on while app is in foreground to prevent sleep and maintain WebRTC / WebSocket connections
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // 1. Enable Service Worker in Android WebView and route localhost requests through Capacitor's local asset server with template parsing
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                ServiceWorkerController swController = ServiceWorkerController.getInstance();
+                swController.setServiceWorkerClient(new ServiceWorkerClient() {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                        if (request != null && request.getUrl() != null && "localhost".equals(request.getUrl().getHost())) {
+                            return interceptAndParseTemplate(request);
+                        }
+                        return null;
+                    }
+                });
+                Log.d(TAG, "ServiceWorkerClient configured successfully for localhost");
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to set ServiceWorkerClient", e);
+            }
+        }
+
+        // 2. Configure WebView settings for media streaming, DOM storage, and P2P workers
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            WebView webView = getBridge().getWebView();
+            WebSettings settings = webView.getSettings();
+            settings.setDomStorageEnabled(true);
+            settings.setDatabaseEnabled(true);
+            settings.setAllowFileAccess(true);
+            settings.setAllowContentAccess(true);
+            settings.setMediaPlaybackRequiresUserGesture(false);
+
+            // Intercept WebView requests to support OMD template parsing and transparent APK fallback for craft WASM modules
+            getBridge().setWebViewClient(new com.getcapacitor.BridgeWebViewClient(getBridge()) {
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                    if (request != null && request.getUrl() != null && "localhost".equals(request.getUrl().getHost())) {
+                        WebResourceResponse resp = interceptAndParseTemplate(request);
+                        if (resp != null) {
+                            return resp;
+                        }
+                    }
+                    return super.shouldInterceptRequest(view, request);
+                }
+            });
+
+            webView.setWebChromeClient(new BridgeWebChromeClient(getBridge()) {
+                private final android.graphics.Bitmap emptyPoster = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888);
+                @Override
+                public android.graphics.Bitmap getDefaultVideoPoster() {
+                    return emptyPoster;
+                }
+
+                @Override
+                public void onShowCustomView(View view, WebChromeClient.CustomViewCallback callback) {
+                    if (customView != null) {
+                        // Already in fullscreen - dismiss previous request
+                        callback.onCustomViewHidden();
+                        return;
+                    }
+                    customView = view;
+                    customViewCallback = callback;
+                    runOnUiThread(() -> {
+                        try {
+                            android.view.ViewGroup decor = (android.view.ViewGroup) getWindow().getDecorView();
+                            decor.addView(view, new android.widget.FrameLayout.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT));
+
+                            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                getWindow().setDecorFitsSystemWindows(false);
+                                android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
+                                if (insetsController != null) {
+                                    insetsController.setSystemBarsBehavior(
+                                            android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                                    insetsController.hide(android.view.WindowInsets.Type.systemBars());
+                                }
+                            } else {
+                                decor.setSystemUiVisibility(
+                                        View.SYSTEM_UI_FLAG_FULLSCREEN |
+                                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+                                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "onShowCustomView failed", e);
+                            if (callback != null) callback.onCustomViewHidden();
+                        }
+                    });
+                }
+
+                @Override
+                public void onHideCustomView() {
+                    if (customView == null) {
+                        return;
+                    }
+                    runOnUiThread(() -> {
+                        try {
+                            android.view.ViewGroup decor = (android.view.ViewGroup) getWindow().getDecorView();
+                            decor.removeView(customView);
+                            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                getWindow().setDecorFitsSystemWindows(true);
+                                android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
+                                if (insetsController != null) {
+                                    insetsController.show(android.view.WindowInsets.Type.systemBars());
+                                }
+                            } else {
+                                decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                            }
+                            applySystemBarsTheme();
+                        } catch (Exception e) {
+                            Log.e(TAG, "onHideCustomView failed", e);
+                        } finally {
+                            customView = null;
+                            customViewCallback = null;
+                        }
+                    });
+                }
+            });
+        }
+
+        // 3. Handle initial incoming share intent if app was opened via "Отправить На мой диск"
+        handleIntent(getIntent());
+    }
+
+    @Override
+    public void onBackPressed() {
+        // Exit WebView fullscreen first if active
+        if (exitFullscreen()) {
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private boolean exitFullscreen() {
+        if (customView == null) return false;
+        runOnUiThread(() -> {
+            try {
+                android.view.ViewGroup decor = (android.view.ViewGroup) getWindow().getDecorView();
+                decor.removeView(customView);
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    getWindow().setDecorFitsSystemWindows(true);
+                    android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
+                    if (insetsController != null) {
+                        insetsController.show(android.view.WindowInsets.Type.systemBars());
+                    }
+                } else {
+                    decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                }
+                applySystemBarsTheme();
+            } catch (Exception e) {
+                Log.e(TAG, "exitFullscreen failed", e);
+            }
+            if (customViewCallback != null) {
+                customViewCallback.onCustomViewHidden();
+            }
+            customView = null;
+            customViewCallback = null;
+        });
+        return true;
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent(intent);
+    }
+
+    private void handleIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        String type = intent.getType();
+
+        if (Intent.ACTION_SEND.equals(action) && type != null) {
+            Uri streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            String extraText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (streamUri != null) {
+                List<Uri> uris = new ArrayList<>();
+                uris.add(streamUri);
+                processSharedUris(uris);
+            } else if (extraText != null) {
+                processSharedText(extraText);
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action) && type != null) {
+            ArrayList<Uri> streamUris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (streamUris != null && !streamUris.isEmpty()) {
+                processSharedUris(streamUris);
+            }
+        }
+    }
+
+    private void processSharedUris(List<Uri> uris) {
+        new Thread(() -> {
+            try {
+                JSONArray filesArray = new JSONArray();
+                ContentResolver resolver = getContentResolver();
+
+                for (Uri uri : uris) {
+                    if (uri == null) continue;
+                    JSONObject fileObj = new JSONObject();
+
+                    String name = "shared_file";
+                    long size = 0;
+                    String mime = resolver.getType(uri);
+                    if (mime == null) mime = "application/octet-stream";
+
+                    try (Cursor cursor = resolver.query(uri, null, null, null, null)) {
+                        if (cursor != null && cursor.moveToFirst()) {
+                            int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                            int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
+                            if (nameIndex != -1) name = cursor.getString(nameIndex);
+                            if (sizeIndex != -1) size = cursor.getLong(sizeIndex);
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Error querying file metadata for uri: " + uri, e);
+                    }
+
+                    // Read content into Base64
+                    try (InputStream is = resolver.openInputStream(uri);
+                         ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
+                        if (is != null) {
+                            byte[] data = new byte[16384];
+                            int nRead;
+                            while ((nRead = is.read(data, 0, data.length)) != -1) {
+                                buffer.write(data, 0, nRead);
+                            }
+                            buffer.flush();
+                            byte[] bytes = buffer.toByteArray();
+                            if (size == 0) size = bytes.length;
+                            String base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP);
+
+                            fileObj.put("name", name);
+                            fileObj.put("size", size);
+                            fileObj.put("type", mime);
+                            fileObj.put("data", base64Data);
+                            filesArray.put(fileObj);
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error reading content from uri: " + uri, e);
+                    }
+                }
+
+                if (filesArray.length() > 0) {
+                    runOnUiThread(() -> deliverSharedFilesToJS(filesArray));
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error processing shared URIs", e);
+            }
+        }).start();
+    }
+
+    private void processSharedText(String text) {
+        try {
+            JSONArray filesArray = new JSONArray();
+            JSONObject fileObj = new JSONObject();
+            fileObj.put("name", "shared_text.txt");
+            fileObj.put("size", text.getBytes().length);
+            fileObj.put("type", "text/plain");
+            fileObj.put("data", Base64.encodeToString(text.getBytes(), Base64.NO_WRAP));
+            filesArray.put(fileObj);
+            runOnUiThread(() -> deliverSharedFilesToJS(filesArray));
+        } catch (Exception e) {
+            Log.e(TAG, "Error processing shared text", e);
+        }
+    }
+
+    private void deliverSharedFilesToJS(JSONArray filesArray) {
+        pendingShareFiles = filesArray;
+        String js = "if (window.__handleAndroidShare) { " +
+                "  window.__handleAndroidShare(" + filesArray.toString() + "); " +
+                "} else { " +
+                "  window.__pendingAndroidShare = " + filesArray.toString() + "; " +
+                "}";
+
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().evaluateJavascript(js, null);
+        }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (pendingShareFiles != null) {
+            deliverSharedFilesToJS(pendingShareFiles);
+        }
+    }
+
+    private WebResourceResponse interceptAndParseTemplate(WebResourceRequest request) {
+        if (request == null || request.getUrl() == null) return null;
+        String path = request.getUrl().getPath();
+        if (getBridge() == null || getBridge().getLocalServer() == null) return null;
+
+        // Fallback: If heavy static craft editor asset (WordCraft, DeckCraft, GridCraft),
+        // check if present in active OTA directory. If omitted from OTA, stream directly from APK assets!
+        if (path != null && (path.startsWith("/wordcraft/") || path.startsWith("/deckcraft/") || path.startsWith("/gridcraft/"))) {
+            boolean existsInOta = false;
+            String basePath = getBridge().getLocalServer().getBasePath();
+            if (basePath != null && !basePath.isEmpty()) {
+                java.io.File otaFile = new java.io.File(basePath, path.startsWith("/") ? path.substring(1) : path);
+                existsInOta = otaFile.exists() && otaFile.isFile();
+            }
+            if (!existsInOta) {
+                try {
+                    String assetPath = "public" + (path.startsWith("/") ? path : "/" + path);
+                    InputStream is = getAssets().open(assetPath);
+                    String mime = getMimeTypeForPath(path);
+                    return new WebResourceResponse(mime, "UTF-8", is);
+                } catch (Exception e) {
+                    Log.w(TAG, "Fallback craft asset not found in APK for: " + path, e);
+                }
+            }
+        }
+
+        WebResourceResponse resp = getBridge().getLocalServer().shouldInterceptRequest(request);
+
+        if (resp != null && (path == null || path.isEmpty() || path.equals("/") || path.endsWith(".html"))) {
+            try {
+                InputStream is = resp.getData();
+                if (is != null) {
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                    byte[] data = new byte[8192];
+                    int nRead;
+                    while ((nRead = is.read(data, 0, data.length)) != -1) {
+                        buffer.write(data, 0, nRead);
+                    }
+                    String originalHtml = buffer.toString("UTF-8");
+                    String parsedHtml = parseOmdTemplate(originalHtml);
+                    byte[] parsedBytes = parsedHtml.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    return new WebResourceResponse(
+                        "text/html",
+                        "UTF-8",
+                        resp.getStatusCode(),
+                        resp.getReasonPhrase(),
+                        resp.getResponseHeaders(),
+                        new java.io.ByteArrayInputStream(parsedBytes)
+                    );
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Error parsing template for path: " + path, e);
+            }
+        }
+        return resp;
+    }
+
+    private static String getMimeTypeForPath(String path) {
+        if (path.endsWith(".wasm")) return "application/wasm";
+        if (path.endsWith(".js") || path.endsWith(".mjs")) return "application/javascript";
+        if (path.endsWith(".html")) return "text/html";
+        if (path.endsWith(".css")) return "text/css";
+        if (path.endsWith(".png")) return "image/png";
+        if (path.endsWith(".ico")) return "image/x-icon";
+        if (path.endsWith(".svg")) return "image/svg+xml";
+        if (path.endsWith(".json")) return "application/json";
+        return "application/octet-stream";
+    }
+
+    public static String parseOmdTemplate(String html) {
+        if (html == null) return "";
+        // 1. Strip {if ...}...{end ...} conditional blocks
+        html = html.replaceAll("(?s)\\{if\\s+[a-zA-Z0-9_]+\\}[^{]*?\\{end\\s+[a-zA-Z0-9_]+\\}", "");
+
+        // 2. Replace known template variables
+        html = html.replace("{TITLE}", "On My Disk")
+                   .replace("{APPTITLE}", "On My Disk")
+                   .replace("{DESCRIPTION}", "Secure P2P file sharing")
+                   .replace("{OWNER}", "OnMyDisk")
+                   .replace("{CARD}", "summary_large_image")
+                   .replace("{SERVERURL}", "")
+                   .replace("{LINKURL}", "")
+                   .replace("{COVERVERSION}", "0")
+                   .replace("{IMG_WIDTH}", "1200")
+                   .replace("{IMG_HEIGHT}", "630");
+        return html;
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        applySystemBarsTheme();
+    }
+
+    private void applySystemBarsTheme() {
+        int nightModeFlags = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        boolean isNight = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+
+        int navColor = android.graphics.Color.parseColor(isNight ? "#101C22" : "#F6F8F9");
+        int statusColor = android.graphics.Color.parseColor(isNight ? "#101C22" : "#F6F8F9");
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setNavigationBarColor(navColor);
+            getWindow().setStatusBarColor(statusColor);
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
+            if (insetsController != null) {
+                int appearance = 0;
+                if (!isNight) {
+                    appearance = android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS |
+                                 android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
+                }
+                insetsController.setSystemBarsAppearance(
+                    appearance,
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS |
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                );
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.view.View decorView = getWindow().getDecorView();
+            int flags = decorView.getSystemUiVisibility();
+            if (isNight) {
+                flags &= ~android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                flags &= ~android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            } else {
+                flags |= android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                flags |= android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            }
+            decorView.setSystemUiVisibility(flags);
+        }
+    }
+}

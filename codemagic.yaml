@@ -1,0 +1,77 @@
+workflows:
+  ios-workflow:
+    name: OnMyDisk iOS
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: omd_key
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: net.onmydisk.app
+      node: 20
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - push
+        - tag
+      branch_patterns:
+        - pattern: '*'
+          include: true
+          source: true
+      tag_patterns:
+        - pattern: '*'
+          include: true
+    scripts:
+      - name: Install dependencies & build Svelte static frontend (svar)
+        script: |
+          cd svar
+          npm install --legacy-peer-deps
+          export NODE_OPTIONS="--max-old-space-size=6144"
+          export VITE_APP_VERSION="3.0.${BUILD_NUMBER:-4823}"
+          # No pre-compressed .gz siblings: they bloat the bundle and Android
+          # AAPT2 (same dist) rejects them as duplicate resources.
+          COMPRESS_ASSETS=0 npm run build
+      - name: Sync Capacitor iOS project
+        script: |
+          cd mobile
+          npm install
+          npx cap sync ios
+      - name: Configure iOS version & build number
+        script: |
+          BUILD_NUM="${BUILD_NUMBER:-4823}"
+          echo "Setting iOS Marketing Version to 3.0 and Build Number to $BUILD_NUM"
+          cd mobile/ios/App
+          agvtool new-marketing-version "3.0"
+          agvtool new-version -all "$BUILD_NUM"
+      - name: Install CocoaPods
+        script: |
+          cd mobile/ios/App
+          pod install
+      - name: Set up code signing settings on Xcode project
+        script: |
+          xcode-project use-profiles
+      - name: Build IPA for App Store / TestFlight
+        script: |
+          cd mobile/ios/App
+          xcode-project build-ipa \
+            --workspace App.xcworkspace \
+            --scheme App
+          if [ -f "build/ios/ipa/App.ipa" ]; then
+            mv build/ios/ipa/App.ipa build/ios/ipa/OnMyDisk.ipa
+            echo "Renamed output to OnMyDisk.ipa"
+          fi
+    artifacts:
+      - mobile/ios/App/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      email:
+        recipients:
+          - alexey@volkoff.info
+        notify:
+          failure: true
+          success: true
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true

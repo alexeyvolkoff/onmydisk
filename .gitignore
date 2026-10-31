@@ -1,0 +1,134 @@
+# Folders
+build*
+!omd-tunnel/deploy/build-*.sh
+!Node/deploy/build-*.sh
+!svar/public/pdfjs/build
+!*.gradle
+!**/build.gradle
+libdatachannel/
+# Binaries
+bin/omd-tunnel
+bin/omd-tunnel.exe
+bin/onmydisk.exe
+*.deb
+voyager_tmp
+orbitdb-hub/node_modules
+orbitdb-hub/data
+orbitdb-hub/peer-id.json
+orbitdb-hub/sim_output.log
+orbitdb-hub/sim-client-data/
+orbitdb-hub/simulate_pinning.js
+orbitdb-hub/temp_data
+orbitdb-hub/test-data
+orbitdb/
+gun-hub/radata/
+gun-hub/data/
+gun-hub/data.json
+radata/
+*.log
+node_modules/
+
+# Debug
+Node/router/opt/bin/*
+Node/router/etc/onmydisk/debug/*
+Node/router/etc/onmydisk/*.db
+Node/router/etc/onmydisk/device.id
+Node/router/etc/onmydisk/device.key
+Node/router/etc/onmydisk/ssl/*
+
+
+Node/target/usr/bin/*
+Node/target/usr/lib/*
+Node/target/etc/onmydisk/debug/*
+Node/target/etc/onmydisk/device.id
+Node/target/etc/onmydisk/device.key
+Node/target/etc/onmydisk/*.db
+
+# Generated
+Makefile
+*.o
+moc_*
+
+AppRun
+run/bin
+run/bin_d
+run/lib
+run/lib_d
+run/plugins
+run/translations
+run/etc/ssl
+run/etc/onmydisk_local.db
+run/etc/pki/rootCA.crt
+run/etc/pki/rootCA.key
+run/etc/config/local.conf
+run/logs
+
+# Docs
+docs/html
+
+# Dev db
+etc/*.db
+
+# Private keys & dev PKI (never commit keys)
+*.key
+etc/ssl/*
+!etc/ssl/.gitkeep
+Node/ssl/*
+!Node/ssl/.gitkeep
+etc/pki/
+run/etc/pki/*
+!run/etc/pki/legacy/
+
+# Settings
+ClientNode/ssl/settings.conf
+MasterNode/docRoot
+
+# Build folders
+*/debug
+*/release
+*/*/debug
+*/*/release
+
+# Visual studio
+*.suo
+*.ncb
+*.user
+*.pdb
+*.idb
+*.vcproj
+*.vcxproj
+*.vcxproj.filters
+*.lib
+*.sln
+*.rc
+xbin*
+tmp
+.qmake.stash
+
+# LSP and VSCode
+.venv-compiledb/
+compile_commands.json
+.vscode/tasks.json.bak
+.cache
+.knowledge/
+Node/target/etc/onmydisk/ssl/rootCA.crt
+.gitignore
+Node/target/etc/onmydisk/ssl/user.crt
+.gitignore
+Node/target/etc/onmydisk/ssl/user.key
+etc/ssl/link.crt
+etc/ssl/link.key
+run/Node/Makefile.server
+
+# Mobile / Capacitor
+mobile/node_modules/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/capacitor-cordova-android-plugins/build/
+mobile/ios/App/build/
+mobile/ios/App/Pods/
+mobile/ios/App/Podfile.lock
+mobile/ios/App/App/public/
+mobile/android/app/src/main/assets/public/
+
