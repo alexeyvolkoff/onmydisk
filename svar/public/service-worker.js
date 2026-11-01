@@ -345,54 +345,152 @@ self.addEventListener('message', function(event) {
 
 
 
-// Handle background push notifications
+// Handle background push notifications (supports both Custom Rich Actionable Push & legacy file/index events)
 self.addEventListener('push', event => {
-    const payload = event.data.json();
-    console.log('Notification received:', payload);
-    // Check if any client (window/tab) is focused
-    return clients.matchAll({
+    let payload = {};
+    try {
+        payload = event.data ? event.data.json() : {};
+    } catch (_) {
+        payload = { body: event.data ? event.data.text() : '' };
+    }
+    console.log('[SW] Push received:', payload);
+
+    event.waitUntil(
+        clients.matchAll({
             type: 'window',
             includeUncontrolled: true
-    }).then(clientList => {
+        }).then(clientList => {
             let isFocused = false;
-
-            // Check if any client is focused
             for (let i = 0; i < clientList.length; i++) {
                 if (clientList[i].focused) {
                     isFocused = true;
                     break;
                 }
             }
-            // If no client is focused, show the notification
+
+            const isCustomPush = (
+                payload.type === 'custom_push' ||
+                Array.isArray(payload.actions) ||
+                Boolean(payload.image) ||
+                (payload.body && !payload.event)
+            );
+
+            if (isCustomPush) {
+                for (let i = 0; i < clientList.length; i++) {
+                    try {
+                        clientList[i].postMessage({ type: 'omd-custom-push', payload });
+                    } catch (_) {}
+                }
+                if (payload.silentWhenFocused && isFocused) {
+                    return null;
+                }
+                const title = payload.title || 'On My Disk';
+                const opts = {
+                    body: payload.body || '',
+                    icon: payload.icon || '/customtheme/onmydisk.svg',
+                    badge: payload.badge || '/customtheme/onmydisk.svg',
+                    requireInteraction: Boolean(payload.requireInteraction),
+                    data: payload
+                };
+                if (payload.image) {
+                    opts.image = payload.image;
+                }
+                if (payload.tag) {
+                    opts.tag = payload.tag;
+                    opts.renotify = true;
+                }
+                if (Array.isArray(payload.actions) && payload.actions.length > 0) {
+                    opts.actions = payload.actions;
+                }
+                return self.registration.showNotification(title, opts);
+            }
+
+            // Legacy file/index push notifications (shown only when app is unfocused)
             if (!isFocused) {
                 var message = '';
                 var title = payload.title || 'Notification';
-                var event = payload.event;
-                if (event === 'file_updated'){
+                var evName = payload.event || '';
+                if (evName === 'file_updated') {
                     title = self.translate('file_event');
-                    message = (self.translate(payload.user) || payload.user) + ' ' + (self.translate(event) || event) + ' ' + payload.path;
-                } else if (event === 'file_removed') {
+                    message = (self.translate(payload.user) || payload.user) + ' ' + (self.translate(evName) || evName) + ' ' + payload.path;
+                } else if (evName === 'file_removed') {
                     title = self.translate('file_event');
-                    message = (self.translate(payload.user) || payload.user) + ' ' + (self.translate(event) || event) + ' ' + payload.path;
-                } else if (event.startsWith('indexing')) {
+                    message = (self.translate(payload.user) || payload.user) + ' ' + (self.translate(evName) || evName) + ' ' + payload.path;
+                } else if (evName.startsWith('indexing')) {
                     title = self.translate('indexing_event');
-                    message = (self.translate(event) || event) + ': ' + payload.path;
+                    message = (self.translate(evName) || evName) + ': ' + payload.path;
                 } else {
-                    message = self.translate(event) || event;
+                    message = self.translate(evName) || evName || payload.body || '';
                 }
 
                 const notificationOptions = {
                     body: message || 'You have a new message.',
                     icon: payload.icon || '/customtheme/onmydisk.svg',
                     data: {
-                        url: payload.path || '/' // URL to open when notification is clicked
+                        url: payload.path || '/'
                     }
                 };
 
                 return self.registration.showNotification(title, notificationOptions);
-            } else {
-                console.log('App is in focus, not showing notification.');
-                return null; // Do nothing if app is focused
             }
-    });
+            return null;
+        })
+    );
+});
+
+self.addEventListener('notificationclick', event => {
+    event.notification.close();
+    const payload = (event.notification && event.notification.data) || {};
+    const action = event.action || '';
+    const extra = payload.data || {};
+
+    event.waitUntil((async () => {
+        const clientList = await clients.matchAll({
+            type: 'window',
+            includeUncontrolled: true
+        });
+
+        // Custom actionable push (e.g. Autopilot pre-moderation approve / rework / decline / open)
+        if (payload.type === 'custom_push' || extra.kind === 'autopilot_moderation') {
+            const act = action || 'open';
+            const params = new URLSearchParams();
+            params.set('omd_push_action', act);
+            if (extra.draft_id) params.set('draft_id', extra.draft_id);
+            if (extra.action_token) params.set('token', extra.action_token);
+            if (extra.default_storage) params.set('storage', extra.default_storage);
+            if (extra.filename) params.set('file', extra.filename);
+            const targetUrl = '/?' + params.toString();
+
+            for (let i = 0; i < clientList.length; i++) {
+                const client = clientList[i];
+                if (client && 'focus' in client) {
+                    try { await client.focus(); } catch (_) {}
+                    try {
+                        client.postMessage({
+                            type: 'omd-push-click',
+                            action: act,
+                            payload
+                        });
+                        return;
+                    } catch (_) {}
+                }
+            }
+            if (clients.openWindow) {
+                return clients.openWindow(targetUrl);
+            }
+            return;
+        }
+
+        // Standard notification URL navigation
+        const destUrl = payload.url || '/';
+        for (let i = 0; i < clientList.length; i++) {
+            const client = clientList[i];
+            if (client && 'focus' in client) {
+                try { return await client.focus(); } catch (_) {}
+            }
+        }
+        if (clients.openWindow) {
+            return clients.openWindow(destUrl);
+        }
+    })());
 });

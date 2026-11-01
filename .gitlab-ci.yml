@@ -263,7 +263,8 @@ build_direct:
   - docker build -t onmydisk:direct .
   - docker tag onmydisk:direct onmydisk/onmydisk:direct
   - DOCKER_CONFIG=/home/gitlab-runner/docker-onmydisk docker push onmydisk/onmydisk:direct
-  - sudo -u alexey bash -c "cd /home/alexey/projects/omd/onmydisk && git fetch origin direct && ./scripts/push-github.sh ${CI_COMMIT_SHA}"
+  - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk fetch origin direct
+  - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk push-gh ${CI_COMMIT_SHA}
   only:
     variables:
       - $CI_COMMIT_BRANCH == "direct"
@@ -288,7 +289,8 @@ deploy_direct:
     - rsync -avz -e "ssh -p 30333 -o StrictHostKeyChecking=no" run/bin/omd-server $DEPLOY_USER@onmydisk.net:/root/direct/bin/
     - rsync -avzc -e "ssh -p 30333 -o StrictHostKeyChecking=no" --delete svar/dist/ $DEPLOY_USER@onmydisk.net:/root/direct/www/
     - ssh -p 30333 -o StrictHostKeyChecking=no $DEPLOY_USER@onmydisk.net "cd /root/direct && docker-compose up -d onmydisk-server && docker-compose restart onmydisk-server"
-    - sudo -u alexey bash -c "cd /home/alexey/projects/omd/onmydisk && git fetch origin direct && ./scripts/push-github.sh ${CI_COMMIT_SHA}"
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk fetch origin direct
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk push-gh ${CI_COMMIT_SHA}
   tags:
     - linux
   when: manual
@@ -303,7 +305,8 @@ deploy_direct_front:
     - pushd svar && npm i --legacy-peer-deps && npm run build && popd
     - ssh -p 30333 -o StrictHostKeyChecking=no $DEPLOY_USER@onmydisk.net "mkdir -p /root/direct/www"
     - rsync -avzc -e "ssh -p 30333 -o StrictHostKeyChecking=no" --delete svar/dist/ $DEPLOY_USER@onmydisk.net:/root/direct/www/
-    - sudo -u alexey bash -c "cd /home/alexey/projects/omd/onmydisk && git fetch origin direct && ./scripts/push-github.sh ${CI_COMMIT_SHA}"
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk fetch origin direct
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk push-gh ${CI_COMMIT_SHA}
   tags:
     - linux
   when: manual
@@ -315,7 +318,8 @@ deploy_github:
       - $CI_COMMIT_BRANCH == "direct"
   dependencies: []
   script:
-    - sudo -u alexey bash -c "cd /home/alexey/projects/omd/onmydisk && git fetch origin direct && ./scripts/push-github.sh ${CI_COMMIT_SHA}"
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk fetch origin direct
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmydisk push-gh ${CI_COMMIT_SHA}
   tags:
     - linux
   when: manual

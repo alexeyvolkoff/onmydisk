@@ -914,7 +914,7 @@
   "onboarding_logged_in_as": "Signed in as:",
   "onboarding_promo_advanced_text": "Want background photo sync from your mobile phone, backup of important documents across all your devices, and a knowledge base with document and photo search?",
   "onboarding_promo_advanced_title": "Advanced On My Disk client for Desktop & OS",
-  "onboarding_promo_ainode_text": "100% privacy: all documents and prompts are processed locally on your GPU with no token limits and no censorship.",
+  "onboarding_promo_ainode_text": "100% privacy: all documents and prompts are processed locally on your GPU with no token limits or external clouds.",
   "onboarding_promo_ainode_title": "Run your own AI Node (Home / Office)",
   "onboarding_promo_guide": "Instructions",
   "onboarding_promo_more": "Learn more",

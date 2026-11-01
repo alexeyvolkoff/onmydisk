@@ -893,7 +893,7 @@
   "onboarding_logged_in_as": "已登入為:",
   "onboarding_promo_advanced_text": "需要手機背景相片同步、多裝置重要檔案備份，以及支援文件與相片搜尋的知識庫嗎？",
   "onboarding_promo_advanced_title": "適用於桌面與作業系統的 On My Disk 進階用戶端",
-  "onboarding_promo_ainode_text": "100% 隱私安全：所有文件與提示詞皆在本地 GPU 上處理，無 Token 限制，無審查。",
+  "onboarding_promo_ainode_text": "100% 隱私安全：所有文件與提示詞皆在本地 GPU 上處理，無 Token 限制，無需外部雲。",
   "onboarding_promo_ainode_title": "運行您自己的 AI 節點 (家用 / 辦公)",
   "onboarding_promo_guide": "說明指南",
   "onboarding_promo_more": "了解更多",

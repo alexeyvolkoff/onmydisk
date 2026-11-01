@@ -710,6 +710,7 @@
   function getThumbnailUrl(item) {
     if (!item) return "";
     if (item.data) return item.data;
+    if (item.thumbBlobUrl) return item.thumbBlobUrl;
     if (item.blobUrl) return item.blobUrl;
     const dev = getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
@@ -798,13 +799,18 @@
     if (!item || item._fallbackTried) return;
     item._fallbackTried = true;
     try {
-      // 1. Try reading via WebRTC drive Open + getFileContent
-      const blobUrl = await fetchImageBlobViaWebRTC(item.path, "resize=true&width=480&height=480") ||
-                      await fetchImageBlobViaWebRTC(item.path, "");
-      if (blobUrl) {
-        item.blobUrl = blobUrl;
+      // 1. Try reading via WebRTC drive Open + getFileContent (keep thumbnail separate from full blobUrl)
+      const thumbBlob = await fetchImageBlobViaWebRTC(item.path, "resize=true&width=480&height=480");
+      if (thumbBlob) {
+        item.thumbBlobUrl = thumbBlob;
+        items = [...items];
+        return;
+      }
+      const fullBlob = await fetchImageBlobViaWebRTC(item.path, "");
+      if (fullBlob) {
+        item.blobUrl = fullBlob;
         const key = item.path || item.name;
-        imageBlobCache[key] = blobUrl;
+        imageBlobCache[key] = fullBlob;
         imageBlobCache = { ...imageBlobCache };
         items = [...items];
         return;
@@ -1116,7 +1122,7 @@
     const dynamicEl = validItems.map((it) => {
       // Показ — ресайз по настройкам вьювера (не оригинал); скачивание — полный файл.
       const srcUrl = it.blobUrl || getViewImageUrl(it);
-      const thumbUrl = it.blobUrl || getThumbnailUrl(it);
+      const thumbUrl = it.thumbBlobUrl || it.blobUrl || getThumbnailUrl(it);
       const rawTitle = (it.title || "").trim();
       const rawDesc = (it.prompt || "").trim();
       const title = isJustFileName(rawTitle, it.name, it.path) ? "" : rawTitle;
@@ -1625,7 +1631,7 @@
                 {#if isCheckingKrea}
                   ...
                 {:else}
-                  Studio
+                  Creative
                 {/if}
               </span>
             </button>
@@ -4323,7 +4329,7 @@
     }
   }
 
-  @media (max-width: 440px) {
+  @media (max-width: 640px) {
     .mode-text-full {
       display: none;
     }

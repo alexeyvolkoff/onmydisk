@@ -1264,7 +1264,7 @@
               <div class="promo-content">
                 <div class="promo-title">{$_("onboarding_promo_ainode_title", {}, "Запустите свою AI-ноду (Home / Office)")}</div>
                 <div class="promo-text">
-                  {$_("onboarding_promo_ainode_text", {}, "100% приватность: все документы и промпты обрабатываются локально на вашей видеокарте без лимитов токенов и цензуры.")}
+                  {$_("onboarding_promo_ainode_text", {}, "100% приватность: все документы и промпты обрабатываются локально на вашей видеокарте без лимитов токенов и сторонних облаков.")}
                 </div>
               </div>
               <a

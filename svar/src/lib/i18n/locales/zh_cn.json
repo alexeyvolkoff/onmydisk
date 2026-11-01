@@ -893,7 +893,7 @@
   "onboarding_logged_in_as": "已登录为:",
   "onboarding_promo_advanced_text": "需要手机后台照片同步、多设备重要文件备份以及支持文档与图片检索的知识库吗？",
   "onboarding_promo_advanced_title": "适用于桌面和系统的 On My Disk 高级客户端",
-  "onboarding_promo_ainode_text": "100% 隐私安全：所有文档和提示词均在本地 GPU 上处理，无 Token 限制，无审查。",
+  "onboarding_promo_ainode_text": "100% 隐私安全：所有文档和提示词均在本地 GPU 上处理，无 Token 限制，无需外部云。",
   "onboarding_promo_ainode_title": "运行您自己的 AI 节点 (家庭 / 办公)",
   "onboarding_promo_guide": "使用指南",
   "onboarding_promo_more": "了解更多",

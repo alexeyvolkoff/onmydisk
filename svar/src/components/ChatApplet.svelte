@@ -46,7 +46,33 @@
   let userSelectedChatManually = false;
   let creationsCount = 0;
   let drive = null;
-  let sidebarOpen = true;
+  let chatSidebarOpen = true;
+  let sidebarOpen = activeView === "chat";
+  let prevActiveView = activeView;
+  $: isOverlaySidebar = activeView !== "chat";
+
+  $: if (activeView !== prevActiveView) {
+    prevActiveView = activeView;
+    if (activeView !== "chat") {
+      sidebarOpen = false;
+    } else {
+      sidebarOpen = (typeof window !== "undefined" && window.innerWidth < 768)
+        ? false
+        : chatSidebarOpen;
+    }
+  }
+
+  function setSidebarOpen(val) {
+    sidebarOpen = val;
+    if (activeView === "chat" && (typeof window === "undefined" || window.innerWidth >= 768)) {
+      chatSidebarOpen = val;
+    }
+  }
+
+  function toggleSidebar() {
+    setSidebarOpen(!sidebarOpen);
+  }
+
   let mainContentWidth = 0;
   $: isOverlayHeader = mainContentWidth >= 960;
   let chatComponent = null;
@@ -126,7 +152,14 @@
   // Image generation support (assistant capabilities)
   let imageGenSupported = false;
   let kreaSupported = false;
-  let kreaActive = false;
+  let kreaActive = typeof localStorage !== "undefined" ? localStorage.getItem("omd_krea_active") === "1" : false;
+
+  function setKreaActive(val) {
+    kreaActive = !!val;
+    try {
+      localStorage.setItem("omd_krea_active", kreaActive ? "1" : "0");
+    } catch (_) {}
+  }
   let capabilitiesLoaded = false;
   let lastCapabilitiesDrive = null;
 
@@ -901,7 +934,7 @@
     if (hasKey && !chatStore && !storeError) {
       initSession(omdKey);
     }
-    if (typeof window !== "undefined" && window.innerWidth < 768) {
+    if (activeView !== "chat" || (typeof window !== "undefined" && window.innerWidth < 768)) {
       sidebarOpen = false;
     }
   });
@@ -923,17 +956,24 @@
   });
 </script>
 
-<svelte:window on:click={() => (attachMenuOpen = false)} />
+<svelte:window
+  on:click={() => (attachMenuOpen = false)}
+  on:keydown={(e) => {
+    if (e.key === "Escape" && sidebarOpen && isOverlaySidebar) {
+      setSidebarOpen(false);
+    }
+  }}
+/>
 <div class="applet-root {isDarkTheme ? 'dark-theme' : 'light-theme'}">
-  <div class="applet-body">
-    <!-- Sidebar Backdrop on Mobile only -->
+  <div class="applet-body" class:overlay-sidebar={isOverlaySidebar}>
+    <!-- Sidebar Backdrop (Mobile & Applet Overlay Mode) -->
     {#if sidebarOpen}
       <div
         class="sidebar-backdrop"
         role="button"
         tabindex="0"
-        on:click={() => (sidebarOpen = false)}
-        on:keydown={(e) => e.key === "Escape" && (sidebarOpen = false)}
+        on:click={() => setSidebarOpen(false)}
+        on:keydown={(e) => e.key === "Escape" && setSidebarOpen(false)}
       ></div>
     {/if}
 
@@ -944,7 +984,7 @@
         <button
           class="icon-btn sidebar-collapse-btn"
           title={$_("fold", {}, "Collapse sidebar")}
-          on:click={() => (sidebarOpen = false)}
+          on:click={() => setSidebarOpen(false)}
         >
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -1178,7 +1218,7 @@
             <button
               class="nav-link-btn"
               on:click={() => {
-                if (typeof window !== "undefined" && window.innerWidth < 768) sidebarOpen = false;
+                if (isOverlaySidebar || (typeof window !== "undefined" && window.innerWidth < 768)) sidebarOpen = false;
                 dispatch("open-files");
               }}
             >
@@ -1194,7 +1234,7 @@
             class:active={activeView === "creations"}
             on:click={() => {
               activeView = "creations";
-              if (typeof window !== "undefined" && window.innerWidth < 768) sidebarOpen = false;
+              sidebarOpen = false;
             }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -1212,8 +1252,12 @@
             class="nav-link-btn"
             class:active={activeView === "memory"}
             on:click={() => {
-              activeView = activeView === "memory" ? "chat" : "memory";
-              if (typeof window !== "undefined" && window.innerWidth < 768) sidebarOpen = false;
+              if (activeView === "memory") {
+                activeView = "chat";
+              } else {
+                activeView = "memory";
+                sidebarOpen = false;
+              }
             }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -1229,7 +1273,7 @@
           <button
             class="nav-link-btn"
             on:click={() => {
-              if (typeof window !== "undefined" && window.innerWidth < 768) sidebarOpen = false;
+              if (isOverlaySidebar || (typeof window !== "undefined" && window.innerWidth < 768)) sidebarOpen = false;
               dispatch("open-settings", { section: "assistant" });
             }}
           >
@@ -1250,7 +1294,7 @@
             class="profile-btn"
             title={$_("settings", {}, "User profile & settings")}
             on:click={() => {
-              if (typeof window !== "undefined" && window.innerWidth < 768) {
+              if (isOverlaySidebar || (typeof window !== "undefined" && window.innerWidth < 768)) {
                 sidebarOpen = false;
               }
               dispatch("open-settings", { section: "profile" });
@@ -1300,7 +1344,7 @@
               <button
                 class="icon-btn"
                 title={$_("unfold", {}, "Expand sidebar")}
-                on:click={() => (sidebarOpen = true)}
+                on:click={() => setSidebarOpen(true)}
               >
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -1402,9 +1446,9 @@
             defaultStorage={$profileStore.defaultStorage || ""}
             userName={$profileStore.name || $profileStore.user || ""}
             on:count-change={(e) => (creationsCount = e.detail)}
-            on:toggle-sidebar={() => (sidebarOpen = !sidebarOpen)}
+            on:toggle-sidebar={toggleSidebar}
             on:close={closeApp}
-            on:switch-creations={() => (kreaActive = false)}
+            on:switch-creations={() => setKreaActive(false)}
             on:open-file={(e) => forwardOpenFile(e.detail)}
             on:open-settings={(e) => dispatch("open-settings", e.detail)}
           />
@@ -1425,9 +1469,9 @@
             defaultStorage={$profileStore.defaultStorage || ""}
             userName={$profileStore.name || $profileStore.user || ""}
             on:count-change={(e) => (creationsCount = e.detail)}
-            on:toggle-sidebar={() => (sidebarOpen = !sidebarOpen)}
+            on:toggle-sidebar={toggleSidebar}
             on:close={closeApp}
-            on:switch-krea={() => (kreaActive = true)}
+            on:switch-krea={() => setKreaActive(true)}
             on:open-file={(e) => forwardOpenFile(e.detail)}
             on:open-settings={(e) => dispatch("open-settings", e.detail)}
           />
@@ -1451,7 +1495,7 @@
           on:open-file={(e) => handleCardOpenFile(e.detail)}
           on:open-folder={(e) => handleOpenFolder(e.detail)}
           on:refresh={() => loadDeviceMemory(true)}
-          on:toggle-sidebar={() => (sidebarOpen = !sidebarOpen)}
+          on:toggle-sidebar={toggleSidebar}
           on:close={closeApp}
         />
       {:else}
@@ -2559,6 +2603,39 @@
     display: none;
   }
 
+  /* Applet Overlay Sidebar Mode (Creations / Creative Studio / Knowledge) */
+  .applet-body.overlay-sidebar .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.38);
+    backdrop-filter: blur(3px);
+    z-index: 200;
+    animation: sidebarFadeIn 0.16s ease;
+  }
+
+  .applet-body.overlay-sidebar .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    height: 100%;
+    height: 100dvh;
+    z-index: 210;
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.35);
+    animation: sidebarSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes sidebarSlideIn {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+  }
+
+  @keyframes sidebarFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
   /* Responsive Rules */
   @media (max-width: 768px) {
   .applet-root {
@@ -2578,7 +2655,7 @@
       inset: 0;
       background: rgba(0, 0, 0, 0.5);
       backdrop-filter: blur(3px);
-      z-index: 90;
+      z-index: 200;
     }
 
     .sidebar {
@@ -2588,8 +2665,9 @@
       left: 0;
       height: 100%;
       height: 100dvh;
-      z-index: 100;
+      z-index: 210;
       box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+      animation: sidebarSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
   }

@@ -893,7 +893,7 @@
   "onboarding_logged_in_as": "Sessão iniciada como:",
   "onboarding_promo_advanced_text": "Deseja sincronização de fotos em segundo plano a partir do celular, backup seguro de documentos e base de conhecimento com busca em arquivos e fotos?",
   "onboarding_promo_advanced_title": "Cliente avançado On My Disk para Desktop e SO",
-  "onboarding_promo_ainode_text": "100% de privacidade: todos os documentos e prompts são processados localmente na sua GPU sem limites de tokens nem censura.",
+  "onboarding_promo_ainode_text": "100% de privacidade: todos os documentos e prompts são processados localmente na sua GPU sem limites de tokens nem nuvens externas.",
   "onboarding_promo_ainode_title": "Execute seu próprio nó de IA (Casa / Escritório)",
   "onboarding_promo_guide": "Instruções",
   "onboarding_promo_more": "Saiba mais",

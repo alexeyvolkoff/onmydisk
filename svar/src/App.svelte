@@ -51,6 +51,7 @@
   import { setProfile } from "./lib/profile-store.js";
   import { parseStoragePath, formatStoragePath, persistStoragePath } from "./lib/storage-path.js";
   import { getViewerSettings } from "./lib/viewer-settings.js";
+  import { syncExistingWebPushSubscription } from "./lib/push-notifications.js";
   import lightGallery from 'lightgallery';
   import lgFullscreen from 'lightgallery/plugins/fullscreen';
   import { setupGalleryPagination, getGalleryCaption } from "./lib/gallery-pagination.js";
@@ -1004,7 +1005,41 @@
 
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       ensureServiceWorkerControl();
+      navigator.serviceWorker.addEventListener('message', (ev) => {
+        const msg = ev && ev.data;
+        if (!msg) return;
+        if (msg.type === 'omd-push-click') {
+          handlePushActionDispatch(msg.action || 'open', msg.payload || {});
+        }
+      });
     }
+
+    // Cold-start deep link from tapping a Rich Push Notification or its action button
+    try {
+      const urlObj = new URL(window.location.href);
+      const pushAct = urlObj.searchParams.get('omd_push_action');
+      const draftId = urlObj.searchParams.get('draft_id');
+      const actToken = urlObj.searchParams.get('token');
+      const storageHint = urlObj.searchParams.get('storage') || '';
+      const fileHint = urlObj.searchParams.get('file') || '';
+      if (pushAct && draftId) {
+        urlObj.searchParams.delete('omd_push_action');
+        urlObj.searchParams.delete('draft_id');
+        urlObj.searchParams.delete('token');
+        urlObj.searchParams.delete('storage');
+        urlObj.searchParams.delete('file');
+        window.history.replaceState({}, '', urlObj.pathname + (urlObj.search ? urlObj.search : '') + urlObj.hash);
+        handlePushActionDispatch(pushAct, {
+          data: {
+            kind: 'autopilot_moderation',
+            draft_id: draftId,
+            action_token: actToken || '',
+            default_storage: storageHint,
+            filename: fileHint
+          }
+        });
+      }
+    } catch (_) {}
 
     // Android Share Target receiver ("Отправить На мой диск")
     window.__handleAndroidShare = async (sharedFiles) => {
@@ -3836,6 +3871,182 @@
       window.__omdGetSearchDrives = getSearchDrives;
     }
   }
+
+  // ── Custom Rich Web Push Sync & Pre-Moderation Handler ─────────
+  let pushSubscriptionSyncedOnce = false;
+  let pushModToast = "";
+  let pushModToastTimer = null;
+  let showPushModModal = false;
+  let pushModBusy = false;
+  let pushModDraft = null;
+  let pushModToken = "";
+  let pushModPreviewSrc = "";
+  let pushModTitle = "";
+  let pushModCaption = "";
+  let pushModTags = "";
+  let pushModReworkHint = "";
+
+  function showPushToast(msg, duration = 4500) {
+    pushModToast = msg;
+    if (pushModToastTimer) clearTimeout(pushModToastTimer);
+    pushModToastTimer = setTimeout(() => {
+      pushModToast = "";
+    }, duration);
+  }
+
+  async function waitForAiNodeDrive(maxWaitMs = 12000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      const dev = chatTargetDevice || defaultChatTarget();
+      if (dev && dev.linkId) {
+        const drv = getHttpDriveForDevice(dev);
+        if (drv) return drv;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return null;
+  }
+
+  $: if (!pushSubscriptionSyncedOnce && chatTargetDevice && chatTargetDevice.linkId) {
+    const drv = getHttpDriveForDevice(chatTargetDevice);
+    if (drv) {
+      pushSubscriptionSyncedOnce = true;
+      const curSt =
+        (typeof localStorage !== "undefined" ? localStorage.getItem("omd_default_storage") : "") ||
+        currentProfileData?.defaultStorage ||
+        identity?.profile?.defaultStorage ||
+        DEFAULT_STORAGE_PATH;
+      const key = (identity && identity.profile && identity.profile.omd_key) || getStoredOmdKey() || "";
+      syncExistingWebPushSubscription({
+        fetchFn: (p, opts) => drv.fetch(p, opts),
+        omdKey: key,
+        defaultStorage: curSt
+      });
+    }
+  }
+
+  function buildP2pPreviewPath(storageStr, filename) {
+    if (!filename) return "";
+    let st = String(storageStr || "").trim();
+    if (!st) {
+      st =
+        (typeof localStorage !== "undefined" ? localStorage.getItem("omd_default_storage") : "") ||
+        currentProfileData?.defaultStorage ||
+        identity?.profile?.defaultStorage ||
+        "";
+    }
+    st = st.replace(/^\/p2p\//i, "").replace(/^\/+|\/+$/g, "");
+    return st ? `/p2p/${st}/generated/${filename}` : `/p2p/generated/${filename}`;
+  }
+
+  async function loadPushModerationFallbackBlob(drv, draftId, token, filename) {
+    if (!drv || !filename) return;
+    try {
+      const q = new URLSearchParams({ draft_id: draftId || "", token: token || "" });
+      const res = await drv.fetch(`/autopilot/api/image/${encodeURIComponent(filename)}?${q.toString()}`);
+      if (res && res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 0) {
+          pushModPreviewSrc = URL.createObjectURL(blob);
+        }
+      }
+    } catch (_) {}
+  }
+
+  async function handlePushActionDispatch(action, payload) {
+    const extra = (payload && payload.data) || {};
+    const draftId = extra.draft_id || "";
+    const token = extra.action_token || "";
+    if (!draftId) return;
+
+    if (action === "open") {
+      showPushModModal = true;
+      pushModBusy = true;
+      pushModToken = token;
+      pushModReworkHint = "";
+      pushModDraft = {
+        id: draftId,
+        persona_name: extra.persona_name || "Persona",
+        filename: extra.filename || "",
+        scheduled_for: extra.scheduled_for || 0
+      };
+      pushModTitle = extra.post_title || "";
+      pushModCaption = extra.post_caption || "";
+      pushModTags = Array.isArray(extra.tags) ? extra.tags.join(", ") : (extra.tags || "");
+      pushModPreviewSrc = payload.image || extra.image || buildP2pPreviewPath(extra.default_storage, extra.filename);
+
+      try {
+        const drv = await waitForAiNodeDrive(12000);
+        const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
+        const key = (identity && identity.profile && identity.profile.omd_key) || getStoredOmdKey() || "";
+        const q = new URLSearchParams({ token: token || "", omd_key: key });
+        const res = await fetchFn(`/autopilot/draft/${encodeURIComponent(draftId)}?${q.toString()}`);
+        if (res && res.ok) {
+          const dJson = await res.json();
+          if (dJson && dJson.draft) {
+            pushModDraft = dJson.draft;
+            pushModTitle = dJson.draft.post_title || "";
+            pushModCaption = dJson.draft.post_caption || "";
+            pushModTags = (dJson.draft.tags || []).join(", ");
+            if (!pushModPreviewSrc && dJson.draft.filename) {
+              pushModPreviewSrc = buildP2pPreviewPath(extra.default_storage, dJson.draft.filename);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[PushMod] Error loading draft details:", err);
+      } finally {
+        pushModBusy = false;
+      }
+      return;
+    }
+
+    // Direct button tap from OS Push notification (`approve`, `rework`, `decline`)
+    await submitPushModerationAction(action, draftId, token, false);
+  }
+
+  async function submitPushModerationAction(action, explicitDraftId = "", explicitToken = "", includeModalEdits = true) {
+    const draftId = explicitDraftId || (pushModDraft && pushModDraft.id) || "";
+    const token = explicitToken || pushModToken || "";
+    if (!draftId) return;
+
+    pushModBusy = true;
+    showPushToast("⏳ Отправляем решение на AI-узел...");
+    try {
+      const drv = await waitForAiNodeDrive(12000);
+      const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
+      const key = (identity && identity.profile && identity.profile.omd_key) || getStoredOmdKey() || "";
+      const bodyPayload = {
+        draft_id: draftId,
+        action,
+        token,
+        omd_key: key
+      };
+      if (includeModalEdits && showPushModModal) {
+        bodyPayload.post_title = pushModTitle;
+        bodyPayload.post_caption = pushModCaption;
+        bodyPayload.tags = pushModTags;
+        if (action === "rework" && pushModReworkHint.trim()) {
+          bodyPayload.hint = pushModReworkHint.trim();
+        }
+      }
+      const res = await fetchFn("/autopilot/push-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bodyPayload)
+      });
+      const resData = res ? await res.json().catch(() => ({})) : {};
+      if (!res || !res.ok) {
+        throw new Error(resData.detail || `HTTP ${res ? res.status : "timeout"}`);
+      }
+      showPushToast(resData.message || "✅ Готово!");
+      showPushModModal = false;
+    } catch (err) {
+      showPushToast("❌ Ошибка модерации: " + (err?.message || err), 6000);
+    } finally {
+      pushModBusy = false;
+    }
+  }
   
   $: if (currentApp === 'filemanager') {
     setTimeout(() => {
@@ -6290,6 +6501,128 @@ async function blobToBase64(blob) {
           }}
           on:close={() => { showDeviceSettings = false; deviceSettingsDrive = null; deviceSettingsName = ""; deviceSettingsIcon = ""; deviceSettingsType = ""; }}
         />
+      {/if}
+
+      {#if pushModToast}
+        <div style="position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 12000; background: #182030; color: #f0f4fc; border: 1px solid #6c8cff; border-radius: 12px; padding: 11px 18px; font-size: 13.5px; font-weight: 500; box-shadow: 0 12px 32px rgba(0,0,0,0.45); max-width: 92vw; text-align: center;">
+          {pushModToast}
+        </div>
+      {/if}
+
+      {#if showPushModModal && pushModDraft}
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div
+          class="confirm-modal-overlay"
+          style="z-index: 11500; padding: 12px;"
+          on:click|self={() => { if (!pushModBusy) showPushModModal = false; }}
+        >
+          <div
+            class="confirm-modal-box"
+            style="max-width: 520px; width: 100%; max-height: 92vh; overflow-y: auto; padding: 18px; border-radius: 16px;"
+          >
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <div>
+                <h3 style="margin: 0; font-size: 16px;">📸 {pushModDraft.persona_name || "Пост на модерации"}</h3>
+                {#if pushModDraft.scheduled_for}
+                  <div style="font-size: 12px; opacity: 0.72; margin-top: 2px;">
+                    Слот: {new Date(pushModDraft.scheduled_for * 1000).toLocaleString()}
+                  </div>
+                {/if}
+              </div>
+              <button
+                type="button"
+                class="confirm-btn cancel"
+                style="padding: 4px 10px; min-width: auto;"
+                disabled={pushModBusy}
+                on:click={() => (showPushModModal = false)}
+              >✕</button>
+            </div>
+
+            {#if pushModPreviewSrc}
+              <div style="width: 100%; border-radius: 12px; overflow: hidden; background: #0b0e14; margin-bottom: 12px; max-height: 440px; display: flex; justify-content: center;">
+                <img
+                  src={pushModPreviewSrc}
+                  alt="Preview"
+                  style="max-width: 100%; max-height: 440px; object-fit: contain; display: block;"
+                  on:error={async () => {
+                    const drv = await waitForAiNodeDrive(5000);
+                    if (drv && pushModDraft?.filename && !pushModPreviewSrc.startsWith("blob:")) {
+                      await loadPushModerationFallbackBlob(drv, pushModDraft.id, pushModToken, pushModDraft.filename);
+                    }
+                  }}
+                />
+              </div>
+            {/if}
+
+            <div style="display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; text-align: left;">
+              <div>
+                <label for="pm-title" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Заголовок поста:</label>
+                <input
+                  id="pm-title"
+                  type="text"
+                  bind:value={pushModTitle}
+                  style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 13.5px;"
+                />
+              </div>
+              <div>
+                <label for="pm-cap" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Текст от лица персоны:</label>
+                <textarea
+                  id="pm-cap"
+                  rows="3"
+                  bind:value={pushModCaption}
+                  style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 13.5px; resize: vertical;"
+                ></textarea>
+              </div>
+              <div>
+                <label for="pm-tags" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Теги:</label>
+                <input
+                  id="pm-tags"
+                  type="text"
+                  bind:value={pushModTags}
+                  style="width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 12.5px;"
+                />
+              </div>
+              <div>
+                <label for="pm-rework" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Пожелание режиссёру (если нажмёте «Переделать»):</label>
+                <input
+                  id="pm-rework"
+                  type="text"
+                  placeholder="необязательно — без подсказки придумает новую сцену"
+                  bind:value={pushModReworkHint}
+                  style="width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 12.5px;"
+                />
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <button
+                type="button"
+                disabled={pushModBusy}
+                on:click={() => submitPushModerationAction("approve")}
+                style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(42,199,105,0.5); background: rgba(42,199,105,0.18); color: #5ce693; font-weight: 600; cursor: pointer;"
+              >✅ В расписание</button>
+              <button
+                type="button"
+                disabled={pushModBusy}
+                on:click={() => submitPushModerationAction("publish_now")}
+                style="padding: 10px 12px; border-radius: 10px; border: 1px solid #6c8cff; background: #6c8cff; color: #fff; font-weight: 600; cursor: pointer;"
+              >🚀 Сразу на CivitAI</button>
+              <button
+                type="button"
+                disabled={pushModBusy}
+                on:click={() => submitPushModerationAction("rework")}
+                style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(245,166,35,0.5); background: rgba(245,166,35,0.16); color: #ffc86b; font-weight: 600; cursor: pointer;"
+              >🔄 Переделать</button>
+              <button
+                type="button"
+                disabled={pushModBusy}
+                on:click={() => submitPushModerationAction("decline")}
+                style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(239,83,80,0.45); background: rgba(239,83,80,0.14); color: #ff8f8d; font-weight: 600; cursor: pointer;"
+              >🗑️ Отклонить</button>
+            </div>
+          </div>
+        </div>
       {/if}
 
 

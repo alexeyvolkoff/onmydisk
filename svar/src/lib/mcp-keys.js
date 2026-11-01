@@ -75,19 +75,37 @@ function lsKey() {
 
 function persistMirror() {
   if (typeof window === "undefined") return;
+  const obj = {};
+  for (const [appId, rec] of cache) obj[appId] = rec;
+  const serialized = JSON.stringify(obj);
+  const key = lsKey();
   try {
-    const obj = {};
-    for (const [appId, rec] of cache) obj[appId] = rec;
-    window.localStorage.setItem(lsKey(), JSON.stringify(obj));
+    window.localStorage.setItem(key, serialized);
+    return;
   } catch (e) {
-    console.warn("[mcp-keys] local mirror write failed:", e);
+    // Evict disposable GunDB / prompt caches if localStorage hit the 5MB browser quota
+    try {
+      for (const k of Object.keys(window.localStorage)) {
+        if (k === "gun/" || k.startsWith("gun/") || k.startsWith("radata") || k === "krea_file_prompts") {
+          window.localStorage.removeItem(k);
+        }
+      }
+      window.localStorage.setItem(key, serialized);
+      return;
+    } catch (e2) {
+      try {
+        window.sessionStorage.setItem(key, serialized);
+      } catch (_) {}
+      console.warn("[mcp-keys] local mirror write failed:", e2);
+    }
   }
 }
 
 function loadLocalMirror() {
   if (typeof window === "undefined") return;
   try {
-    const raw = window.localStorage.getItem(lsKey());
+    const key = lsKey();
+    const raw = window.localStorage.getItem(key) || window.sessionStorage.getItem(key);
     if (!raw) return;
     const obj = JSON.parse(raw) || {};
     for (const [appId, rec] of Object.entries(obj)) {
@@ -415,6 +433,7 @@ export function getMcpPayload() {
     if (rec.key) {
       res[id] = rec.key;
       if (rec.url) res[`${id}_url`] = rec.url;
+      if (rec.name) res[`${id}_name`] = rec.name;
     }
   }
   return res;

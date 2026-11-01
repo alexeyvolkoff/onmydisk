@@ -898,7 +898,7 @@
   "onboarding_logged_in_as": "Angemeldet als:",
   "onboarding_promo_advanced_text": "Möchten Sie automatische Fotosynchronisierung vom Handy, zuverlässige Datensicherung und eine Wissensdatenbank mit Dokumenten- und Fotosuche?",
   "onboarding_promo_advanced_title": "Erweiterter On My Disk-Client für PC & Betriebssystem",
-  "onboarding_promo_ainode_text": "100 % Privatsphäre: Alle Dokumente und Prompts werden lokal auf Ihrer GPU ohne Token-Limits oder Zensur verarbeitet.",
+  "onboarding_promo_ainode_text": "100 % Privatsphäre: Alle Dokumente und Prompts werden lokal auf Ihrer GPU ohne Token-Limits oder externe Clouds verarbeitet.",
   "onboarding_promo_ainode_title": "Betreiben Sie Ihren eigenen KI-Knoten (Home / Office)",
   "onboarding_promo_guide": "Anleitung",
   "onboarding_promo_more": "Mehr erfahren",

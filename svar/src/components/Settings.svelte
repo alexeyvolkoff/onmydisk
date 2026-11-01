@@ -18,6 +18,13 @@
   import { get as getStoreValue } from "svelte/store";
   import { parseStoragePath, formatStoragePath, persistStoragePath, DEFAULT_STORAGE_PATH, getLocalDevice } from "../lib/storage-path.js";
   import { DEFAULT_JUNE_SYSTEM_PROMPT, DEFAULT_JUNE_FUN_PROMPT, blobToDataUrl } from "../lib/assistant-defaults.js";
+  import {
+    isWebPushSupported,
+    getBrowserPushSubscription,
+    subscribeToNodeWebPush,
+    unsubscribeFromNodeWebPush,
+    sendTestNodeWebPush
+  } from "../lib/push-notifications.js";
 
   export let identity = null;
   export let isDarkTheme = true;
@@ -236,7 +243,11 @@
     mcpSelectedPreset = presetId;
     const preset = PRESET_MCP_APPS.find(p => p.id === presetId);
     if (preset) {
-      mcpCustomName = preset.name;
+      if (presetId === "civitai" && mcpAppsMap["civitai"]) {
+        mcpCustomName = "";
+      } else {
+        mcpCustomName = preset.name;
+      }
       mcpCustomUrl = preset.url;
     } else {
       mcpCustomName = "";
@@ -262,8 +273,21 @@
     if (mcpSelectedPreset !== "custom") {
       const preset = PRESET_MCP_APPS.find(p => p.id === mcpSelectedPreset);
       if (preset) {
-        name = preset.name;
         url = preset.url;
+        if (mcpSelectedPreset === "civitai" && mcpAppsMap["civitai"]) {
+          const slug = name.toLowerCase().replace(/^@/, "").replace(/[^a-z0-9_-]/g, "_").replace(/^civitai_+/, "");
+          if (slug) {
+            appId = `civitai_${slug}`;
+            name = name.toLowerCase().includes("civitai") ? name : `CivitAI (${name})`;
+          } else {
+            let idx = 2;
+            while (mcpAppsMap[`civitai_${idx}`]) idx++;
+            appId = `civitai_${idx}`;
+            name = `CivitAI #${idx}`;
+          }
+        } else {
+          name = name || preset.name;
+        }
       }
     } else {
       if (!name) return;
@@ -876,7 +900,7 @@
   let aiNodeStatusMsg = "";
 
   const POPULAR_HORDE_MODELS = [
-    { id: "aphrodite/TheDrummer/Behemoth-X-123B-v2.1", label: "Behemoth-X-123B-v2.1 (Top RP / Uncensored)" },
+    { id: "aphrodite/TheDrummer/Behemoth-X-123B-v2.1", label: "Behemoth-X-123B-v2.1 (Top RP / 123B)" },
     { id: "aphrodite/TheDrummer/Skyfall-31B-v4.2", label: "Skyfall-31B-v4.2 (Creative RP / 31B)" },
     { id: "koboldcpp/L3-8B-Stheno-v3.2", label: "L3-8B-Stheno-v3.2 (Fast 8B RP)" },
     { id: "koboldcpp/Magidonia-24B-v4.3", label: "Magidonia-24B-v4.3 (Creative RP / 24B)" },
@@ -1604,6 +1628,94 @@
 
   $: if (activeSection === "assistant" && $aiNodeStore?.info && (!assistantPersonality || !assistantAvatarUrl)) {
     loadAssistantSettings();
+  }
+
+  // Custom Rich Web Push subscription state
+  let webPushSupported = isWebPushSupported();
+  let webPushSubscribed = false;
+  let webPushBusy = false;
+  let webPushMsg = "";
+  let webPushMsgType = "info";
+
+  async function refreshWebPushState() {
+    webPushSupported = isWebPushSupported();
+    if (!webPushSupported) {
+      webPushSubscribed = false;
+      return;
+    }
+    const sub = await getBrowserPushSubscription();
+    webPushSubscribed = Boolean(sub);
+  }
+
+  $: if (activeSection === "appearance" || activeSection === "assistant" || activeSection === "profile") {
+    refreshWebPushState();
+  }
+
+  function resolveEffectiveStorageForPush() {
+    const raw =
+      assistantStorage ||
+      (typeof localStorage !== "undefined" ? localStorage.getItem("omd_default_storage") : "") ||
+      $profileStore?.defaultStorage ||
+      identity?.profile?.defaultStorage ||
+      DEFAULT_STORAGE_PATH;
+    return String(raw || "").trim();
+  }
+
+  async function handleToggleWebPush() {
+    webPushBusy = true;
+    webPushMsg = "";
+    try {
+      const drv = getActiveDrive() || getPrimaryAiDrive();
+      const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
+      const key = getSettingsKey();
+      if (webPushSubscribed) {
+        await unsubscribeFromNodeWebPush({ fetchFn, omdKey: key });
+        webPushSubscribed = false;
+        webPushMsg = "Push-уведомления на этом устройстве отключены.";
+        webPushMsgType = "info";
+      } else {
+        await subscribeToNodeWebPush({
+          fetchFn,
+          omdKey: key,
+          defaultStorage: resolveEffectiveStorageForPush()
+        });
+        webPushSubscribed = true;
+        webPushMsg = "Push-уведомления включены! Превью и кнопки действий активны.";
+        webPushMsgType = "success";
+      }
+    } catch (err) {
+      webPushMsg = err?.message || String(err);
+      webPushMsgType = "error";
+    } finally {
+      webPushBusy = false;
+    }
+  }
+
+  async function handleTestWebPush() {
+    webPushBusy = true;
+    webPushMsg = "";
+    try {
+      const drv = getActiveDrive() || getPrimaryAiDrive();
+      const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
+      const key = getSettingsKey();
+      const res = await sendTestNodeWebPush({
+        fetchFn,
+        omdKey: key,
+        defaultStorage: resolveEffectiveStorageForPush()
+      });
+      if (res && res.sent > 0) {
+        webPushMsg = "Тестовое Push-уведомление отправлено!";
+        webPushMsgType = "success";
+      } else {
+        webPushMsg = "Подписка не найдена на узле — переключите тумблер Push ещё раз.";
+        webPushMsgType = "error";
+      }
+    } catch (err) {
+      webPushMsg = err?.message || String(err);
+      webPushMsgType = "error";
+    } finally {
+      webPushBusy = false;
+    }
   }
 
   function parseSillyTavernCardBytes(bytes) {
@@ -2811,6 +2923,48 @@
                 </select>
               </div>
             </div>
+
+            <div class="card">
+              <h4 class="card-title">🔔 {$_("web_push_title", {}, "Push-уведомления (Web Push)")}</h4>
+              <p class="card-subtitle">{$_("web_push_desc", {}, "Мгновенные уведомления от вашего AI-узла прямо на это устройство (с превью изображений и кнопками действий).")}</p>
+              {#if !webPushSupported}
+                <p class="row-sub" style="margin-top: 8px;">Браузер не поддерживает Web Push (на iOS сначала добавьте приложение на экран «Домой»).</p>
+              {:else}
+                <div class="setting-row">
+                  <div class="row-text">
+                    <span class="row-label">{webPushSubscribed ? "Включены на этом устройстве" : "Получать Push на это устройство"}</span>
+                    <span class="row-sub">Прямая VAPID-подписка через P2P без сторонних мессенджеров</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <button
+                      type="button"
+                      class="btn-secondary"
+                      disabled={webPushBusy}
+                      on:click={handleToggleWebPush}
+                      style="padding: 7px 14px; border-radius: 8px; font-weight: 600; cursor: pointer;"
+                    >
+                      {webPushBusy ? "⏳..." : (webPushSubscribed ? "Отключить" : "🔔 Включить Push")}
+                    </button>
+                    {#if webPushSubscribed}
+                      <button
+                        type="button"
+                        class="btn-secondary"
+                        disabled={webPushBusy}
+                        on:click={handleTestWebPush}
+                        style="padding: 7px 12px; border-radius: 8px; cursor: pointer;"
+                      >
+                        📲 Проверить
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+                {#if webPushMsg}
+                  <div style="margin-top: 8px; font-size: 12.5px; color: {webPushMsgType === 'error' ? '#ef5350' : (webPushMsgType === 'success' ? '#2ac769' : 'inherit')};">
+                    {webPushMsg}
+                  </div>
+                {/if}
+              {/if}
+            </div>
           </div>
 
         <!-- 5. AI ASSISTANT -->
@@ -3347,12 +3501,10 @@
                       <span>+ Club Pass</span>
                     </button>
                   {/if}
-                  {#if !mcpAppsMap['civitai']}
-                    <button class="btn-preset-chip" type="button" on:click={() => openAddMcpModal('civitai')}>
-                      <span class="preset-dot civitai-dot"></span>
-                      <span>+ CivitAI</span>
-                    </button>
-                  {/if}
+                  <button class="btn-preset-chip" type="button" on:click={() => openAddMcpModal('civitai')}>
+                    <span class="preset-dot civitai-dot"></span>
+                    <span>+ CivitAI</span>
+                  </button>
                   {#if !mcpAppsMap['plane']}
                     <button class="btn-preset-chip" type="button" on:click={() => openAddMcpModal('plane')}>
                       <span class="preset-dot plane-dot"></span>
@@ -3394,6 +3546,20 @@
                         <option value="custom">{$_("custom_app", {}, "Custom application...")}</option>
                       </select>
                     </div>
+
+                    {#if mcpSelectedPreset === "civitai" && mcpAppsMap["civitai"]}
+                      <div class="form-field">
+                        <label class="field-label-sm" for="mcpCivAccLabelInput">{$_("account_label_opt", {}, "Account label (optional)")}:</label>
+                        <input
+                          id="mcpCivAccLabelInput"
+                          class="omd-key-input"
+                          type="text"
+                          placeholder="e.g. @shinylark, Personal..."
+                          bind:value={mcpCustomName}
+                          spellcheck="false"
+                        />
+                      </div>
+                    {/if}
 
                     {#if mcpSelectedPreset === "custom"}
                       <div class="form-field">
@@ -3464,8 +3630,8 @@
                     <div class="mcp-app-item">
                       <div class="mcp-app-header">
                         <div class="mcp-app-identity">
-                          <span class="mcp-app-badge {app.appId === 'plane' ? 'plane' : (app.appId === 'club_pass' || app.appId === 'whop') ? 'club_pass' : app.appId === 'civitai' ? 'civitai' : 'custom'}">
-                            {app.appId === 'plane' ? 'PL' : (app.appId === 'club_pass' || app.appId === 'whop') ? 'CP' : app.appId === 'civitai' ? 'CV' : (app.name || 'APP').slice(0, 2).toUpperCase()}
+                          <span class="mcp-app-badge {app.appId === 'plane' ? 'plane' : (app.appId === 'club_pass' || app.appId === 'whop') ? 'club_pass' : (app.appId === 'civitai' || app.appId.startsWith('civitai_')) ? 'civitai' : 'custom'}">
+                            {app.appId === 'plane' ? 'PL' : (app.appId === 'club_pass' || app.appId === 'whop') ? 'CP' : (app.appId === 'civitai' || app.appId.startsWith('civitai_')) ? 'CV' : (app.name || 'APP').slice(0, 2).toUpperCase()}
                           </span>
                           <div class="mcp-app-title-box">
                             <span class="mcp-app-title">{app.name || app.appId}</span>

@@ -1,12 +1,13 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy, tick } from "svelte";
   import { fly, fade } from "svelte/transition";
-  import { _ } from "../lib/i18n/index.js";
+  import { _, locale } from "../lib/i18n/index.js";
   import lightGallery from "lightgallery";
   import { setupGalleryPagination, isJustFileName } from "../lib/gallery-pagination.js";
   import FolderPicker from "./FolderPicker.svelte";
   import { deviceRegistry } from "../lib/device-registry.js";
   import { profileStore } from "../lib/profile-store.js";
+  import { getViewerSettings } from "../lib/viewer-settings.js";
   import {
     parseStoragePath,
     DEFAULT_STORAGE_PATH,
@@ -14,10 +15,28 @@
   } from "../lib/storage-path.js";
   import { issueConsent, getClientDeviceServer } from "../lib/client-device-server.js";
   import { getOrCreateLocalLinkId } from "../lib/local-client.js";
-  import { mcpKeysStore, getMcpPayload } from "../lib/mcp-keys.js";
+  import { mcpKeysStore, getMcpPayload, saveMcpAppKey } from "../lib/mcp-keys.js";
   import defaultKreaPresets from "../lib/krea_presets.json";
 
-  $: hasCivitaiToken = Boolean($mcpKeysStore && $mcpKeysStore.byApp && $mcpKeysStore.byApp.civitai && $mcpKeysStore.byApp.civitai.key);
+  let civitaiAccounts = [];
+  $: userCivitaiMcpApps = Object.values(($mcpKeysStore && $mcpKeysStore.byApp) || {}).filter((app) => {
+    if (!app || !app.key) return false;
+    const id = String(app.appId || "").toLowerCase();
+    const name = String(app.name || "").toLowerCase();
+    const url = String(app.url || "").toLowerCase();
+    return id === "civitai" || id.startsWith("civitai_") || id.startsWith("civitai-") || url.includes("civitai.") || name.includes("civitai");
+  });
+  $: hasCivitaiToken = userCivitaiMcpApps.length > 0;
+  $: canPublishCivitai = true;
+  $: effectiveCivitaiAccounts = userCivitaiMcpApps.map((app) => {
+    const resolved = (civitaiAccounts || []).find((a) => String(a.id || "").toLowerCase() === String(app.appId || "").toLowerCase());
+    if (resolved) return resolved;
+    return {
+      id: app.appId,
+      username: "",
+      label: app.name || app.appId
+    };
+  });
 
   export let httpDrive = null;
   export let deviceDrive = null;
@@ -141,10 +160,74 @@
   let generationTimer = null;
   let generatingPrompt = "";
   let generatingPersona = "";
-  let generatingStage = "generating"; // "warming" | "generating" | "saving"
+  let generatingStage = "warming"; // "warming" | "generating" | "saving"
+  let warmingPhase = "preparing"; // "preparing" | "booting" | "loading_models"
+  let generatingStep = 0;
+  let generatingTotalSteps = 0;
   let isGpuWarm = false;
+  let gpuWarmUntil = 0;
   let lastGenFinishedAt = 0;
   let isRandomizingPrompt = false;
+
+  // --- AI Director's Chair State ---
+  let showDirectorPanel = false;
+  let directorTab = "prompt"; // "prompt" | "storyboard"
+  let directorInput = "";
+  let isDirectorThinking = false;
+  let directorMessages = [];
+  let promptUndoStack = [];
+  let directorInputEl = null;
+  let directorFeedEl = null;
+
+  // Storyboard & Multi-scene Series State
+  let storyTitle = "";
+  let storySlug = "";
+  let storySetting = "";
+  let storyIdea = "";
+  let storySceneCount = 4;
+  let storyScenes = [];
+  let savedStoriesList = [];
+  let savedSettingPresets = [];
+  let isPlanningStory = false;
+  let refiningSceneIdx = -1;
+  let isShootingSeries = false;
+  let stopSeriesRequested = false;
+  let shootingSceneIdx = -1;
+  let isSavingStory = false;
+  let isExportingStory = false;
+  let isSetupCollapsed = false;
+
+  // Gallery Story Subfolder Filter
+  let storyFolders = [];
+  let activeStorySubfolder = "";
+
+  function getKreaFetch() {
+    return (httpDrive && typeof httpDrive.fetch === "function")
+      ? (p, opts) => httpDrive.fetch(p, opts)
+      : (p, opts) => fetch(p, opts);
+  }
+
+  function buildAuthHeaders() {
+    const h = {
+      "Content-Type": "application/json",
+      "X-Client": "svar"
+    };
+    const activeToken = omdKey || (typeof window !== "undefined" && (window.__omdKey || window.identity?.token)) || "";
+    if (activeToken) {
+      h["Token"] = activeToken;
+      h["X-OMD-Token"] = activeToken;
+    }
+    const effectiveDid = (httpDrive && httpDrive.didPub) || (typeof window !== "undefined" && (window.identity?.mainPub || window.identity?.pair?.pub)) || "";
+    if (effectiveDid) {
+      h["X-OMD-Caller-DID"] = effectiveDid;
+    }
+    if (httpDrive && httpDrive.isPrivateMode !== undefined) {
+      h["X-OMD-Private-Mode"] = httpDrive.isPrivateMode ? "1" : "0";
+    } else {
+      h["X-OMD-Private-Mode"] = "1";
+    }
+    return h;
+  }
 
   const KREA_SLIDERS_KEY = "krea_studio_sliders_v1";
 
@@ -506,18 +589,34 @@
 
   function resizeTextarea() {
     if (!textareaEl) return;
-    textareaEl.style.height = "auto";
-    const minH = 40;
-    const maxH = 125;
-    const scrollH = textareaEl.scrollHeight;
+    const minH = 42;
+    const maxH = 126;
     if (!promptText || !promptText.trim()) {
-      textareaEl.style.height = minH + "px";
+      textareaEl.style.height = `${minH}px`;
       textareaEl.style.overflowY = "hidden";
       return;
     }
+    textareaEl.style.height = "auto";
+    const scrollH = textareaEl.scrollHeight;
     const newH = Math.min(Math.max(scrollH, minH), maxH);
     textareaEl.style.height = `${newH}px`;
     textareaEl.style.overflowY = scrollH > maxH ? "auto" : "hidden";
+  }
+
+  function resizeDirectorTextarea() {
+    if (!directorInputEl) return;
+    const minH = 42;
+    const maxH = 140;
+    if (!directorInput || !directorInput.trim()) {
+      directorInputEl.style.height = `${minH}px`;
+      directorInputEl.style.overflowY = "hidden";
+      return;
+    }
+    directorInputEl.style.height = "auto";
+    const scrollH = directorInputEl.scrollHeight;
+    const newH = Math.min(Math.max(scrollH, minH), maxH);
+    directorInputEl.style.height = `${newH}px`;
+    directorInputEl.style.overflowY = scrollH > maxH ? "auto" : "hidden";
   }
 
   // Storage resolution
@@ -527,18 +626,48 @@
   let storagePickerDevice = null;
   let foundDevice = null;
 
-  // Persona Modal (create / edit manually)
+  // Persona Modal (create / edit manually) — Persona 2.0 (Character/Lore + Native Render Preset)
   let showPersonaModal = false;
   let editingPersonaId = null;
   let personaFormName = "";
   let personaFormTitle = "";
   let personaFormPrompt = "";
+  let personaFormPersonality = "";
   let personaFormAvatarData = "";
   let personaFormAvatarPreview = "";
+  let personaFormCivitaiAccount = "";
+  let personaFormPresetEnabled = false;
+  let personaFormBaseModel = "realism";
+  let personaFormArchetypes = [];
+  let personaFormArchetypeWeights = {};
+  let personaFormStyles = [];
+  let personaFormStyleWeights = {};
+  let personaFormUseFaceRef = true;
   let isSavingPersona = false;
   let isGeneratingAvatar = false;
   let isAnalyzingFace = false;
   let avatarGenArchetype = "prompt";
+
+  $: personaModalEngineCat = personaFormBaseModel === "anima" ? "anima" : "krea2";
+  $: personaModalArchetypes = (kreaPresets.archetypes || []).filter((a) => !a.models || a.models.includes("all") || a.models.includes(personaModalEngineCat));
+  $: personaModalStyles = (kreaPresets.art_styles || []).filter((s) => s.id !== "none" && (!s.models || s.models.includes("all") || s.models.includes(personaModalEngineCat)));
+
+  // Direct CivitAI API Publish Modal state
+  let showCivitaiPublishModal = false;
+  let civitaiPubMode = "single"; // "single" | "story"
+  let civitaiPubItems = [];
+  let civitaiPubTitle = "";
+  let civitaiPubDetail = "";
+  let civitaiPubTags = "";
+  let civitaiPubAccountId = "";
+  let civitaiPubCustomToken = "";
+  let civitaiPubSaveKey = true;
+  let civitaiPubImmediate = true;
+  let civitaiPubIncludeMeta = true;
+  let civitaiPubPersonaId = "";
+  let isPublishingCivitai = false;
+  let civitaiPubError = "";
+  let civitaiPubResult = null;
 
   // AI Persona Factory Modal (Scenario A + Scenario B combined)
   let showAiFactoryModal = false;
@@ -596,6 +725,7 @@
   let lgPagination = null;
   let copiedPromptId = null;
   let imageBlobCache = {};
+  let thumbBlobCache = {};
 
   // Prompt suggestions for empty gallery state
   const promptSuggestions = [
@@ -606,6 +736,7 @@
   ];
 
   function resolveDevice() {
+    if (foundDevice) return foundDevice;
     const raw = (
       defaultStorage ||
       (typeof localStorage !== "undefined" ? localStorage.getItem("omd_default_storage") : "") ||
@@ -623,15 +754,17 @@
       );
       if (match && !match.isAiNode) return match;
     }
+    if (deviceDrive) {
+      const d = deviceRegistry.list().find((x) => x.drive === deviceDrive && !x.isAiNode);
+      if (d) return d;
+    }
     if (targetDevice && !targetDevice.isAiNode) return targetDevice;
     if (targetLinkId) {
       const d = deviceRegistry.get(targetLinkId) || deviceRegistry.getByPrefix(targetLinkId) || deviceRegistry.getByName(targetLinkId);
       if (d && !d.isAiNode) return d;
     }
-    if (deviceDrive) {
-      const d = deviceRegistry.list().find((x) => x.drive === deviceDrive && !x.isAiNode);
-      if (d) return d;
-    }
+    const connectedDev = deviceRegistry.list().find((d) => !d.isAiNode && d.drive && (d.drive.isConnected || d.drive.status === "connected"));
+    if (connectedDev) return connectedDev;
     const local = getLocalDevice();
     if (local) return local;
     return (
@@ -700,6 +833,7 @@
       foundDevice = null;
       items = [];
       imageBlobCache = {};
+      thumbBlobCache = {};
       if (isConn || isPrivateMode || curStorage) {
         loadCreations();
         loadPersonas();
@@ -946,11 +1080,41 @@
 
   $: displayFolder = getTargetFolder();
 
+  function applyPersonaRenderPreset(p) {
+    if (!p || !p.render_preset || p.render_preset.enabled === false) return;
+    const rp = p.render_preset;
+    const nextModel = rp.base_model || sliders.base_model || "realism";
+    if (sliders.base_model !== nextModel) {
+      setBaseModel(nextModel);
+    }
+    if (Array.isArray(rp.archetypes)) {
+      sliders.archetypes = [...rp.archetypes];
+      sliders.archetype = rp.archetypes[0] || null;
+      sliders.archetype_weights = { ...(rp.archetype_weights || {}) };
+      if (sliders.archetype && sliders.archetype_weights[sliders.archetype] !== undefined) {
+        sliders.archetype_strength = sliders.archetype_weights[sliders.archetype];
+      }
+    }
+    if (Array.isArray(rp.styles)) {
+      sliders.styles = [...rp.styles];
+      sliders.style = rp.styles[0] || "none";
+      sliders.style_weights = { ...(rp.style_weights || {}) };
+      if (sliders.style !== "none" && sliders.style_weights[sliders.style] !== undefined) {
+        sliders.style_strength = sliders.style_weights[sliders.style];
+      }
+    }
+    sliders = { ...sliders };
+    saveLocalSliders(sliders);
+  }
+
   function selectPersona(p) {
     if (selectedPersonas.some((x) => x.id === p.id)) {
       selectedPersonas = selectedPersonas.filter((x) => x.id !== p.id);
     } else {
       selectedPersonas = [...selectedPersonas, p];
+      if (selectedPersonas.length === 1) {
+        applyPersonaRenderPreset(p);
+      }
     }
   }
 
@@ -1052,23 +1216,115 @@
     saveLocalSliders(sliders);
   }
 
+  function captureStudioSettingsIntoPersonaForm() {
+    personaFormPresetEnabled = true;
+    personaFormBaseModel = sliders.base_model || "realism";
+    personaFormArchetypes = Array.isArray(sliders.archetypes) ? [...sliders.archetypes.filter(Boolean)] : [];
+    personaFormArchetypeWeights = { ...(sliders.archetype_weights || {}) };
+    for (const aid of personaFormArchetypes) {
+      if (personaFormArchetypeWeights[aid] === undefined) {
+        const preset = (kreaPresets.archetypes || []).find((a) => a.id === aid);
+        personaFormArchetypeWeights[aid] = preset?.strength ?? 0.8;
+      }
+    }
+    personaFormStyles = Array.isArray(sliders.styles) ? [...sliders.styles.filter((s) => s && s !== "none")] : [];
+    personaFormStyleWeights = { ...(sliders.style_weights || {}) };
+    for (const sid of personaFormStyles) {
+      if (personaFormStyleWeights[sid] === undefined) {
+        const preset = (kreaPresets.art_styles || []).find((s) => s.id === sid);
+        personaFormStyleWeights[sid] = preset?.strength ?? 0.8;
+      }
+    }
+    personaFormUseFaceRef = personaFormArchetypes.length === 0;
+  }
+
+  function togglePersonaFormArchetype(archId) {
+    if (personaFormArchetypes.includes(archId)) {
+      personaFormArchetypes = personaFormArchetypes.filter((x) => x !== archId);
+      const copy = { ...personaFormArchetypeWeights };
+      delete copy[archId];
+      personaFormArchetypeWeights = copy;
+    } else {
+      personaFormArchetypes = [...personaFormArchetypes, archId];
+      const preset = (kreaPresets.archetypes || []).find((a) => a.id === archId);
+      personaFormArchetypeWeights = { ...personaFormArchetypeWeights, [archId]: preset?.strength ?? 0.8 };
+      personaFormUseFaceRef = false;
+    }
+  }
+
+  function togglePersonaFormStyle(styleId) {
+    if (personaFormStyles.includes(styleId)) {
+      personaFormStyles = personaFormStyles.filter((x) => x !== styleId);
+      const copy = { ...personaFormStyleWeights };
+      delete copy[styleId];
+      personaFormStyleWeights = copy;
+    } else {
+      personaFormStyles = [...personaFormStyles, styleId];
+      const preset = (kreaPresets.art_styles || []).find((s) => s.id === styleId);
+      personaFormStyleWeights = { ...personaFormStyleWeights, [styleId]: preset?.strength ?? 0.8 };
+    }
+  }
+
   function openCreatePersonaModal() {
+    if (userCivitaiMcpApps.length > 0 && civitaiAccounts.length !== userCivitaiMcpApps.length) {
+      refreshCivitaiAccounts();
+    }
     editingPersonaId = null;
     personaFormName = "";
     personaFormTitle = "";
     personaFormPrompt = "";
+    personaFormPersonality = "";
     personaFormAvatarData = "";
     personaFormAvatarPreview = "";
+    personaFormCivitaiAccount = "";
+    personaFormPresetEnabled = false;
+    personaFormBaseModel = sliders.base_model || "realism";
+    personaFormArchetypes = [];
+    personaFormArchetypeWeights = {};
+    personaFormStyles = [];
+    personaFormStyleWeights = {};
+    personaFormUseFaceRef = true;
     showPersonaModal = true;
   }
 
   function openEditPersonaModal(p) {
+    if (userCivitaiMcpApps.length > 0 && civitaiAccounts.length !== userCivitaiMcpApps.length) {
+      refreshCivitaiAccounts();
+    }
     editingPersonaId = p.id;
     personaFormName = p.name || "";
     personaFormTitle = p.title || "";
     personaFormPrompt = p.prompt || "";
+    personaFormPersonality = p.personality || "";
     personaFormAvatarData = p.avatarData || "";
     personaFormAvatarPreview = p.avatar || "";
+    personaFormCivitaiAccount = p.civitai_account || "";
+    const rp = p.render_preset;
+    if (rp && typeof rp === "object") {
+      personaFormPresetEnabled = rp.enabled !== false;
+      personaFormBaseModel = rp.base_model || "realism";
+      personaFormArchetypes = Array.isArray(rp.archetypes) ? [...rp.archetypes] : (p.archetype ? [p.archetype] : []);
+      personaFormArchetypeWeights = { ...(rp.archetype_weights || {}) };
+      personaFormStyles = Array.isArray(rp.styles) ? [...rp.styles] : [];
+      personaFormStyleWeights = { ...(rp.style_weights || {}) };
+      personaFormUseFaceRef = rp.use_face_ref !== undefined ? Boolean(rp.use_face_ref) : (personaFormArchetypes.length === 0);
+    } else if (p.archetype) {
+      personaFormPresetEnabled = true;
+      personaFormBaseModel = "realism";
+      personaFormArchetypes = [p.archetype];
+      personaFormArchetypeWeights = { [p.archetype]: 0.8 };
+      personaFormStyles = [];
+      personaFormStyleWeights = {};
+      personaFormUseFaceRef = false;
+    } else {
+      personaFormPresetEnabled = false;
+      personaFormBaseModel = sliders.base_model || "realism";
+      personaFormArchetypes = [];
+      personaFormArchetypeWeights = {};
+      personaFormStyles = [];
+      personaFormStyleWeights = {};
+      personaFormUseFaceRef = true;
+    }
     showPersonaModal = true;
   }
 
@@ -1230,6 +1486,9 @@
       }
 
       const data = await res.json();
+      isGpuWarm = true;
+      lastGenFinishedAt = Date.now();
+      gpuWarmUntil = lastGenFinishedAt + 290000;
       if (data.url) {
         const imgResp = await fetchFn(data.url);
         if (imgResp.ok) {
@@ -1259,14 +1518,40 @@
     isSavingPersona = true;
     try {
       const id = editingPersonaId || ("persona_" + Date.now());
+      const existingPersona = personas.find((x) => x.id === id) || {};
+      const renderPresetObj = personaFormPresetEnabled
+        ? {
+            enabled: true,
+            base_model: personaFormBaseModel || "realism",
+            archetypes: [...personaFormArchetypes],
+            archetype_weights: { ...personaFormArchetypeWeights },
+            styles: [...personaFormStyles],
+            style_weights: { ...personaFormStyleWeights },
+            use_face_ref: Boolean(personaFormUseFaceRef)
+          }
+        : null;
+      const primaryArchId = personaFormPresetEnabled && personaFormArchetypes.length > 0
+        ? personaFormArchetypes[0]
+        : (existingPersona.archetype || "");
+      const primaryArchPreset = primaryArchId
+        ? (kreaPresets.archetypes || []).find((a) => a.id === primaryArchId)
+        : null;
+
       const pObj = {
+        ...existingPersona,
         id,
         name: personaFormName.trim(),
         title: personaFormTitle.trim() || "Character",
         prompt: personaFormPrompt.trim(),
+        personality: personaFormPersonality.trim(),
+        archetype: primaryArchId,
+        lora: primaryArchPreset?.filename || existingPersona.lora || "",
+        render_preset: renderPresetObj,
         avatar: personaFormAvatarPreview || "",
         avatarData: personaFormAvatarData || "",
-        createdAt: Date.now()
+        civitai_account: personaFormCivitaiAccount || "",
+        createdAt: existingPersona.createdAt || Date.now(),
+        updatedAt: Date.now()
       };
 
       // 1. Первичное и авторитетное хранилище — целевой накопитель пользователя (P2P Drive)
@@ -1407,6 +1692,11 @@
       }
 
       const data = await res.json();
+      if (data && data.avatar) {
+        isGpuWarm = true;
+        lastGenFinishedAt = Date.now();
+        gpuWarmUntil = lastGenFinishedAt + 290000;
+      }
       generatedAiPersona = data;
     } catch (err) {
       console.error("[KreaStudio] AI Persona generation error:", err);
@@ -1639,6 +1929,7 @@
                 rawList = devFiles;
                 effectiveFolder = cand;
                 activeDrive = dev.drive;
+                foundDevice = dev;
                 break;
               }
             } catch (_) {}
@@ -1661,6 +1952,24 @@
               }
             }
           } catch (e) {}
+        }
+      }
+      const dirItems = (rawList || []).filter((f) => {
+        const name = f.name || f.value || "";
+        return name && !name.startsWith(".") && (f.isDir || f.type === "folder");
+      });
+      if (!activeStorySubfolder) {
+        storyFolders = dirItems.map((d) => d.name || d.value).sort();
+      } else if (activeDrive && typeof activeDrive.getFiles === "function") {
+        try {
+          const subPath = `${effectiveFolder}/${activeStorySubfolder}`.replace(/\/+/g, "/");
+          const subFiles = await activeDrive.getFiles(subPath);
+          if (Array.isArray(subFiles)) {
+            rawList = subFiles;
+            effectiveFolder = subPath;
+          }
+        } catch (_) {
+          rawList = [];
         }
       }
     } catch (err) {
@@ -1692,6 +2001,7 @@
         description: "",
         prompt: localPromptCache[name] || "",
         blobUrl: imageBlobCache[cleanPath] || imageBlobCache[name] || null,
+        thumbBlobUrl: thumbBlobCache[cleanPath] || thumbBlobCache[name] || null,
         persona: "",
         date: mtime
       };
@@ -1712,11 +2022,7 @@
             if (p) {
               item.prompt = p;
               items = [...items];
-              try {
-                const cache = JSON.parse(localStorage.getItem("krea_file_prompts") || "{}");
-                cache[item.name] = p;
-                localStorage.setItem("krea_file_prompts", JSON.stringify(cache));
-              } catch (_) {}
+              setBoundedPromptCache(item.name, p);
             }
           }).catch(() => {});
         }
@@ -1767,11 +2073,7 @@
             item.prompt = descText;
           }
           if (item.prompt) {
-            try {
-              const cache = JSON.parse(localStorage.getItem("krea_file_prompts") || "{}");
-              cache[item.name] = item.prompt;
-              localStorage.setItem("krea_file_prompts", JSON.stringify(cache));
-            } catch (_) {}
+            setBoundedPromptCache(item.name, item.prompt);
             if (chatStore && typeof chatStore.associateFileWithPrompt === "function") {
               chatStore.associateFileWithPrompt("", item.name, item.prompt).catch(() => {});
             }
@@ -1815,6 +2117,10 @@
         try { URL.revokeObjectURL(imageBlobCache[key]); } catch (_) {}
         delete imageBlobCache[key];
       }
+      if (thumbBlobCache[key]) {
+        try { URL.revokeObjectURL(thumbBlobCache[key]); } catch (_) {}
+        delete thumbBlobCache[key];
+      }
     } catch (err) {
       console.warn("[KreaStudio] Failed to delete creation:", err);
     }
@@ -1841,12 +2147,21 @@
   function getDevSegment() {
     const dev = resolveDevice();
     let seg = (dev?.prefix || dev?.linkId || targetLinkId || targetDevice?.linkId || dev?.name || targetDevice?.name || "").trim();
+    if (!seg) {
+      const first = deviceRegistry.list().find((d) => !d.isAiNode && d.drive && d.drive.isConnected) || deviceRegistry.list().find((d) => !d.isAiNode);
+      if (first) {
+        seg = first.prefix || first.linkId || "";
+      }
+    }
     seg = seg.replace(/^\/+|\/+$/g, "");
     return seg || "local";
   }
 
   function getThumbnailUrl(item) {
     if (!item) return "";
+    if (item.thumbBlobUrl) return item.thumbBlobUrl;
+    if (thumbBlobCache[item.path]) return thumbBlobCache[item.path];
+    if (thumbBlobCache[item.name]) return thumbBlobCache[item.name];
     if (item.blobUrl) return item.blobUrl;
     if (imageBlobCache[item.path]) return imageBlobCache[item.path];
     if (imageBlobCache[item.name]) return imageBlobCache[item.name];
@@ -1901,6 +2216,18 @@
     const dev = getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
     return `/p2p/${dev}${encodeURI(cleanPath)}`;
+  }
+
+  function getViewImageUrl(item) {
+    if (!item) return "";
+    if (item.blobUrl) return item.blobUrl;
+    if (imageBlobCache[item.path]) return imageBlobCache[item.path];
+    if (imageBlobCache[item.name]) return imageBlobCache[item.name];
+    const dev = getDevSegment();
+    const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
+    const vs = getViewerSettings();
+    const base = `/p2p/${dev}${encodeURI(cleanPath)}`;
+    return vs.downscaleImages ? `${base}?resize=true&width=${vs.scaleTo}&height=${vs.scaleTo}` : base;
   }
 
   async function fetchImageBlobViaWebRTC(filePath, query = "") {
@@ -1966,14 +2293,23 @@
     if (!e || !e.target || !e.target.src || e.target.src === window.location.href) return;
     item._fallbackTried = true;
 
-    // 1. Try reading via WebRTC getFileContent
-    const webrtcBlobUrl = (await fetchImageBlobViaWebRTC(item.path, "resize=true&width=480&height=480")) ||
-                          (await fetchImageBlobViaWebRTC(item.path, ""));
-    if (webrtcBlobUrl) {
-      item.blobUrl = webrtcBlobUrl;
-      imageBlobCache[item.path] = webrtcBlobUrl;
-      imageBlobCache[item.name] = webrtcBlobUrl;
-      if (e && e.target) e.target.src = webrtcBlobUrl;
+    // 1. Try reading thumbnail via WebRTC getFileContent (keep separate from full-res blobUrl!)
+    const webrtcThumbUrl = await fetchImageBlobViaWebRTC(item.path, "resize=true&width=480&height=480");
+    if (webrtcThumbUrl) {
+      item.thumbBlobUrl = webrtcThumbUrl;
+      thumbBlobCache[item.path] = webrtcThumbUrl;
+      thumbBlobCache[item.name] = webrtcThumbUrl;
+      if (e && e.target) e.target.src = webrtcThumbUrl;
+      return;
+    }
+
+    // 1b. Full-res WebRTC fallback if thumbnail query wasn't supported
+    const webrtcFullUrl = await fetchImageBlobViaWebRTC(item.path, "");
+    if (webrtcFullUrl) {
+      item.blobUrl = webrtcFullUrl;
+      imageBlobCache[item.path] = webrtcFullUrl;
+      imageBlobCache[item.name] = webrtcFullUrl;
+      if (e && e.target) e.target.src = webrtcFullUrl;
       return;
     }
 
@@ -2043,10 +2379,111 @@
     }
   }
 
-  async function runGeneration() {
-    const cleanPrompt = promptText.trim();
-    if (!cleanPrompt && selectedPersonas.length === 0) return;
-    if (isGenerating) return;
+  const CIVITAI_URL_REGEX = /https?:\/\/(?:www\.)?civitai\.(?:com|red)\/(?:images|posts)\/\d+/i;
+
+  function applyImportedSettings(applied) {
+    if (!applied || typeof applied !== "object") return;
+    if (applied.base_model) {
+      prevBaseModel = applied.base_model;
+      sliders.base_model = applied.base_model;
+    }
+    if (Array.isArray(applied.styles)) {
+      sliders.styles = applied.styles.filter((x) => x && x !== "none");
+      sliders.style = sliders.styles[0] || "none";
+      sliders.style_weights = (applied.style_weights && typeof applied.style_weights === "object")
+        ? { ...applied.style_weights }
+        : {};
+      if (sliders.styles.length > 0 && sliders.style_weights[sliders.style] !== undefined) {
+        sliders.style_strength = sliders.style_weights[sliders.style];
+      }
+    }
+    if (Array.isArray(applied.archetypes)) {
+      sliders.archetypes = applied.archetypes.filter(Boolean);
+      sliders.archetype = sliders.archetypes[0] || null;
+      sliders.archetype_weights = (applied.archetype_weights && typeof applied.archetype_weights === "object")
+        ? { ...applied.archetype_weights }
+        : {};
+      if (sliders.archetypes.length > 0 && sliders.archetype_weights[sliders.archetype] !== undefined) {
+        sliders.archetype_strength = sliders.archetype_weights[sliders.archetype];
+      }
+    }
+    if (typeof applied.steps === "number") {
+      sliders.steps = applied.steps;
+    }
+    if (typeof applied.cfg === "number") {
+      sliders.cfg = applied.cfg;
+    }
+    if (applied.aspect) {
+      sliders.aspect = applied.aspect;
+    }
+    sliders = { ...sliders };
+    saveLocalSliders(sliders);
+  }
+
+  async function runGeneration(overrideOpts = null) {
+    const isOverride = overrideOpts && typeof overrideOpts === "object" && !(overrideOpts instanceof Event);
+    let cleanPrompt = isOverride && typeof overrideOpts.prompt === "string"
+      ? overrideOpts.prompt.trim()
+      : promptText.trim();
+    if (!cleanPrompt && selectedPersonas.length === 0) return null;
+    if (isGenerating) return null;
+
+    // Auto-extract if user pasted a CivitAI image/post URL directly into the main composer
+    if (!isOverride && CIVITAI_URL_REGEX.test(cleanPrompt)) {
+      isDirectorThinking = true;
+      try {
+        const fetchFnPre = getKreaFetch();
+        const mcpPayloadPre = getMcpPayload();
+        const preRes = await fetchFnPre("/krea/director/prompt", {
+          method: "POST",
+          headers: buildAuthHeaders(),
+          body: JSON.stringify({
+            omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+            instruction: cleanPrompt,
+            current_prompt: "",
+            base_model: sliders.base_model || "realism",
+            persona_name: selectedPersonas.map((p) => p.name).join(", "),
+            persona_prompt: selectedPersonas.map((p) => p.prompt || p.passport || "").join("; "),
+            warmup_gpu: true,
+            mcp_keys: mcpPayloadPre,
+            settings: { language: $locale || "ru", mcp_keys: mcpPayloadPre }
+          })
+        });
+        if (!preRes || !preRes.ok) {
+          let errMsg = preRes ? `HTTP ${preRes.status}` : "Нет ответа от сервера";
+          if (preRes) {
+            try {
+              const ed = await preRes.json();
+              errMsg = ed.detail || ed.error || errMsg;
+            } catch (_) {}
+          }
+          generationError = errMsg;
+          return null;
+        }
+        const preData = await preRes.json();
+        if (preData && preData.applied_settings) {
+          applyImportedSettings(preData.applied_settings);
+        }
+        if (preData && preData.prompt) {
+          pushPromptUndo(promptText);
+          promptText = preData.prompt.trim();
+          cleanPrompt = promptText;
+          await tick();
+          resizeTextarea();
+        }
+      } catch (preErr) {
+        generationError = preErr.message || String(preErr);
+        return null;
+      } finally {
+        isDirectorThinking = false;
+      }
+    }
+
+    const targetSubfolder = isOverride && overrideOpts.subfolder ? String(overrideOpts.subfolder).trim() : "";
+    const targetPrefix = isOverride && overrideOpts.filenamePrefix ? String(overrideOpts.filenamePrefix).trim() : "";
+    const customTitle = isOverride && overrideOpts.customTitle ? String(overrideOpts.customTitle).trim() : "";
+    const customDescription = isOverride && overrideOpts.customDescription ? String(overrideOpts.customDescription).trim() : "";
+    const chosenAspect = (isOverride && overrideOpts.aspect) ? overrideOpts.aspect : sliders.aspect;
 
     // Save prompt to history
     if (cleanPrompt) {
@@ -2069,42 +2506,52 @@
     generatingPrompt = cleanPrompt || selectedPersonas.map((p) => p.name).join(", ");
     generatingPersona = selectedPersonas.map((p) => p.name).join(", ");
     
-    // Check if GPU is warm:
+    // Start in "warming" until ComfyUI actually finishes loading models/LoRAs and enters KSampler:
     const now = Date.now();
-    const isRecentlyUsed = lastGenFinishedAt > 0 && (now - lastGenFinishedAt < 290000);
-    const warm = isGpuWarm || isRecentlyUsed;
-    generatingStage = warm ? "generating" : "warming";
+    const warm = gpuWarmUntil > now;
+    isGpuWarm = warm;
+    generatingStage = "warming";
+    warmingPhase = warm ? "loading_models" : "booting";
+    generatingStep = 0;
+    generatingTotalSteps = 0;
 
     activeTab = "gallery";
     generationElapsed = 0;
     const t0 = Date.now();
     generationTimer = setInterval(() => {
       generationElapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      if (generatingStage === "warming" && Number(generationElapsed) >= 20) {
-        generatingStage = "generating";
-      }
     }, 100);
 
-    const [wStr, hStr] = sliders.aspect.split("x");
+    const [wStr, hStr] = String(chosenAspect || "896x1152").split("x");
     const width = parseInt(wStr, 10) || 896;
     const height = parseInt(hStr, 10) || 1152;
 
-    // Собираем референсные изображения (только вручную прикрепленные пользователем)
+    // Собираем референсные изображения (вручную прикрепленные или Face Lock персоны, если у персоны включён use_face_ref)
     const resolvedRefImages = [];
     if (attachedReferences.length > 0) {
       for (const r of attachedReferences) {
         const d = r.dataUrl || r.preview;
         if (d && typeof d === "string") resolvedRefImages.push(d);
       }
+    } else if (selectedPersonas.length > 0) {
+      for (const sp of selectedPersonas) {
+        if (sp.render_preset && sp.render_preset.enabled !== false && sp.render_preset.use_face_ref === true) {
+          const avRef = sp.avatarData || (typeof sp.avatar === "string" && sp.avatar.startsWith("data:") ? sp.avatar : "");
+          if (avRef && resolvedRefImages.length < 2) {
+            resolvedRefImages.push(avRef);
+          }
+        }
+      }
     }
 
     const targetDev = resolveDevice();
     const isAiNodeTarget = Boolean(targetDev && targetDev.isAiNode);
     const baseStorage = getBaseStorage();
+    const fetchFn = getKreaFetch();
 
     const payload = {
       omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
-      prompt: promptText.trim(),
+      prompt: cleanPrompt,
       persona_id: selectedPersonas.length > 0 ? selectedPersonas.map((p) => p.id).join(",") : null,
       persona_name: selectedPersonas.length > 0 ? selectedPersonas.map((p) => p.name).join(", ") : null,
       persona_prompt: selectedPersonas.length > 0 ? selectedPersonas.map((p) => p.prompt || p.passport || "").join("; ") : "",
@@ -2120,12 +2567,19 @@
         archetypes: Array.isArray(sliders.archetypes) ? sliders.archetypes.filter(Boolean) : [],
         archetype: (sliders.archetypes && sliders.archetypes.length > 0) ? sliders.archetypes[0] : null,
         archetype_weights: sliders.archetype_weights || {},
-        archetype_strength: sliders.archetype_strength
+        archetype_strength: sliders.archetype_strength,
+        steps: sliders.steps || (sliders.base_model === "realism" ? 14 : (sliders.base_model === "semi_realism" ? 16 : 25)),
+        cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0))
       },
       width,
       height,
       steps: sliders.steps || (sliders.base_model === "realism" ? 14 : (sliders.base_model === "semi_realism" ? 16 : 25)),
       cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0)),
+      subfolder: targetSubfolder || null,
+      filename_prefix: targetPrefix || null,
+      custom_title: customTitle || null,
+      custom_description: customDescription || null,
+      stream: true,
       client: "svar",
       image_delivery: "inline",
       save_local: true,
@@ -2199,16 +2653,73 @@
         throw new Error(errDetail);
       }
 
-      const data = await res.json();
+      const ctype = (res.headers && res.headers.get && (res.headers.get("content-type") || res.headers.get("Content-Type"))) || "";
+      let data = null;
+
+      if (ctype.includes("ndjson") && res.body && typeof res.body.getReader === "function") {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let streamBuf = "";
+
+        const handleStreamLine = (rawLine) => {
+          const trimmed = rawLine.trim();
+          if (!trimmed) return;
+          let evt = null;
+          try {
+            evt = JSON.parse(trimmed);
+          } catch (_) {
+            return;
+          }
+          if (!evt || typeof evt !== "object") return;
+          if (evt.type === "progress") {
+            if (evt.stage) generatingStage = evt.stage;
+            if (evt.phase) warmingPhase = evt.phase;
+            if (typeof evt.step === "number") generatingStep = evt.step;
+            if (typeof evt.total_steps === "number" && evt.total_steps > 0) generatingTotalSteps = evt.total_steps;
+          } else if (evt.type === "result" && evt.data) {
+            data = evt.data;
+          } else if (evt.type === "error") {
+            throw new Error(evt.detail || "Ошибка генерации");
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          streamBuf += decoder.decode(value, { stream: true });
+          let nlIdx;
+          while ((nlIdx = streamBuf.indexOf("\n")) !== -1) {
+            const line = streamBuf.slice(0, nlIdx);
+            streamBuf = streamBuf.slice(nlIdx + 1);
+            handleStreamLine(line);
+          }
+        }
+        streamBuf += decoder.decode();
+        if (streamBuf.trim()) {
+          handleStreamLine(streamBuf);
+        }
+        if (!data) {
+          throw new Error("Поток генерации завершился без результата");
+        }
+      } else {
+        data = await res.json();
+      }
+
       const filename = data.image || `krea_${Date.now()}.png`;
 
       // GPU generation completed — now downloading chunk stream and saving!
       generatingStage = "saving";
       isGpuWarm = true;
       lastGenFinishedAt = Date.now();
+      gpuWarmUntil = lastGenFinishedAt + 290000;
 
       const folder = getTargetFolder();
-      const fullImagePath = `${folder}/${filename}`;
+      const effectiveSub = data.subfolder || targetSubfolder || "";
+      const destFolder = effectiveSub ? `${folder}/${effectiveSub}` : folder;
+      const fullImagePath = `${destFolder}/${filename}`;
+      if (effectiveSub && !storyFolders.includes(effectiveSub)) {
+        storyFolders = [...storyFolders, effectiveSub].sort();
+      }
 
       let localBlobUrl = null;
       let imageBlob = null;
@@ -2229,28 +2740,41 @@
       if (chatStore && typeof chatStore.associateFileWithPrompt === "function") {
         chatStore.associateFileWithPrompt("", filename, cleanPrompt).catch(() => {});
       }
-      try {
-        const cache = JSON.parse(localStorage.getItem("krea_file_prompts") || "{}");
-        cache[filename] = cleanPrompt;
-        localStorage.setItem("krea_file_prompts", JSON.stringify(cache));
-      } catch (_) {}
+      setBoundedPromptCache(filename, cleanPrompt);
+
+      const resolvedTitle = (data.title && !isJustFileName(data.title, filename, fullImagePath))
+        ? data.title.trim()
+        : (customTitle || "");
+      const resolvedDesc = (data.description && !isJustFileName(data.description, filename, fullImagePath))
+        ? data.description.trim()
+        : (customDescription || "");
 
       const newItem = {
         id: filename,
         name: filename,
         path: fullImagePath,
-        title: data.title || promptText.slice(0, 30),
-        description: data.description || "",
+        subfolder: effectiveSub,
+        title: resolvedTitle || resolvedDesc || cleanPrompt.slice(0, 48),
+        description: resolvedDesc,
         prompt: cleanPrompt,
         blobUrl: localBlobUrl,
+        imageBlob,
         persona: selectedPersonas.map((p) => p.name).join(", ") || "",
         date: Date.now(),
         gpuTime: data.gpu_time || null,
         totalTime: data.total_time || null
       };
 
-      items = sortItemsList([newItem, ...items.filter((x) => x.id !== newItem.id)], sortOrder);
-      dispatch("count-change", items.length);
+      if (!activeStorySubfolder || activeStorySubfolder === effectiveSub) {
+        items = sortItemsList([newItem, ...items.filter((x) => x.id !== newItem.id)], sortOrder);
+        dispatch("count-change", items.length);
+      }
+
+      if (!resolvedTitle || !resolvedDesc) {
+        ensureItemPromptAndTitle(newItem).then(() => {
+          items = [...items];
+        }).catch(() => {});
+      }
 
       isGenerating = false;
       clearInterval(generationTimer);
@@ -2284,15 +2808,15 @@
 
           if (imageBase64) {
             try {
-              await ensureFolderRecursive(targetDrive, folder);
-              const title = data.title || promptText.slice(0, 30) || "";
-              const desc = data.description || "";
+              await ensureFolderRecursive(targetDrive, destFolder);
+              const title = data.title || customTitle || cleanPrompt.slice(0, 30) || "";
+              const desc = data.description || customDescription || "";
               let readmeContent = `# ${title}\n\n${desc}\n`;
               if (cleanPrompt) {
                 readmeContent += `\n<!-- prompt: ${cleanPrompt} -->\n`;
               }
               const readmeFilename = filename.replace(/\.[^/.]+$/, "") + ".Readme.md";
-              const fullReadmePath = `${folder}/${readmeFilename}`;
+              const fullReadmePath = `${destFolder}/${readmeFilename}`;
 
               await writeDriveFile(targetDrive, fullImagePath, imageBase64);
               await writeDriveText(targetDrive, fullReadmePath, readmeContent);
@@ -2303,6 +2827,7 @@
           }
         }
       }
+      return newItem;
     } catch (err) {
       console.error("[KreaStudio] Generation error:", err);
       if (err.name === "AbortError") {
@@ -2310,6 +2835,7 @@
       } else {
         alert($_("krea_err_generation", { error: err.message }, `Ошибка генерации: ${err.message}`));
       }
+      return null;
     } finally {
       clearTimeout(timeoutHandle);
       clearInterval(generationTimer);
@@ -2496,7 +3022,7 @@
   }
 
   function handleDocumentClick(e) {
-    if (showPromptsPopup && !e.target.closest(".prompts-popup") && !e.target.closest(".prompts-history-btn")) {
+    if (showPromptsPopup && !e.target.closest(".prompts-popup") && !e.target.closest(".toggle-history-pill")) {
       showPromptsPopup = false;
     }
     if (showStyleDropdown && !e.target.closest(".style-dropdown-control")) {
@@ -2554,14 +3080,276 @@
     });
   }
 
+  function setBoundedPromptCache(fileName, promptStr) {
+    if (!fileName || !promptStr || typeof localStorage === "undefined") return;
+    try {
+      const cache = JSON.parse(localStorage.getItem("krea_file_prompts") || "{}");
+      delete cache[fileName];
+      cache[fileName] = promptStr;
+      const keys = Object.keys(cache);
+      while (keys.length > 80) {
+        delete cache[keys.shift()];
+      }
+      localStorage.setItem("krea_file_prompts", JSON.stringify(cache));
+    } catch (_) {
+      try {
+        localStorage.removeItem("gun/");
+        localStorage.removeItem("krea_file_prompts");
+      } catch (__) {}
+    }
+  }
+
+  async function refreshCivitaiAccounts() {
+    try {
+      const fetchFn = getKreaFetch();
+      const mcpPayload = getMcpPayload();
+      const res = await fetchFn("/krea/civitai/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+          mcp_keys: mcpPayload,
+          settings: { mcp_keys: mcpPayload }
+        })
+      });
+      if (res && res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.accounts)) {
+          civitaiAccounts = data.accounts;
+        }
+      }
+    } catch (_) {}
+  }
+
+  function resolveDefaultCivitaiAccount(personaHint = "") {
+    const avail = effectiveCivitaiAccounts || [];
+    if (personaHint) {
+      const foundP = (personas || []).find((p) => p.id === personaHint || p.name === personaHint);
+      if (foundP && foundP.civitai_account && avail.some((a) => a.id === foundP.civitai_account)) {
+        return foundP.civitai_account;
+      }
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const savedAcc = window.localStorage.getItem("omc_civitai_pub_account") || window.sessionStorage.getItem("omc_civitai_pub_account") || "";
+        if (savedAcc && (savedAcc === "custom" || avail.some((a) => a.id === savedAcc))) {
+          return savedAcc;
+        }
+      } catch (_) {}
+    }
+    if (avail.length > 0) return avail[0].id;
+    return "custom";
+  }
+
+  async function blobToDataUrl(blobOrUrl) {
+    if (!blobOrUrl) return "";
+    let actualBlob = blobOrUrl;
+    if (typeof actualBlob === "string") {
+      if (actualBlob.startsWith("data:")) return actualBlob;
+      try {
+        const r = await fetch(actualBlob);
+        if (!r.ok) return "";
+        actualBlob = await r.blob();
+      } catch (_) {
+        return "";
+      }
+    }
+    if (typeof Blob !== "undefined" && !(actualBlob instanceof Blob)) return "";
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : "");
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(actualBlob);
+    });
+  }
+
   async function publishToCivitai(item) {
     if (!item) return;
     await ensureItemPromptAndTitle(item);
-    if (item.prompt && navigator.clipboard) {
-      try { await navigator.clipboard.writeText(item.prompt); } catch (_) {}
+    if (userCivitaiMcpApps.length > 0 && civitaiAccounts.length !== userCivitaiMcpApps.length) {
+      await refreshCivitaiAccounts();
     }
-    downloadImage(item);
-    window.open("https://civitai.com/posts/create", "_blank", "noopener,noreferrer");
+    const cleanStem = (item.name || "").replace(/\.[^.]+$/, "");
+    civitaiPubMode = "single";
+    civitaiPubItems = [item];
+    civitaiPubTitle = (item.title && item.title !== cleanStem) ? item.title : "";
+    civitaiPubDetail = (item.description && item.description !== item.prompt) ? item.description : "";
+    civitaiPubTags = "";
+    civitaiPubPersonaId = item.persona || (selectedPersona && selectedPersona.id !== "none" ? selectedPersona.id : "") || "";
+    civitaiPubAccountId = resolveDefaultCivitaiAccount(civitaiPubPersonaId);
+    civitaiPubCustomToken = "";
+    civitaiPubError = "";
+    civitaiPubResult = null;
+    showCivitaiPublishModal = true;
+  }
+
+  async function openPublishStoryToCivitai() {
+    const renderedScenes = (storyScenes || []).filter((s) => s.image_name);
+    if (renderedScenes.length === 0) {
+      alert("Сначала отснимите хотя бы один кадр истории для публикации.");
+      return;
+    }
+    await persistCurrentStory(true).catch(() => {});
+    if (userCivitaiMcpApps.length > 0 && civitaiAccounts.length !== userCivitaiMcpApps.length) {
+      await refreshCivitaiAccounts();
+    }
+    civitaiPubMode = "story";
+    civitaiPubItems = renderedScenes.map((sc) => ({
+      name: sc.image_name,
+      path: sc.image_path || (storySlug ? `${storySlug}/${sc.image_name}` : sc.image_name),
+      story_slug: storySlug || "",
+      prompt: sc.prompt || "",
+      blob: sc.imageBlob || null,
+      blobUrl: sc.blobUrl || ""
+    }));
+    civitaiPubTitle = (storyTitle || "").trim();
+    civitaiPubDetail = renderedScenes
+      .map((s) => (s.narrative ? `${s.title ? `**${s.scene_number}. ${s.title}**\n` : ""}${s.narrative}` : ""))
+      .filter(Boolean)
+      .join("\n\n");
+    civitaiPubTags = "";
+    civitaiPubPersonaId = (selectedPersona && selectedPersona.id !== "none") ? selectedPersona.id : "";
+    civitaiPubAccountId = resolveDefaultCivitaiAccount(civitaiPubPersonaId);
+    civitaiPubCustomToken = "";
+    civitaiPubError = "";
+    civitaiPubResult = null;
+    showCivitaiPublishModal = true;
+  }
+
+  async function submitCivitaiPublish() {
+    if (isPublishingCivitai || !civitaiPubItems.length) return;
+    const rawCustomTok = civitaiPubCustomToken.trim();
+    if (civitaiPubAccountId === "custom" && !rawCustomTok) {
+      civitaiPubError = "Введите API-ключ CivitAI (или добавьте его в Настройках → MCP API Keys).";
+      return;
+    }
+    isPublishingCivitai = true;
+    civitaiPubError = "";
+    civitaiPubResult = null;
+
+    try {
+      if (typeof window !== "undefined" && civitaiPubAccountId && civitaiPubAccountId !== "custom") {
+        try {
+          window.localStorage.setItem("omc_civitai_pub_account", civitaiPubAccountId);
+        } catch (_) {
+          try { window.sessionStorage.setItem("omc_civitai_pub_account", civitaiPubAccountId); } catch (__) {}
+        }
+      }
+
+      const targetDev = resolveDevice();
+      const isAiNodeTarget = Boolean(targetDev && targetDev.isAiNode);
+      const drive = getTargetDrive();
+      const fetchFn = getKreaFetch();
+
+      const payloadImages = [];
+      for (const it of civitaiPubItems) {
+        const entry = {
+          image_name: it.name || it.image_name || "creation.png",
+          image_path: it.path || it.image_path || "",
+          story_slug: it.story_slug || it.subfolder || activeStorySubfolder || "",
+          prompt: it.prompt || ""
+        };
+
+        if (!isAiNodeTarget) {
+          if (it.blob instanceof Blob) {
+            entry.data_b64 = await blobToDataUrl(it.blob);
+          }
+          if (!entry.data_b64 && it.blobUrl) {
+            entry.data_b64 = await blobToDataUrl(it.blobUrl);
+          }
+          if (!entry.data_b64 && entry.image_path) {
+            const tmpBlobUrl = await fetchImageBlobViaWebRTC(entry.image_path, "").catch(() => null);
+            if (tmpBlobUrl) {
+              entry.data_b64 = await blobToDataUrl(tmpBlobUrl);
+              try {
+                if (typeof tmpBlobUrl === "string" && tmpBlobUrl.startsWith("blob:")) {
+                  URL.revokeObjectURL(tmpBlobUrl);
+                }
+              } catch (_) {}
+            }
+          }
+          if (!entry.data_b64 && entry.image_path && httpDrive && typeof httpDrive.fetch === "function") {
+            try {
+              const r = await httpDrive.fetch(entry.image_path);
+              if (r && r.ok) entry.data_b64 = await blobToDataUrl(await r.blob());
+            } catch (_) {}
+          }
+          if (!entry.data_b64 && entry.image_path && drive && typeof drive.homeRead === "function") {
+            try {
+              const b64 = await drive.homeRead(entry.image_path);
+              if (b64) entry.data_b64 = b64;
+            } catch (_) {}
+          }
+        }
+        payloadImages.push(entry);
+      }
+
+      const mcpPayload = getMcpPayload();
+      const res = await fetchFn("/krea/civitai/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+          images: payloadImages,
+          title: civitaiPubTitle.trim(),
+          detail: civitaiPubDetail.trim(),
+          tags: civitaiPubTags.trim(),
+          publish: Boolean(civitaiPubImmediate),
+          include_meta: Boolean(civitaiPubIncludeMeta),
+          account_id: civitaiPubAccountId === "custom" ? "" : civitaiPubAccountId,
+          custom_token: civitaiPubAccountId === "custom" ? rawCustomTok : "",
+          persona_id: civitaiPubPersonaId || "",
+          mcp_keys: mcpPayload,
+          settings: { mcp_keys: mcpPayload }
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      }
+      civitaiPubResult = data;
+      if (civitaiPubAccountId === "custom" && rawCustomTok && civitaiPubSaveKey) {
+        try {
+          const byApp = ($mcpKeysStore && $mcpKeysStore.byApp) || {};
+          const existingMatch = Object.values(byApp).find((a) => a && a.key === rawCustomTok);
+          let savedAppId = existingMatch ? existingMatch.appId : "";
+          if (!savedAppId) {
+            const uname = String(data.username || "").trim();
+            const slug = uname.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+            if (!byApp["civitai"]) {
+              savedAppId = "civitai";
+            } else if (slug) {
+              savedAppId = `civitai_${slug}`;
+            } else {
+              savedAppId = `civitai_${Date.now().toString(36)}`;
+            }
+            const accLabel = uname ? `CivitAI (@${uname})` : "CivitAI";
+            await saveMcpAppKey(savedAppId, {
+              name: accLabel,
+              url: "https://civitai.com/user/account",
+              key: rawCustomTok
+            });
+          }
+          await refreshCivitaiAccounts();
+          civitaiPubAccountId = savedAppId;
+          civitaiPubCustomToken = "";
+          if (typeof window !== "undefined") {
+            try { window.localStorage.setItem("omc_civitai_pub_account", savedAppId); } catch (_) {
+              try { window.sessionStorage.setItem("omc_civitai_pub_account", savedAppId); } catch (__) {}
+            }
+          }
+        } catch (_) {}
+      }
+      if (civitaiPubMode === "single" && civitaiPubItems[0]) {
+        civitaiPubItems[0].civitaiPostUrl = data.post_url;
+        items = [...items];
+      }
+    } catch (err) {
+      civitaiPubError = err.message || String(err);
+    } finally {
+      isPublishingCivitai = false;
+    }
   }
 
   async function ensureItemPromptAndTitle(item) {
@@ -2629,6 +3417,15 @@
 
     if (activeItem) {
       await ensureItemPromptAndTitle(activeItem);
+      const swReady = typeof navigator !== "undefined" && navigator.serviceWorker && navigator.serviceWorker.controller;
+      if (!activeItem.blobUrl && (!swReady || activeItem.thumbBlobUrl)) {
+        const fullBlob = await fetchImageBlobViaWebRTC(activeItem.path, "");
+        if (fullBlob) {
+          activeItem.blobUrl = fullBlob;
+          imageBlobCache[activeItem.path] = fullBlob;
+          imageBlobCache[activeItem.name] = fullBlob;
+        }
+      }
     }
 
     let startIndex = 0;
@@ -2648,8 +3445,8 @@
 
     const escapeCaption = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     const dynamicEl = validItems.map((it) => {
-      const srcUrl = it.blobUrl || getFullImageUrl(it);
-      const thumbUrl = it.blobUrl || getThumbnailUrl(it);
+      const srcUrl = it.blobUrl || getViewImageUrl(it);
+      const thumbUrl = it.thumbBlobUrl || it.blobUrl || getThumbnailUrl(it);
       const rawTitle = (it.title || "").trim();
       const rawDesc = (it.description || it.prompt || "").trim();
       const title = isJustFileName(rawTitle, it.name, it.path) ? "" : rawTitle;
@@ -2698,6 +3495,31 @@
     });
     lgPagination.setInstance(lgInstance);
 
+    const ensureSlideFullBlob = async (idx) => {
+      const it = validItems[idx];
+      if (!it || it.blobUrl) return;
+      const swReady = typeof navigator !== "undefined" && navigator.serviceWorker && navigator.serviceWorker.controller;
+      if (swReady && !it.thumbBlobUrl) return;
+      const fullBlob = await fetchImageBlobViaWebRTC(it.path, "");
+      if (fullBlob) {
+        it.blobUrl = fullBlob;
+        imageBlobCache[it.path] = fullBlob;
+        imageBlobCache[it.name] = fullBlob;
+        if (dynamicEl[idx]) {
+          dynamicEl[idx].src = fullBlob;
+          dynamicEl[idx].downloadUrl = fullBlob;
+        }
+        const imgEl = document.querySelector(`.lg-current .lg-image, .lg-item[data-lg-item-id="${idx}"] .lg-image`);
+        if (imgEl && imgEl.src !== fullBlob) {
+          imgEl.src = fullBlob;
+        }
+      }
+    };
+    galleryDiv.addEventListener("lgAfterSlide", (ev) => {
+      const idx = ev?.detail?.index;
+      if (typeof idx === "number") ensureSlideFullBlob(idx).catch(() => {});
+    });
+
     galleryDiv.addEventListener("onCloseAfter", () => {
       try {
         if (lgPagination) lgPagination.cleanup();
@@ -2715,36 +3537,761 @@
     // Gallery uses dynamic openGallery(item) modal viewer
   }
 
-  let idleTimer = null;
-  const IDLE_TIMEOUT_MS = 300000; // 5 minutes auto switch back to Creations
-  let activityCleanup = null;
-
-  function resetIdleTimer() {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      if (!isGenerating) {
-        console.log("[KreaStudio] 5 minutes idle reached, switching back to Creations");
-        dispatch("switch-creations");
-      } else {
-        resetIdleTimer();
-      }
-    }, IDLE_TIMEOUT_MS);
-  }
-
   function handleSwitchToCreations() {
-    if (idleTimer) clearTimeout(idleTimer);
     dispatch("switch-creations");
   }
 
-  onMount(async () => {
-    resetIdleTimer();
-    const activityEvents = ["pointerdown", "keydown", "input", "touchstart"];
-    const onActivity = () => resetIdleTimer();
-    activityEvents.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
-    activityCleanup = () => {
-      activityEvents.forEach((ev) => window.removeEventListener(ev, onActivity));
+  // =========================================================================
+  // 🎬 AI DIRECTOR'S CHAIR FUNCTIONS (Prompt Co-Pilot & Multi-Scene Storyboard)
+  // =========================================================================
+  let directorWidth = typeof localStorage !== "undefined"
+    ? Math.max(320, Math.min(780, parseInt(localStorage.getItem("krea_director_width_v1") || "390", 10) || 390))
+    : 390;
+  let isResizingDirector = false;
+
+  function startDirectorResize(e) {
+    if (innerWidth <= 960) return;
+    e.preventDefault();
+    isResizingDirector = true;
+    const startX = e.clientX;
+    const startW = directorWidth;
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    const onMove = (ev) => {
+      if (typeof ev.clientX !== "number") return;
+      const delta = startX - ev.clientX;
+      const maxW = Math.max(360, Math.min(820, Math.floor(window.innerWidth * 0.58)));
+      directorWidth = Math.max(320, Math.min(maxW, startW + delta));
+      resizeDirectorTextarea();
     };
 
+    const onUp = () => {
+      isResizingDirector = false;
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      try {
+        localStorage.setItem("krea_director_width_v1", String(Math.round(directorWidth)));
+      } catch (_) {}
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
+
+  function resetDirectorWidth() {
+    directorWidth = 390;
+    try {
+      localStorage.setItem("krea_director_width_v1", "390");
+    } catch (_) {}
+    tick().then(resizeDirectorTextarea);
+  }
+
+  function toggleDirectorPanel() {
+    showDirectorPanel = !showDirectorPanel;
+    try {
+      localStorage.setItem("krea_director_open_v1", showDirectorPanel ? "1" : "0");
+    } catch (_) {}
+    if (showDirectorPanel) {
+      loadSavedStories().catch(() => {});
+      tick().then(() => {
+        resizeDirectorTextarea();
+        if (directorTab === "prompt" && directorInputEl) directorInputEl.focus();
+      });
+    }
+  }
+
+  function pushPromptUndo(prevText) {
+    const val = (prevText || "").trim();
+    if (!val) return;
+    if (promptUndoStack[promptUndoStack.length - 1] === val) return;
+    promptUndoStack = [...promptUndoStack.slice(-14), val];
+  }
+
+  function undoDirectorPrompt() {
+    if (promptUndoStack.length === 0) return;
+    const prev = promptUndoStack[promptUndoStack.length - 1];
+    promptUndoStack = promptUndoStack.slice(0, -1);
+    promptText = prev;
+    tick().then(resizeTextarea);
+  }
+
+  function applyDirectorQuickHint(template) {
+    directorInput = template;
+    tick().then(() => {
+      resizeDirectorTextarea();
+      if (directorInputEl) {
+        directorInputEl.focus();
+        directorInputEl.selectionStart = directorInputEl.selectionEnd = directorInput.length;
+      }
+    });
+  }
+
+  function applyDirectorSnapshot(snapText, snapSettings = null) {
+    if (!snapText) return;
+    if (snapSettings) {
+      applyImportedSettings(snapSettings);
+    }
+    pushPromptUndo(promptText);
+    promptText = snapText;
+    tick().then(resizeTextarea);
+  }
+
+  let isDirectorImportingCivitai = false;
+
+  async function askDirectorPrompt(andGenerate = false) {
+    const instr = (directorInput || "").trim();
+    if (!instr || isDirectorThinking) return;
+    isDirectorThinking = true;
+    isDirectorImportingCivitai = CIVITAI_URL_REGEX.test(instr) || CIVITAI_URL_REGEX.test(promptText || "");
+
+    const userMsg = {
+      id: "dm_" + Date.now(),
+      role: "user",
+      text: instr
+    };
+    directorMessages = [...directorMessages, userMsg];
+    directorInput = "";
+    await tick();
+    resizeDirectorTextarea();
+    if (directorFeedEl) directorFeedEl.scrollTop = directorFeedEl.scrollHeight;
+
+    try {
+      const fetchFn = getKreaFetch();
+      const archetypesStr = (activeArchetypeObjs || []).map((a) => `${a.label} (${a.id})`).join(", ");
+      const stylesStr = (activeStyleObjs || []).filter((s) => s.id !== "none").map((s) => s.name || s.label).join(", ");
+      const mcpPayload = getMcpPayload();
+      const chatHist = directorMessages
+        .slice(-7, -1)
+        .map((m) => ({
+          role: m.role,
+          content: m.role === "assistant" && m.promptSnapshot ? `${m.text}\nPrompt: ${m.promptSnapshot}` : m.text
+        }));
+
+      const res = await fetchFn("/krea/director/prompt", {
+        method: "POST",
+        headers: buildAuthHeaders(),
+        body: JSON.stringify({
+          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+          instruction: instr,
+          current_prompt: (promptText || "").trim(),
+          base_model: sliders.base_model || "realism",
+          persona_name: selectedPersonas.map((p) => p.name).join(", "),
+          persona_prompt: selectedPersonas.map((p) => p.prompt || p.passport || "").join("; "),
+          persona_personality: selectedPersonas.map((p) => p.personality || "").filter(Boolean).join("; "),
+          styles: stylesStr,
+          archetypes: archetypesStr,
+          history: chatHist,
+          warmup_gpu: Boolean(andGenerate),
+          mcp_keys: mcpPayload,
+          settings: {
+            language: $locale || "ru",
+            mcp_keys: mcpPayload
+          }
+        })
+      });
+
+      if (!res || !res.ok) {
+        let errTxt = res ? `HTTP ${res.status}` : "Нет ответа от сервера";
+        if (res) {
+          try {
+            const ed = await res.json();
+            errTxt = ed.detail || ed.error || errTxt;
+          } catch (_) {}
+        }
+        throw new Error(errTxt);
+      }
+
+      const data = await res.json();
+      if (data && data.applied_settings) {
+        applyImportedSettings(data.applied_settings);
+      }
+      if (data && data.prompt) {
+        pushPromptUndo(promptText);
+        promptText = data.prompt.trim();
+        await tick();
+        resizeTextarea();
+      }
+      directorMessages = [
+        ...directorMessages,
+        {
+          id: "da_" + Date.now(),
+          role: "assistant",
+          text: data.reply || "Промпт обновлён!",
+          promptSnapshot: (data.prompt || promptText || "").trim(),
+          appliedSettings: data.applied_settings || null
+        }
+      ];
+      try {
+        sessionStorage.setItem("krea_director_msgs_v1", JSON.stringify(directorMessages.slice(-20)));
+      } catch (_) {}
+
+      await tick();
+      if (directorFeedEl) directorFeedEl.scrollTop = directorFeedEl.scrollHeight;
+
+      if (andGenerate && promptText.trim()) {
+        await runGeneration();
+      }
+    } catch (err) {
+      directorMessages = [
+        ...directorMessages,
+        {
+          id: "de_" + Date.now(),
+          role: "assistant",
+          isError: true,
+          text: `Ошибка: ${err.message || err}`
+        }
+      ];
+    } finally {
+      isDirectorThinking = false;
+      isDirectorImportingCivitai = false;
+    }
+  }
+
+  function saveSettingPreset() {
+    const clean = (storySetting || "").trim();
+    if (!clean) return;
+    const label = (storyTitle || clean.slice(0, 32)).trim();
+    const entry = { id: "sp_" + Date.now(), label, setting: clean };
+    savedSettingPresets = [entry, ...savedSettingPresets.filter((x) => x.setting !== clean)].slice(0, 15);
+    try {
+      localStorage.setItem("krea_saved_settings_v1", JSON.stringify(savedSettingPresets));
+    } catch (_) {}
+  }
+
+  function deleteSettingPreset(id) {
+    savedSettingPresets = savedSettingPresets.filter((x) => x.id !== id);
+    try {
+      localStorage.setItem("krea_saved_settings_v1", JSON.stringify(savedSettingPresets));
+    } catch (_) {}
+  }
+
+  function saveActiveDraftStoryToLocal() {
+    try {
+      const draft = {
+        storyTitle,
+        storySlug,
+        storySetting,
+        storyIdea,
+        storySceneCount,
+        storyScenes: storyScenes.map((s) => ({
+          scene_number: s.scene_number,
+          title: s.title,
+          narrative: s.narrative,
+          visual_prompt: s.visual_prompt,
+          aspect: s.aspect,
+          image_name: s.image_name || "",
+          image_path: s.image_path || "",
+          status: s.image_name ? "done" : "draft"
+        }))
+      };
+      localStorage.setItem("krea_active_story_draft_v1", JSON.stringify(draft));
+    } catch (_) {}
+  }
+
+  async function planOrContinueStory(mode = "plan") {
+    if (isPlanningStory) return;
+    if (mode === "plan" && !storySetting.trim() && !storyIdea.trim()) {
+      alert("Опишите сеттинг или идею истории в двух словах.");
+      return;
+    }
+    isPlanningStory = true;
+    try {
+      const fetchFn = getKreaFetch();
+      const mcpPayload = getMcpPayload();
+      const archetypesStr = (activeArchetypeObjs || []).map((a) => `${a.label} (${a.id})`).join(", ");
+      const stylesStr = (activeStyleObjs || []).filter((s) => s.id !== "none").map((s) => s.name || s.label).join(", ");
+      const personasPayload = selectedPersonas.map((p) => ({
+        id: p.id,
+        name: p.name,
+        title: p.title || "",
+        prompt: p.prompt || p.passport || "",
+        personality: p.personality || ""
+      }));
+
+      const res = await fetchFn("/krea/director/storyboard", {
+        method: "POST",
+        headers: buildAuthHeaders(),
+        body: JSON.stringify({
+          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+          action: mode === "continue" && storyScenes.length > 0 ? "continue" : "plan",
+          story_title: storyTitle.trim(),
+          setting: storySetting.trim(),
+          idea: storyIdea.trim(),
+          scene_count: Number(storySceneCount) || 4,
+          base_model: sliders.base_model || "realism",
+          personas: personasPayload,
+          styles: stylesStr,
+          archetypes: archetypesStr,
+          existing_scenes: mode === "continue" ? storyScenes : null,
+          warmup_gpu: false,
+          mcp_keys: mcpPayload,
+          settings: {
+            language: $locale || "ru",
+            mcp_keys: mcpPayload
+          }
+        })
+      });
+
+      if (!res || !res.ok) {
+        let errTxt = res ? `HTTP ${res.status}` : "Нет ответа от сервера";
+        if (res) {
+          try {
+            const ed = await res.json();
+            errTxt = ed.detail || ed.error || errTxt;
+          } catch (_) {}
+        }
+        throw new Error(errTxt);
+      }
+
+      const data = await res.json();
+      if (!storyTitle.trim() && data.story_title) storyTitle = data.story_title;
+      if (!storySlug.trim() && data.story_slug) storySlug = data.story_slug;
+      if (!storySetting.trim() && data.setting) storySetting = data.setting;
+
+      const mappedNew = (data.scenes || []).map((sc, i) => ({
+        id: `sc_${Date.now()}_${i}`,
+        scene_number: sc.scene_number || ((mode === "continue" ? storyScenes.length : 0) + i + 1),
+        title: sc.title || `Сцена ${i + 1}`,
+        narrative: sc.narrative || "",
+        visual_prompt: sc.visual_prompt || "",
+        aspect: sc.aspect || sliders.aspect || "896x1152",
+        status: "draft",
+        image_name: "",
+        image_path: "",
+        blobUrl: null,
+        showPrompt: false,
+        showRefine: false,
+        refineText: ""
+      }));
+
+      if (mode === "continue" && storyScenes.length > 0) {
+        storyScenes = [...storyScenes, ...mappedNew];
+        storyIdea = "";
+      } else {
+        storyScenes = mappedNew;
+        if (data.story_slug) storySlug = data.story_slug;
+        if (data.story_title) storyTitle = data.story_title;
+      }
+      isSetupCollapsed = true;
+      saveActiveDraftStoryToLocal();
+      await persistCurrentStory(true);
+    } catch (err) {
+      alert(`Ошибка планирования сценария: ${err.message || err}`);
+    } finally {
+      isPlanningStory = false;
+    }
+  }
+
+  async function refineSingleScene(idx) {
+    const sc = storyScenes[idx];
+    if (!sc || refiningSceneIdx !== -1) return;
+    const instr = (sc.refineText || "").trim();
+    if (!instr) return;
+
+    refiningSceneIdx = idx;
+    try {
+      const fetchFn = getKreaFetch();
+      const mcpPayload = getMcpPayload();
+      const res = await fetchFn("/krea/director/storyboard", {
+        method: "POST",
+        headers: buildAuthHeaders(),
+        body: JSON.stringify({
+          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+          action: "refine_scene",
+          story_title: storyTitle.trim(),
+          setting: storySetting.trim(),
+          idea: instr,
+          base_model: sliders.base_model || "realism",
+          personas: selectedPersonas.map((p) => ({ name: p.name, title: p.title || "", prompt: p.prompt || "", personality: p.personality || "" })),
+          existing_scenes: storyScenes,
+          target_scene_index: idx,
+          warmup_gpu: false,
+          mcp_keys: mcpPayload,
+          settings: { language: $locale || "ru", mcp_keys: mcpPayload }
+        })
+      });
+      if (!res || !res.ok) throw new Error(res ? `HTTP ${res.status}` : "Ошибка сети");
+      const data = await res.json();
+      if (data && data.scene) {
+        storyScenes[idx] = {
+          ...storyScenes[idx],
+          title: data.scene.title || sc.title,
+          narrative: data.scene.narrative || sc.narrative,
+          visual_prompt: data.scene.visual_prompt || sc.visual_prompt,
+          aspect: data.scene.aspect || sc.aspect,
+          refineText: "",
+          showRefine: false
+        };
+        storyScenes = [...storyScenes];
+        saveActiveDraftStoryToLocal();
+      }
+    } catch (err) {
+      alert(`Не удалось обновить сцену: ${err.message || err}`);
+    } finally {
+      refiningSceneIdx = -1;
+    }
+  }
+
+  function removeStoryScene(idx) {
+    storyScenes = storyScenes
+      .filter((_, i) => i !== idx)
+      .map((s, i) => ({ ...s, scene_number: i + 1 }));
+    saveActiveDraftStoryToLocal();
+  }
+
+  function addManualStoryScene() {
+    const nextNum = storyScenes.length + 1;
+    storyScenes = [
+      ...storyScenes,
+      {
+        id: `sc_${Date.now()}_${nextNum}`,
+        scene_number: nextNum,
+        title: `Сцена ${nextNum}`,
+        narrative: "",
+        visual_prompt: "",
+        aspect: sliders.aspect || "896x1152",
+        status: "draft",
+        image_name: "",
+        image_path: "",
+        blobUrl: null,
+        showPrompt: true,
+        showRefine: false,
+        refineText: ""
+      }
+    ];
+    saveActiveDraftStoryToLocal();
+  }
+
+  async function persistCurrentStory(silent = false) {
+    if (storyScenes.length === 0 && !storyTitle.trim()) return null;
+    isSavingStory = true;
+    try {
+      const fetchFn = getKreaFetch();
+      const mcpPayload = getMcpPayload();
+      const baseStorage = getBaseStorage();
+      const cleanScenes = storyScenes.map((s, i) => ({
+        scene_number: s.scene_number || i + 1,
+        title: s.title || `Сцена ${i + 1}`,
+        narrative: s.narrative || "",
+        visual_prompt: s.visual_prompt || "",
+        aspect: s.aspect || "896x1152",
+        image_name: s.image_name || "",
+        image_path: s.image_path || ""
+      }));
+
+      const res = await fetchFn("/krea/story/save", {
+        method: "POST",
+        headers: buildAuthHeaders(),
+        body: JSON.stringify({
+          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+          story_title: storyTitle.trim() || "Новая история",
+          story_slug: storySlug.trim(),
+          setting: storySetting.trim(),
+          personas: selectedPersonas.map((p) => ({ id: p.id, name: p.name, title: p.title || "", prompt: p.prompt || "" })),
+          scenes: cleanScenes,
+          save_local: true,
+          mcp_keys: mcpPayload,
+          settings: { defaultStorage: baseStorage, mcp_keys: mcpPayload }
+        })
+      });
+
+      if (res && res.ok) {
+        const data = await res.json();
+        if (data.story_slug) {
+          storySlug = data.story_slug;
+          if (!storyFolders.includes(storySlug)) {
+            storyFolders = [...storyFolders, storySlug].sort();
+          }
+        }
+        // Save to remote targetDrive if not saved locally on AI node
+        if (!data.saved_locally && data.readme_markdown && data.story_slug) {
+          const targetDrive = getTargetDrive();
+          if (targetDrive) {
+            try {
+              const subFolder = `${getTargetFolder()}/${data.story_slug}`;
+              await ensureFolderRecursive(targetDrive, subFolder);
+              await writeDriveText(targetDrive, `${subFolder}/Readme.md`, data.readme_markdown);
+              await writeDriveText(targetDrive, `${subFolder}/story.json`, JSON.stringify(data.story_json, null, 2));
+            } catch (e) {
+              console.warn("[Director] Remote story save warning:", e);
+            }
+          }
+        }
+        // Also mirror in localStorage index for instant access
+        try {
+          const list = JSON.parse(localStorage.getItem("krea_saved_stories_v1") || "[]");
+          const entry = {
+            story_slug: data.story_slug,
+            story_title: storyTitle.trim() || "Новая история",
+            setting: storySetting.trim(),
+            scene_count: cleanScenes.length,
+            updated_at: new Date().toISOString(),
+            story: data.story_json
+          };
+          const merged = [entry, ...list.filter((x) => x.story_slug !== entry.story_slug)].slice(0, 30);
+          localStorage.setItem("krea_saved_stories_v1", JSON.stringify(merged));
+          savedStoriesList = merged;
+        } catch (_) {}
+        saveActiveDraftStoryToLocal();
+        return data;
+      }
+    } catch (err) {
+      if (!silent) alert(`Ошибка сохранения истории: ${err.message || err}`);
+    } finally {
+      isSavingStory = false;
+    }
+    return null;
+  }
+
+  async function loadSavedStories() {
+    let localList = [];
+    try {
+      localList = JSON.parse(localStorage.getItem("krea_saved_stories_v1") || "[]");
+    } catch (_) {}
+
+    try {
+      const fetchFn = getKreaFetch();
+      const res = await fetchFn("/krea/stories", { headers: buildAuthHeaders() });
+      if (res && res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.stories) && data.stories.length > 0) {
+          const bySlug = new Map();
+          for (const st of [...data.stories, ...localList]) {
+            if (st && st.story_slug && !bySlug.has(st.story_slug)) {
+              bySlug.set(st.story_slug, st);
+            }
+          }
+          savedStoriesList = Array.from(bySlug.values());
+          return;
+        }
+      }
+    } catch (_) {}
+    savedStoriesList = localList;
+  }
+
+  function openSavedStory(entry) {
+    if (!entry) return;
+    const st = entry.story || entry;
+    storyTitle = st.story_title || entry.story_title || "";
+    storySlug = st.story_slug || entry.story_slug || "";
+    storySetting = st.setting || entry.setting || "";
+    storyIdea = "";
+    const folder = getTargetFolder();
+    storyScenes = (st.scenes || []).map((sc, i) => {
+      const imgName = sc.image_name || "";
+      const fullP = imgName && storySlug ? `${folder}/${storySlug}/${imgName}` : (sc.image_path || "");
+      return {
+        id: `sc_${Date.now()}_${i}`,
+        scene_number: sc.scene_number || i + 1,
+        title: sc.title || `Сцена ${i + 1}`,
+        narrative: sc.narrative || "",
+        visual_prompt: sc.visual_prompt || "",
+        aspect: sc.aspect || "896x1152",
+        status: imgName ? "done" : "draft",
+        image_name: imgName,
+        image_path: fullP,
+        blobUrl: (fullP && imageBlobCache[fullP]) || (imgName && imageBlobCache[imgName]) || null,
+        showPrompt: false,
+        showRefine: false,
+        refineText: ""
+      };
+    });
+    isSetupCollapsed = storyScenes.length > 0;
+    saveActiveDraftStoryToLocal();
+  }
+
+  function startFreshStory(keepSetting = false) {
+    storyTitle = "";
+    storySlug = "";
+    if (!keepSetting) storySetting = "";
+    storyIdea = "";
+    storyScenes = [];
+    isSetupCollapsed = false;
+    saveActiveDraftStoryToLocal();
+  }
+
+  async function selectStorySubfolder(sub) {
+    activeStorySubfolder = sub || "";
+    if (sub) {
+      sortOrder = "asc"; // Show story frames in 01, 02, 03 narrative order!
+    }
+    await loadCreations();
+    if (sub) {
+      const match = savedStoriesList.find((s) => s.story_slug === sub);
+      if (match) {
+        openSavedStory(match);
+      } else {
+        // Try reading story.json from targetDrive
+        try {
+          const drive = getTargetDrive();
+          if (drive) {
+            const raw = await readDriveText(drive, `${getTargetFolder()}/${sub}/story.json`).catch(() => null);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              openSavedStory({ story_slug: sub, story: parsed });
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  async function shootSingleScene(idx) {
+    const sc = storyScenes[idx];
+    if (!sc || isGenerating) return false;
+    if (!sc.visual_prompt || !sc.visual_prompt.trim()) {
+      alert("У этой сцены пустой визуальный промпт.");
+      return false;
+    }
+
+    // Ensure we have a valid storySlug before shooting so all frames land in the same subfolder!
+    if (!storySlug.trim()) {
+      const saved = await persistCurrentStory(true);
+      if (!storySlug.trim()) {
+        storySlug = (saved && saved.story_slug) || `story_${Date.now()}`;
+      }
+    }
+
+    shootingSceneIdx = idx;
+    storyScenes[idx] = { ...storyScenes[idx], status: "shooting" };
+    storyScenes = [...storyScenes];
+
+    const padNum = String(sc.scene_number || idx + 1).padStart(2, "0");
+    const sceneHeader = `${sc.scene_number || idx + 1}. ${sc.title || `Сцена ${idx + 1}`}`;
+    const item = await runGeneration({
+      prompt: sc.visual_prompt,
+      aspect: sc.aspect || sliders.aspect || "896x1152",
+      subfolder: storySlug,
+      filenamePrefix: `Scene_${padNum}`,
+      customTitle: sceneHeader,
+      customDescription: sc.narrative || ""
+    });
+
+    shootingSceneIdx = -1;
+    if (item && item.name) {
+      storyScenes[idx] = {
+        ...storyScenes[idx],
+        status: "done",
+        image_name: item.name,
+        image_path: item.path,
+        blobUrl: item.blobUrl || null,
+        imageBlob: item.imageBlob || null
+      };
+      storyScenes = [...storyScenes];
+      await persistCurrentStory(true);
+      return true;
+    } else {
+      storyScenes[idx] = { ...storyScenes[idx], status: sc.image_name ? "done" : "draft" };
+      storyScenes = [...storyScenes];
+      return false;
+    }
+  }
+
+  async function shootAllRemainingScenes() {
+    if (isShootingSeries || isGenerating) return;
+    const pendingIndices = storyScenes
+      .map((s, idx) => (!s.image_name ? idx : -1))
+      .filter((idx) => idx >= 0);
+    if (pendingIndices.length === 0) {
+      alert("Все сцены уже отсняты! Вы можете переснять любую карточку кнопкой 🔄 или продолжить историю.");
+      return;
+    }
+
+    isShootingSeries = true;
+    stopSeriesRequested = false;
+    try {
+      for (const idx of pendingIndices) {
+        if (stopSeriesRequested) break;
+        const ok = await shootSingleScene(idx);
+        if (!ok || stopSeriesRequested) break;
+      }
+    } finally {
+      isShootingSeries = false;
+      stopSeriesRequested = false;
+    }
+  }
+
+  async function exportStoryPack(openCivitai = false) {
+    if (isExportingStory || storyScenes.length === 0) return;
+    isExportingStory = true;
+    try {
+      const saved = await persistCurrentStory(true);
+      const mdContent = (saved && saved.readme_markdown) || `# ${storyTitle}\n\n${storyScenes.map((s) => `## ${s.scene_number}. ${s.title}\n\n${s.narrative}\n`).join("\n")}`;
+
+      // Copy formatted story + prompts to clipboard for easy CivitAI post description pasting
+      if (navigator.clipboard) {
+        const postSummary = `${storyTitle ? storyTitle + "\n\n" : ""}${storySetting ? "Setting: " + storySetting + "\n\n" : ""}` +
+          storyScenes.map((s) => `[${s.scene_number}. ${s.title}]\n${s.narrative}`).join("\n\n");
+        await navigator.clipboard.writeText(postSummary).catch(() => {});
+      }
+
+      const renderedScenes = storyScenes.filter((s) => s.image_name);
+      if (renderedScenes.length > 0) {
+        const { default: JSZip } = await import("jszip");
+        const zip = new JSZip();
+        zip.file("Story.md", mdContent);
+
+        const fetchFn = getKreaFetch();
+        const drive = getTargetDrive();
+
+        for (const sc of renderedScenes) {
+          const padNum = String(sc.scene_number || 1).padStart(2, "0");
+          const ext = (sc.image_name.split(".").pop() || "png").toLowerCase();
+          const zipImgName = `${padNum}_${(storySlug || "scene")}.${ext}`;
+          let blob = sc.imageBlob || null;
+
+          if (!blob && sc.blobUrl && sc.blobUrl.startsWith("blob:")) {
+            try {
+              const r = await fetch(sc.blobUrl);
+              if (r.ok) blob = await r.blob();
+            } catch (_) {}
+          }
+          if (!blob && sc.image_path && drive && typeof drive.homeRead === "function") {
+            try {
+              const b64 = await drive.homeRead(sc.image_path);
+              if (b64) {
+                const bin = atob(b64);
+                const arr = new Uint8Array(bin.length);
+                for (let k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+                blob = new Blob([arr], { type: "image/png" });
+              }
+            } catch (_) {}
+          }
+          if (!blob && sc.image_name) {
+            try {
+              blob = await fetchLargeImageBlob(fetchFn, `/chat/image/${sc.image_name}`);
+            } catch (_) {}
+          }
+          if (blob && blob.size > 0) {
+            zip.file(zipImgName, blob);
+          }
+        }
+
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const dlUrl = URL.createObjectURL(zipBlob);
+        const a = document.createElement("a");
+        a.href = dlUrl;
+        a.download = `${storySlug || "story"}_civitai_pack.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(dlUrl), 5000);
+      }
+    } catch (err) {
+      alert(`Ошибка экспорта серии: ${err.message || err}`);
+    } finally {
+      isExportingStory = false;
+    }
+  }
+
+  onMount(async () => {
     if (chatStore && typeof chatStore.onPromptsChanged === "function") {
       unsubPrompts = chatStore.onPromptsChanged((list) => {
         if (Array.isArray(list) && list.length > 0) {
@@ -2757,12 +4304,35 @@
       if (Array.isArray(local) && local.length > 0 && recentPrompts.length === 0) {
         recentPrompts = local;
       }
+      if (localStorage.getItem("krea_director_open_v1") === "1" && (typeof window === "undefined" || window.innerWidth > 960)) {
+        showDirectorPanel = true;
+      }
+      const savedMsgs = JSON.parse(sessionStorage.getItem("krea_director_msgs_v1") || "[]");
+      if (Array.isArray(savedMsgs)) directorMessages = savedMsgs;
+      const savedPresets = JSON.parse(localStorage.getItem("krea_saved_settings_v1") || "[]");
+      if (Array.isArray(savedPresets)) savedSettingPresets = savedPresets;
+      const savedDraft = JSON.parse(localStorage.getItem("krea_active_story_draft_v1") || "null");
+      if (savedDraft && typeof savedDraft === "object") {
+        storyTitle = savedDraft.storyTitle || "";
+        storySlug = savedDraft.storySlug || "";
+        storySetting = savedDraft.storySetting || "";
+        storyIdea = savedDraft.storyIdea || "";
+        storySceneCount = savedDraft.storySceneCount || 4;
+        if (Array.isArray(savedDraft.storyScenes) && savedDraft.storyScenes.length > 0) {
+          storyScenes = savedDraft.storyScenes.map((s, i) => ({
+            ...s,
+            id: `sc_init_${i}`,
+            showPrompt: false,
+            showRefine: false,
+            refineText: ""
+          }));
+          isSetupCollapsed = true;
+        }
+      }
     } catch (_) {}
 
     try {
-      const fetchFn = (httpDrive && typeof httpDrive.fetch === "function")
-        ? (p) => httpDrive.fetch(p)
-        : (p) => fetch(p);
+      const fetchFn = getKreaFetch();
       fetchFn("/krea/presets").then(async (res) => {
         if (res && res.ok) {
           const data = await res.json();
@@ -2783,25 +4353,31 @@
       }).then(async (res) => {
         if (res && res.ok) {
           const data = await res.json();
-          isGpuWarm = !!data.gpu_warm;
+          if (data && Array.isArray(data.civitai_accounts)) {
+            civitaiAccounts = data.civitai_accounts;
+          }
+          if (data && data.gpu_warm) {
+            const remSec = typeof data.gpu_warm_remaining === "number" ? data.gpu_warm_remaining : 290;
+            gpuWarmUntil = Date.now() + remSec * 1000;
+            isGpuWarm = remSec > 0;
+          } else {
+            gpuWarmUntil = 0;
+            isGpuWarm = false;
+          }
         }
       }).catch(() => {});
     } catch (_) {}
 
     await loadPersonas();
     await loadCreations();
-    tick().then(resizeTextarea);
+    loadSavedStories().catch(() => {});
+    tick().then(() => {
+      resizeTextarea();
+      resizeDirectorTextarea();
+    });
   });
 
   onDestroy(() => {
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = null;
-    }
-    if (activityCleanup) {
-      activityCleanup();
-      activityCleanup = null;
-    }
     if (driveCleanup) {
       driveCleanup();
       driveCleanup = null;
@@ -2821,7 +4397,7 @@
   });
 </script>
 
-<svelte:window on:click={handleDocumentClick} on:keydown={handleKeydown} />
+<svelte:window bind:innerWidth={innerWidth} on:click={handleDocumentClick} on:keydown={handleKeydown} />
 
 <div class="krea-studio-root {isDarkTheme ? 'dark-theme' : 'light-theme'}" class:overlay-header={isOverlayHeader}>
   <!-- Header / Top Bar -->
@@ -2829,14 +4405,15 @@
     <div class="header-left">
       {#if !sidebarOpen}
         <button
-          class="sidebar-toggle-btn"
-          title="Toggle Sidebar"
+          type="button"
+          class="icon-btn sidebar-toggle-btn"
+          title={$_("unfold", {}, "Развернуть сайдбар")}
+          aria-label={$_("unfold", {}, "Развернуть сайдбар")}
           on:click={() => dispatch("toggle-sidebar")}
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="3" y1="12" x2="21" y2="12" />
-            <line x1="3" y1="6" x2="21" y2="6" />
-            <line x1="3" y1="18" x2="21" y2="18" />
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <line x1="9" y1="3" x2="9" y2="21" />
           </svg>
         </button>
       {/if}
@@ -2860,7 +4437,7 @@
           >
             <span class="mode-icon">⚡</span>
             <span class="mode-text mode-text-full">{$_("krea_studio", {}, "Creative Studio")}</span>
-            <span class="mode-text mode-text-short">Studio</span>
+            <span class="mode-text mode-text-short">Creative</span>
           </button>
         </div>
         {#if items.length > 0}
@@ -2908,6 +4485,24 @@
     </div>
 
     <div class="header-right">
+      <!-- AI Director's Chair Toggle -->
+      <button
+        type="button"
+        class="icon-btn director-icon-btn"
+        class:is-active={showDirectorPanel}
+        title={$_("krea_director_tooltip", {}, "Режиссёрское кресло — AI-помощник по промптам и сценариям")}
+        aria-label={$_("krea_director_tooltip", {}, "Режиссёрское кресло")}
+        on:click={toggleDirectorPanel}
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+          <path d="M2 11h20" />
+          <path d="M7 7l3 4" />
+          <path d="M14 7l3 4" />
+          <path d="M4 3l16 4" />
+        </svg>
+      </button>
+
       <!-- Sort Order Toggle -->
       <button
         type="button"
@@ -2956,7 +4551,9 @@
     </div>
   </header>
 
-  <!-- Main Workspace -->
+  <!-- Main Workspace + AI Director Split -->
+  <div class="studio-body-split">
+  <div class="studio-canvas-col">
   <main class="studio-main">
     {#if activeTab === "personas"}
       <!-- PERSONAS VIEW -->
@@ -3006,8 +4603,13 @@
               <div class="persona-info">
                 <div class="persona-header-row">
                   <span class="persona-name">{p.name}</span>
-                  {#if p.avatarData || p.avatar}
+                  {#if p.render_preset && p.render_preset.enabled !== false && p.render_preset.archetypes && p.render_preset.archetypes.length > 0}
+                    <span class="persona-ref-chip" title="Родная персонажная LoRA и пресет рендера">🎛️ {p.render_preset.archetypes.join(", ")}</span>
+                  {:else if p.avatarData || p.avatar}
                     <span class="persona-ref-chip" title="One-Shot Face Likeness: Krea 2 Identity Edit dual conditioning">📸 One-Shot Ref</span>
+                  {/if}
+                  {#if p.personality}
+                    <span class="persona-ref-chip" title={p.personality}>💬 Лор</span>
                   {/if}
                   {#if p.title}
                     <span class="persona-title-chip">{p.title}</span>
@@ -3059,6 +4661,39 @@
         bind:this={scrollContainerEl}
         in:fade={{ duration: 150 }}
       >
+        {#if storyFolders.length > 0 || activeStorySubfolder}
+          <div class="story-folders-bar">
+            <button
+              type="button"
+              class="story-folder-pill"
+              class:active={!activeStorySubfolder}
+              on:click={() => selectStorySubfolder("")}
+            >
+              📁 {$_("krea_all_creations", {}, "Все работы")}
+            </button>
+            {#each storyFolders as sf}
+              <button
+                type="button"
+                class="story-folder-pill"
+                class:active={activeStorySubfolder === sf}
+                on:click={() => selectStorySubfolder(sf)}
+                title={`generated/${sf}`}
+              >
+                🎞️ {sf}
+              </button>
+            {/each}
+            {#if activeStorySubfolder}
+              <button
+                type="button"
+                class="story-open-director-chip"
+                on:click={() => { showDirectorPanel = true; directorTab = "storyboard"; }}
+              >
+                🎬 Сценарий
+              </button>
+            {/if}
+          </div>
+        {/if}
+
         {#if items.length === 0 && !isGenerating}
           <div class="empty-gallery">
             <div class="empty-icon">🎨</div>
@@ -3086,25 +4721,42 @@
                     <div class="status-pill">
                       <span class="pulse-dot"></span>
                       {#if generatingStage === "warming"}
-                        <span class="status-text">⚡ {$_("krea_stage_warming", {}, "Пробуждение GPU")} {generationElapsed}s</span>
+                        <span class="status-text">⚡ {$_("krea_stage_warming", {}, "Прогрев студии")} {generationElapsed}s</span>
                       {:else if generatingStage === "generating"}
-                        <span class="status-text">🎨 {$_("krea_stage_generating", {}, "AI генерация")} {generationElapsed}s</span>
+                        <span class="status-text">
+                          🎨 {$_("krea_stage_generating", {}, "Генерация")}
+                          {#if generatingTotalSteps > 0 && generatingStep > 0}
+                            ({generatingStep}/{generatingTotalSteps})
+                          {/if}
+                          {generationElapsed}s
+                        </span>
                       {:else}
                         <span class="status-text">📥 {$_("krea_stage_saving", {}, "Сохранение")} {generationElapsed}s</span>
                       {/if}
                     </div>
                     <p class="placeholder-prompt" title={generatingPrompt}>{generatingPrompt}</p>
                     <div class="placeholder-progress-bar">
-                      <div class="progress-bar-fill" class:downloading={generatingStage === "saving"}></div>
+                      <div
+                        class="progress-bar-fill"
+                        class:downloading={generatingStage === "saving"}
+                        class:determinate={generatingStage === "generating" && generatingTotalSteps > 0 && generatingStep > 0}
+                        style={generatingStage === "generating" && generatingTotalSteps > 0 && generatingStep > 0
+                          ? `width: ${Math.max(6, Math.min(100, Math.round((generatingStep / generatingTotalSteps) * 100)))}%;`
+                          : ""}
+                      ></div>
                     </div>
                   </div>
                 </div>
                 <div class="card-footer-info placeholder-footer">
                   <span class="card-title">
                     {#if generatingStage === "warming"}
-                      {$_("krea_stage_warming_hint", {}, "Инициализация A100 GPU и загрузка весов в память...")}
+                      {warmingPhase === "loading_models"
+                        ? $_("krea_stage_loading_models_hint", {}, "Загрузка модели и художественных стилей...")
+                        : $_("krea_stage_warming_hint", {}, "Подготовка студии и загрузка моделей...")}
                     {:else if generatingStage === "generating"}
-                      {$_("krea_stage_generating_hint", {}, "Отрисовка нейросетью (6 шагов)...")}
+                      {generatingTotalSteps > 0
+                        ? $_("krea_stage_generating_steps_hint", { step: Math.max(1, generatingStep), total: generatingTotalSteps }, `Отрисовка кадра (шаг ${Math.max(1, generatingStep)} из ${generatingTotalSteps})...`)
+                        : $_("krea_stage_generating_hint", {}, "Отрисовка кадра нейросетью...")}
                     {:else}
                       {$_("krea_stage_saving_hint", {}, "Запись файла и подготовка кадра...")}
                     {/if}
@@ -3134,18 +4786,27 @@
                     loading="lazy"
                     on:error={(e) => handleImageError(item, e)}
                   />
+                  {#if item.persona || item.totalTime}
+                    <div class="card-thumb-badges">
+                      {#if item.persona}
+                        <span class="persona-tag">👤 {item.persona}</span>
+                      {/if}
+                      {#if item.totalTime}
+                        <span class="card-time-tag" title={$_("krea_total_time", { total: item.totalTime, gpu: item.gpuTime ? `, GPU: ${item.gpuTime}s` : "" }, `Полное время: ${item.totalTime}s${item.gpuTime ? `, генерация GPU: ${item.gpuTime}s` : ""}`)}>
+                          ⚡ {item.totalTime}s{#if item.gpuTime}<span class="gpu-sub">({item.gpuTime}s)</span>{/if}
+                        </span>
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
                 <div class="card-footer-info">
                   <div class="card-meta">
-                    <span class="card-title" title={item.title || item.prompt}>{item.title || item.prompt}</span>
-                    {#if item.persona}
-                      <span class="persona-tag">👤 {item.persona}</span>
-                    {/if}
-                    {#if item.totalTime}
-                      <span class="card-time-tag" title={$_("krea_total_time", { total: item.totalTime, gpu: item.gpuTime ? `, GPU: ${item.gpuTime}s` : "" }, `Полное время: ${item.totalTime}s${item.gpuTime ? `, генерация GPU: ${item.gpuTime}s` : ""}`)}>
-                        ⚡ {item.totalTime}s{#if item.gpuTime}<span class="gpu-sub">({item.gpuTime}s)</span>{/if}
-                      </span>
-                    {/if}
+                    <span
+                      class="card-title"
+                      title={item.description && item.title && item.description !== item.title ? `${item.title} — ${item.description}` : (item.description || item.title || item.prompt)}
+                    >
+                      {item.title && !isJustFileName(item.title, item.name, item.path) ? item.title : (item.description || item.prompt || item.title)}
+                    </span>
                   </div>
                   <div class="card-toolbar">
                     {#if item.prompt || item.title}
@@ -3209,11 +4870,11 @@
                       </svg>
                     </button>
 
-                    {#if hasCivitaiToken}
+                    {#if canPublishCivitai}
                       <button
                         type="button"
-                        class="toolbar-btn civitai-publish-btn"
-                        title={$_("publish_civitai", {}, "Publish to CivitAI")}
+                        class="toolbar-btn civitai-publish-btn {item.civitaiPostUrl ? 'published' : ''}"
+                        title={item.civitaiPostUrl ? "Опубликовано на CivitAI (нажмите для повторной публикации)" : $_("publish_civitai", {}, "Опубликовать на CivitAI")}
                         on:click|stopPropagation={() => publishToCivitai(item)}
                       >
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -3252,31 +4913,103 @@
 
   <!-- Sticky Bottom Generation Composer with Sliders -->
   <footer class="studio-composer">
-    <!-- Selected Persona & Sliders Row -->
+    <!-- Selected Persona, Photo Ref & Controls Row -->
     <div class="composer-controls-row">
-      <!-- Active Personas Group -->
-      {#if selectedPersonas.length > 0}
-        <div class="active-personas-wrap">
-          {#each selectedPersonas as p (p.id)}
-            <div class="active-persona-pill" in:fade={{ duration: 100 }}>
-              <span class="pill-avatar-icon">👤</span>
-              <span class="pill-name">{p.name}</span>
-              <button class="pill-clear-btn" title={$_("krea_clear_persona", { name: p.name }, `Сбросить ${p.name}`)} on:click={() => removeSelectedPersona(p.id)}>
-                ✕
-              </button>
-            </div>
-          {/each}
-          <button class="add-more-personas-btn" title={$_("krea_add_more_personas", {}, "Добавить еще персону")} on:click={() => (activeTab = "personas")}>
-            {$_("krea_add_more", {}, "+ Еще")}
+      <div class="composer-controls-left">
+        <!-- Active Personas Group -->
+        {#if selectedPersonas.length > 0}
+          <div class="active-personas-wrap">
+            {#each selectedPersonas as p (p.id)}
+              <div class="active-persona-pill" in:fade={{ duration: 100 }}>
+                <span class="pill-avatar-icon">👤</span>
+                <span class="pill-name">{p.name}</span>
+                <button class="pill-clear-btn" title={$_("krea_clear_persona", { name: p.name }, `Сбросить ${p.name}`)} on:click={() => removeSelectedPersona(p.id)}>
+                  ✕
+                </button>
+              </div>
+            {/each}
+            <button class="add-more-personas-btn" title={$_("krea_add_more_personas", {}, "Добавить еще персону")} on:click={() => (activeTab = "personas")}>
+              <span class="pill-label-desktop">{$_("krea_add_more", {}, "+ Еще")}</span>
+              <span class="pill-label-mobile">+👤</span>
+            </button>
+          </div>
+        {:else}
+          <button class="pick-persona-btn" title={$_("krea_pick_persona", {}, "+ Выбрать персону")} on:click={() => (activeTab = "personas")}>
+            <span class="pill-label-desktop">{$_("krea_pick_persona", {}, "+ Выбрать персону")}</span>
+            <span class="pill-label-mobile">+👤</span>
           </button>
-        </div>
-      {:else}
-        <button class="pick-persona-btn" on:click={() => (activeTab = "personas")}>
-          {$_("krea_pick_persona", {}, "+ Выбрать персону")}
+        {/if}
+
+        <!-- Hidden file input for references -->
+        <input
+          type="file"
+          bind:this={refFileInputEl}
+          accept="image/png,image/jpeg,image/webp"
+          on:change={handleRefFileSelected}
+          style="display: none;"
+        />
+
+        <!-- Add Reference Photo Pill (max 2) -->
+        <button
+          type="button"
+          class="add-photo-pill"
+          class:active={attachedReferences.length > 0}
+          disabled={attachedReferences.length >= 2 || isUploadingRef}
+          title={attachedReferences.length >= 2 ? $_("krea_attach_ref_max", {}, "Прикреплено 2 референса (максимум)") : $_("krea_attach_ref_title", {}, "Добавить картинку-референс (до 2 штук)")}
+          on:click={() => refFileInputEl?.click()}
+        >
+          <span class="pill-label-desktop">
+            {#if isUploadingRef}
+              {$_("krea_uploading_ref", {}, "⏳ Загрузка...")}
+            {:else if attachedReferences.length >= 2}
+              {$_("krea_add_photo_max", {}, "📷 Фото (2/2)")}
+            {:else if attachedReferences.length === 1}
+              {$_("krea_add_photo_1", {}, "+ Добавить фото (1/2)")}
+            {:else}
+              {$_("krea_add_photo_pill", {}, "+ Добавить фото")}
+            {/if}
+          </span>
+          <span class="pill-label-mobile">
+            {#if isUploadingRef}
+              ⏳
+            {:else if attachedReferences.length > 0}
+              📷{attachedReferences.length}
+            {:else}
+              +📷
+            {/if}
+          </span>
         </button>
-      {/if}
+      </div>
 
       <div class="composer-controls-right">
+        <!-- Quick AI Director Toggle Pill -->
+        <button
+          type="button"
+          class="toggle-director-pill"
+          class:open={showDirectorPanel}
+          class:active={showDirectorPanel}
+          title="Открыть Режиссёрское кресло (правка промпта и сценарии)"
+          on:click={toggleDirectorPanel}
+        >
+          <span class="pill-label-desktop">{$_("krea_director_btn", {}, "Режиссёр")}</span>
+          <span class="pill-label-mobile">🎬</span>
+          <span class="pill-chevron">{showDirectorPanel ? "▶" : "◀"}</span>
+        </button>
+
+        <!-- Prompt History Toggle Pill -->
+        <button
+          type="button"
+          class="toggle-history-pill"
+          class:open={showPromptsPopup}
+          class:active={showPromptsPopup}
+          title={$_("krea_prompt_history", {}, "История промптов")}
+          on:click|stopPropagation={() => (showPromptsPopup = !showPromptsPopup)}
+        >
+          <span class="pill-label-desktop">{$_("krea_history_pill", {}, "История")}</span>
+          <span class="pill-label-mobile">🕒</span>
+          <span class="pill-chevron">{showPromptsPopup ? "▼" : "▲"}</span>
+        </button>
+
         <!-- Tags Preview Toggle Button -->
         <button
           type="button"
@@ -3286,7 +5019,8 @@
           title={$_("krea_toggle_tags_title", {}, "Показать/скрыть теги")}
           on:click={() => (showPromptTokensPreview = !showPromptTokensPreview)}
         >
-          <span>{$_("krea_show_tags", {}, "Теги")}</span>
+          <span class="pill-label-desktop">{$_("krea_show_tags", {}, "Теги")}</span>
+          <span class="pill-label-mobile">🏷️</span>
           <span class="pill-chevron">{showPromptTokensPreview ? "▼" : "▲"}</span>
         </button>
 
@@ -3294,9 +5028,11 @@
         <button
           class="toggle-sliders-btn"
           class:open={showSlidersPanel}
+          title={$_("krea_params_sliders", {}, "Параметры")}
           on:click={() => (showSlidersPanel = !showSlidersPanel)}
         >
-          <span>{$_("krea_params_sliders", {}, "Параметры")}</span>
+          <span class="pill-label-desktop">{$_("krea_params_sliders", {}, "Параметры")}</span>
+          <span class="pill-label-mobile">🎛️</span>
           <span class="pill-chevron">{showSlidersPanel ? "▼" : "▲"}</span>
         </button>
 
@@ -3320,7 +5056,7 @@
               <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
               <circle cx="12" cy="12" r="3"/>
             </svg>
-            <span class="gear-summary-text">{sliders.steps} {$_("krea_steps_short", {}, "ш.")} / {sliders.cfg} cfg</span>
+            <span class="gear-summary-text pill-label-desktop">{sliders.steps} {$_("krea_steps_short", {}, "ш.")} / {sliders.cfg} cfg</span>
             <span class="pill-chevron">{showAdvancedSettings ? "▼" : "▲"}</span>
           </button>
 
@@ -3372,7 +5108,7 @@
                   <input
                     type="range"
                     min="4"
-                    max="30"
+                    max="50"
                     step="1"
                     bind:value={sliders.steps}
                     on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
@@ -3380,9 +5116,9 @@
                   />
                   <div class="setting-subtext">
                     <span>4 ({$_("krea_steps_fast", {}, "Быстро")})</span>
-                    <span>6 (Turbo)</span>
                     <span>14 ({$_("krea_steps_quality", {}, "Качество")})</span>
                     <span>25 (Anima)</span>
+                    <span>40 (Max)</span>
                   </div>
                 </div>
 
@@ -3396,7 +5132,7 @@
                     type="range"
                     min="1.0"
                     max="7.0"
-                    step="0.5"
+                    step="0.1"
                     bind:value={sliders.cfg}
                     on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
                     class="slider-input advanced-slider"
@@ -3962,69 +5698,11 @@
       ></textarea>
 
       <div class="composer-actions">
-        <!-- Hidden file input for references -->
-        <input
-          type="file"
-          bind:this={refFileInputEl}
-          accept="image/png,image/jpeg,image/webp"
-          on:change={handleRefFileSelected}
-          style="display: none;"
-        />
-
-        <!-- Add Image Reference Button (max 2) -->
-        <button
-          type="button"
-          class="attach-ref-btn"
-          class:active={attachedReferences.length > 0}
-          disabled={attachedReferences.length >= 2 || isUploadingRef}
-          title={attachedReferences.length >= 2 ? $_("krea_attach_ref_max", {}, "Прикреплено 2 референса (максимум)") : $_("krea_attach_ref_title", {}, "Добавить картинку-референс (до 2 штук)")}
-          on:click={() => refFileInputEl?.click()}
-        >
-          {#if isUploadingRef}
-            <svg class="spin-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10" stroke-opacity="0.25" />
-              <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round" />
-            </svg>
-          {:else}
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
-          {/if}
-          {#if attachedReferences.length > 0}
-            <span class="ref-badge-num">{attachedReferences.length}</span>
-          {/if}
-        </button>
-
-        <button
-          type="button"
-          class="prompts-history-btn"
-          class:active={showPromptsPopup}
-          title={$_("krea_prompt_history", {}, "История промптов")}
-          on:click|stopPropagation={() => (showPromptsPopup = !showPromptsPopup)}
-        >
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-        </button>
-
-        <button
-          type="button"
-          class="random-idea-btn"
-          class:spinning={isRandomizingPrompt}
-          disabled={isRandomizingPrompt}
-          title={$_("krea_random_idea", {}, "Случайная идея (AI)")}
-          on:click={pickRandomSuggestion}
-        >
-          <span class="dice-icon">🎲</span>
-        </button>
-
         <button
           class="generate-submit-btn"
           class:busy={isGenerating}
           disabled={isGenerating || (!promptText.trim() && selectedPersonas.length === 0)}
-          on:click={runGeneration}
+          on:click={() => runGeneration()}
         >
           {#if isGenerating}
             <div class="spinner"></div>
@@ -4033,7 +5711,9 @@
             {:else if generatingStage === "saving"}
               <span>{$_("krea_saving", {}, "Сохранение")} {generationElapsed}s</span>
             {:else}
-              <span>{$_("krea_generating", {}, "Генерация")} {generationElapsed}s</span>
+              <span>
+                {$_("krea_generating", {}, "Генерация")}{#if generatingTotalSteps > 0 && generatingStep > 0}&nbsp;{generatingStep}/{generatingTotalSteps}{/if} {generationElapsed}s
+              </span>
             {/if}
           {:else}
             <span class="btn-sparkle">✨</span>
@@ -4043,6 +5723,498 @@
       </div>
     </div>
   </footer>
+  </div>
+
+  <!-- 🎬 AI DIRECTOR'S CHAIR RIGHT PANEL -->
+  {#if showDirectorPanel}
+    <aside
+      class="director-panel"
+      class:resizing={isResizingDirector}
+      style={innerWidth > 960 ? `width: ${directorWidth}px; min-width: ${directorWidth}px; max-width: ${directorWidth}px;` : ""}
+      transition:fly={{ x: 40, duration: 180 }}
+    >
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div
+        class="director-resize-handle"
+        class:active={isResizingDirector}
+        title="Потяните за край для изменения ширины (двойной клик — сброс)"
+        on:pointerdown={startDirectorResize}
+        on:dblclick={resetDirectorWidth}
+      ></div>
+      <div class="director-header">
+        <div class="director-title-group">
+          <span class="director-icon">🎬</span>
+          <div>
+            <div class="director-title">Режиссёрское кресло</div>
+            <div class="director-subtitle">Постановка сцен и умные промпты</div>
+          </div>
+        </div>
+        <button type="button" class="director-close-btn" title="Скрыть панель" on:click={toggleDirectorPanel}>✕</button>
+      </div>
+
+      <div class="director-mode-tabs">
+        <button
+          type="button"
+          class="director-tab-btn"
+          class:active={directorTab === "prompt"}
+          on:click={() => (directorTab = "prompt")}
+        >
+          ✍️ Промпт-ассистент
+        </button>
+        <button
+          type="button"
+          class="director-tab-btn"
+          class:active={directorTab === "storyboard"}
+          on:click={() => { directorTab = "storyboard"; loadSavedStories().catch(() => {}); }}
+        >
+          🎞️ Сценарий
+          {#if storyScenes.length > 0}
+            <span class="director-tab-badge">{storyScenes.length}</span>
+          {/if}
+        </button>
+      </div>
+
+      {#if directorTab === "prompt"}
+        <!-- TAB 1: PROMPT CO-PILOT -->
+        <div class="director-context-bar">
+          <span class="ctx-chip">
+            {sliders.base_model === "anima" ? "🌸 Anima" : (sliders.base_model === "semi_realism" ? "🎨 Muse" : "📸 Krea 2")}
+          </span>
+          {#if selectedPersonas.length > 0}
+            <span class="ctx-chip persona">👤 {selectedPersonas.map((p) => p.name).join(", ")}</span>
+          {/if}
+          <span class="ctx-chip muted">
+            {promptText.trim() ? `${promptText.trim().length} симв.` : "Пустой промпт"}
+          </span>
+          {#if promptUndoStack.length > 0}
+            <button type="button" class="ctx-undo-btn" title="Вернуть предыдущий вариант промпта в композере" on:click={undoDirectorPrompt}>
+              ↶ Откат
+            </button>
+          {/if}
+        </div>
+
+        <div class="director-quick-chips">
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Придумай атмосферный сюжет и детальную сцену под выбранную модель, стиль и персону: ")}>✨ Придумать сюжет</button>
+          <button type="button" class="quick-chip" title="Вставьте ссылку на кадр CivitAI (.com / .red) и напишите правку — модель, LoRA и промпт подтянутся автоматически!" on:click={() => applyDirectorQuickHint("https://civitai.red/images/ — ")}>🔗 Ссылка CivitAI</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Поменяй позу и ракурс: пусть ")}>🧍‍♀️ Поза / ракурс</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Смени одежду на: ")}>👗 Наряд</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Перенеси действие в локацию и настрой свет: ")}>🌆 Сеттинг и свет</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Добавь живой эмоции, игривого взгляда и чувственности, сохранив композицию")}>🔥 Эмоции / шарм</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Переведи на английский и адаптируй структуру промпта идеально под выбранную базовую модель")}>🎯 Под модель</button>
+        </div>
+
+        <div class="director-feed" bind:this={directorFeedEl}>
+          {#if directorMessages.length === 0}
+            <div class="director-empty-hint">
+              <div class="empty-clapper">🎬</div>
+              <p><strong>Киньте ссылку с CivitAI</strong> (например, <code>civitai.red/images/...</code> + правку <em>«пусть держит в руке меч»</em>) — модель, веса LoRA и промпт подтянутся сами!</p>
+              <p>Либо опишите идею с нуля или поправьте промпт из композера обычными словами.</p>
+            </div>
+          {:else}
+            {#each directorMessages as msg (msg.id)}
+              <div class="director-msg {msg.role}" class:error={msg.isError}>
+                <div class="msg-bubble">{msg.text}</div>
+                {#if msg.role === "assistant" && msg.promptSnapshot}
+                  <div class="msg-prompt-preview">
+                    <div class="msg-prompt-text">{msg.promptSnapshot}</div>
+                    <div class="msg-prompt-actions">
+                      <button type="button" class="mini-act-btn" on:click={() => applyDirectorSnapshot(msg.promptSnapshot, msg.appliedSettings)}>
+                        ✓ В композер
+                      </button>
+                      <button type="button" class="mini-act-btn" on:click={() => copyPrompt(msg.promptSnapshot, msg.id)}>
+                        {copiedPromptId === msg.id ? "Скопировано!" : "Копировать"}
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+          {#if isDirectorThinking}
+            <div class="director-msg assistant">
+              <div class="msg-bubble thinking-bubble">
+                <span class="dot-pulse"></span> {isDirectorImportingCivitai ? "Извлекаю пресет с CivitAI и ставлю мизансцену..." : "Режиссёр переписывает мизансцену..."}
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="director-composer">
+          <textarea
+            bind:this={directorInputEl}
+            bind:value={directorInput}
+            rows="1"
+            class="director-textarea"
+            placeholder="Ссылка с CivitAI + правка или любая сцена..."
+            on:input={resizeDirectorTextarea}
+            on:keydown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                askDirectorPrompt(true);
+              } else if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                askDirectorPrompt(false);
+              }
+            }}
+          ></textarea>
+          <div class="director-composer-btns">
+            {#if directorMessages.length > 0}
+              <button
+                type="button"
+                class="dir-clear-btn"
+                title="Очистить переписку с режиссёром"
+                on:click={() => { directorMessages = []; try { sessionStorage.removeItem("krea_director_msgs_v1"); } catch (_) {} }}
+              >
+                Очистить
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="dir-rewrite-btn"
+              disabled={isDirectorThinking || !directorInput.trim()}
+              on:click={() => askDirectorPrompt(false)}
+              title="Собрать или обновить промпт в Студии (Enter)"
+            >
+              ✍️ Обновить промпт
+            </button>
+            <button
+              type="button"
+              class="dir-shoot-now-btn"
+              disabled={isDirectorThinking || isGenerating || !directorInput.trim()}
+              on:click={() => askDirectorPrompt(true)}
+              title="Обновить промпт и сразу снять кадр (Ctrl+Enter)"
+            >
+              ⚡ Снять
+            </button>
+          </div>
+        </div>
+      {:else}
+        <!-- TAB 2: MULTI-SCENE STORYBOARD & COMICS -->
+        <div class="storyboard-body">
+          <!-- Saved Stories & New Story Bar -->
+          <div class="story-projects-bar">
+            <select
+              class="story-select"
+              value={storySlug}
+              on:change={(e) => {
+                const val = e.target.value;
+                if (!val) return;
+                const found = savedStoriesList.find((x) => x.story_slug === val);
+                if (found) openSavedStory(found);
+              }}
+            >
+              <option value="">📂 Сохранённые истории ({savedStoriesList.length})</option>
+              {#each savedStoriesList as st}
+                <option value={st.story_slug}>{st.story_title} ({st.scene_count || (st.story?.scenes?.length || 0)} сц.)</option>
+              {/each}
+            </select>
+            <button type="button" class="story-new-btn" title="Новая история с чистого листа" on:click={() => startFreshStory(false)}>
+              + Новая
+            </button>
+            {#if storySetting.trim() && storyScenes.length > 0}
+              <button type="button" class="story-new-btn subtle" title="Новая история в этом же сеттинге" on:click={() => startFreshStory(true)}>
+                В том же мире
+              </button>
+            {/if}
+          </div>
+
+          <!-- Collapsible Setting & Plot Card -->
+          <div class="story-setup-card">
+            <button type="button" class="setup-card-toggle" on:click={() => (isSetupCollapsed = !isSetupCollapsed)}>
+              <span class="setup-toggle-title">
+                🌍 {storyTitle.trim() || "Сеттинг и завязка"}
+                {#if storySlug}
+                  <span class="slug-pill">/{storySlug}</span>
+                {/if}
+              </span>
+              <span>{isSetupCollapsed ? "▼" : "▲"}</span>
+            </button>
+
+            {#if !isSetupCollapsed}
+              <div class="setup-fields">
+                <input
+                  type="text"
+                  class="dir-input"
+                  placeholder="Название истории (или придумает Режиссёр)"
+                  bind:value={storyTitle}
+                  on:input={saveActiveDraftStoryToLocal}
+                />
+
+                <div class="field-label-row">
+                  <span>Сеттинг / мир и атмосфера:</span>
+                  {#if storySetting.trim()}
+                    <button type="button" class="text-link-btn" on:click={saveSettingPreset}>📌 В пресеты</button>
+                  {/if}
+                </div>
+                {#if savedSettingPresets.length > 0}
+                  <div class="setting-presets-row">
+                    {#each savedSettingPresets as sp (sp.id)}
+                      <div class="preset-chip-wrap">
+                        <button type="button" class="preset-chip" on:click={() => { storySetting = sp.setting; saveActiveDraftStoryToLocal(); }} title={sp.setting}>
+                          {sp.label}
+                        </button>
+                        <button type="button" class="preset-chip-x" on:click={() => deleteSettingPreset(sp.id)}>✕</button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                <textarea
+                  rows="2"
+                  class="dir-textarea"
+                  placeholder="Например: Дождливый вечер в пентхаусе над неоновым Токио, тёплый свет камина..."
+                  bind:value={storySetting}
+                  on:input={saveActiveDraftStoryToLocal}
+                ></textarea>
+
+                <div class="field-label-row">
+                  <span>{storyScenes.length > 0 ? "Что происходит дальше (или новая завязка):" : "Завязка сюжета в двух словах:"}</span>
+                </div>
+                <textarea
+                  rows="2"
+                  class="dir-textarea"
+                  placeholder="Опишите идею или поворот сюжета простыми словами..."
+                  bind:value={storyIdea}
+                  on:input={saveActiveDraftStoryToLocal}
+                ></textarea>
+
+                <div class="plan-controls-row">
+                  <label class="scene-count-label">
+                    Кадров:
+                    <select bind:value={storySceneCount} class="count-select">
+                      <option value={2}>2</option>
+                      <option value={3}>3</option>
+                      <option value={4}>4</option>
+                      <option value={5}>5</option>
+                      <option value={6}>6</option>
+                    </select>
+                  </label>
+
+                  {#if storyScenes.length > 0}
+                    <button
+                      type="button"
+                      class="plan-btn secondary"
+                      disabled={isPlanningStory}
+                      on:click={() => planOrContinueStory("plan")}
+                    >
+                      🔄 Заново
+                    </button>
+                    <button
+                      type="button"
+                      class="plan-btn primary"
+                      disabled={isPlanningStory}
+                      on:click={() => planOrContinueStory("continue")}
+                    >
+                      {isPlanningStory ? "Пишем..." : `➕ Продолжить (+${storySceneCount})`}
+                    </button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="plan-btn primary full"
+                      disabled={isPlanningStory}
+                      on:click={() => planOrContinueStory("plan")}
+                    >
+                      {isPlanningStory ? "🎬 Режиссёр расписывает сцены..." : `🎬 Разложить на ${storySceneCount} сцен`}
+                    </button>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <!-- Scenes List -->
+          <div class="story-scenes-list">
+            {#if storyScenes.length === 0 && !isPlanningStory}
+              <div class="director-empty-hint compact">
+                <p>Задайте <strong>Сеттинг</strong> и пару слов <strong>Завязки</strong> выше (не забудьте выбрать Персону, если история с ней) — Режиссёр напишет художественный текст, диалоги и визуальные промпты кадров.</p>
+              </div>
+            {:else}
+              {#each storyScenes as sc, idx (sc.id || idx)}
+                <div class="scene-card" class:shooting={shootingSceneIdx === idx} class:done={!!sc.image_name}>
+                  <div class="scene-card-head">
+                    <span class="scene-num">#{sc.scene_number || idx + 1}</span>
+                    <input
+                      type="text"
+                      class="scene-title-input"
+                      bind:value={sc.title}
+                      on:change={saveActiveDraftStoryToLocal}
+                    />
+                    <select
+                      class="scene-aspect-select"
+                      bind:value={sc.aspect}
+                      on:change={saveActiveDraftStoryToLocal}
+                      title="Формат кадра"
+                    >
+                      <option value="896x1152">3:4</option>
+                      <option value="1024x1024">1:1</option>
+                      <option value="1152x896">4:3</option>
+                    </select>
+                    <button type="button" class="scene-del-btn" title="Удалить сцену" on:click={() => removeStoryScene(idx)}>✕</button>
+                  </div>
+
+                  {#if sc.blobUrl || sc.image_path}
+                    <div class="scene-thumb-box">
+                      <img
+                        src={sc.blobUrl || getThumbnailUrl({ path: sc.image_path, name: sc.image_name })}
+                        alt={sc.title}
+                        class="scene-thumb-img"
+                      />
+                      <span class="scene-done-badge">✓ Снято</span>
+                    </div>
+                  {/if}
+
+                  <textarea
+                    rows="3"
+                    class="scene-narrative-box"
+                    placeholder="Художественный текст сцены и диалоги..."
+                    bind:value={sc.narrative}
+                    on:change={saveActiveDraftStoryToLocal}
+                  ></textarea>
+
+                  <div class="scene-sub-toggles">
+                    <button type="button" class="scene-sub-link" on:click={() => { sc.showPrompt = !sc.showPrompt; storyScenes = [...storyScenes]; }}>
+                      🎥 Промпт кадра {sc.showPrompt ? "▲" : "▼"}
+                    </button>
+                    <button type="button" class="scene-sub-link" on:click={() => { sc.showRefine = !sc.showRefine; storyScenes = [...storyScenes]; }}>
+                      🪄 AI-правка
+                    </button>
+                    <button
+                      type="button"
+                      class="scene-sub-link"
+                      title="Отправить промпт этой сцены в основной композер Студии"
+                      on:click={() => { pushPromptUndo(promptText); promptText = sc.visual_prompt; tick().then(resizeTextarea); }}
+                    >
+                      ↗ В композер
+                    </button>
+                  </div>
+
+                  {#if sc.showPrompt}
+                    <textarea
+                      rows="3"
+                      class="scene-vprompt-box"
+                      placeholder="English diffusion visual prompt..."
+                      bind:value={sc.visual_prompt}
+                      on:change={saveActiveDraftStoryToLocal}
+                    ></textarea>
+                  {/if}
+
+                  {#if sc.showRefine}
+                    <div class="scene-refine-row">
+                      <input
+                        type="text"
+                        class="dir-input small"
+                        placeholder="Что поменять в этой сцене?.."
+                        bind:value={sc.refineText}
+                        on:keydown={(e) => e.key === "Enter" && refineSingleScene(idx)}
+                      />
+                      <button
+                        type="button"
+                        class="mini-act-btn primary"
+                        disabled={refiningSceneIdx !== -1 || !(sc.refineText || "").trim()}
+                        on:click={() => refineSingleScene(idx)}
+                      >
+                        {refiningSceneIdx === idx ? "..." : "Ок"}
+                      </button>
+                    </div>
+                  {/if}
+
+                  <div class="scene-actions-row">
+                    <button
+                      type="button"
+                      class="shoot-scene-btn"
+                      disabled={isGenerating}
+                      on:click={() => shootSingleScene(idx)}
+                    >
+                      {#if shootingSceneIdx === idx}
+                        ⏳ Съёмка ({generationElapsed}s)...
+                      {:else if sc.image_name}
+                        🔄 Переснять кадр
+                      {:else}
+                        🎬 Снять кадр
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+
+              <div class="story-continue-inline">
+                <button type="button" class="add-scene-inline-btn" on:click={addManualStoryScene}>+ Пустая сцена</button>
+                <button
+                  type="button"
+                  class="add-scene-inline-btn highlight"
+                  disabled={isPlanningStory}
+                  on:click={() => { isSetupCollapsed = false; }}
+                >
+                  ➕ Продолжить сюжет...
+                </button>
+              </div>
+            {/if}
+          </div>
+
+          <!-- Sticky Storyboard Footer -->
+          {#if storyScenes.length > 0}
+            <div class="storyboard-footer">
+              {#if isShootingSeries}
+                <button type="button" class="series-stop-btn" on:click={() => (stopSeriesRequested = true)}>
+                  ⏹ Остановить после текущего кадра
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="series-shoot-all-btn"
+                  disabled={isGenerating}
+                  on:click={shootAllRemainingScenes}
+                >
+                  ▶️ Снять серию ({storyScenes.filter((s) => !s.image_name).length || storyScenes.length})
+                </button>
+              {/if}
+              <div class="storyboard-footer-sub">
+                <button
+                  type="button"
+                  class="story-util-btn"
+                  disabled={isSavingStory}
+                  on:click={() => persistCurrentStory(false)}
+                  title="Сохранить иллюстрированный Readme.md и story.json в папку истории"
+                >
+                  {isSavingStory ? "💾..." : "💾 Story.md"}
+                </button>
+                {#if storySlug}
+                  <button
+                    type="button"
+                    class="story-util-btn"
+                    on:click={() => selectStorySubfolder(storySlug)}
+                    title="Показать папку этой истории в Галерее"
+                  >
+                    📁 В галерее
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="story-util-btn"
+                  disabled={isExportingStory}
+                  on:click={() => exportStoryPack(false)}
+                  title="Скачать ZIP-архив со всеми кадрами и Story.md"
+                >
+                  {isExportingStory ? "📦..." : "📦 ZIP"}
+                </button>
+                {#if canPublishCivitai}
+                  <button
+                    type="button"
+                    class="story-util-btn civitai"
+                    disabled={isPublishingCivitai}
+                    on:click={openPublishStoryToCivitai}
+                    title="Прямая публикация всех отснятых кадров и сюжета на CivitAI по API"
+                  >
+                    🚀 В CivitAI
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </aside>
+  {/if}
+  </div>
 
   <!-- Modal: Manual Create/Edit Persona -->
   {#if showPersonaModal}
@@ -4104,6 +6276,100 @@
               class="modal-textarea"
             ></textarea>
             <span class="field-hint">{$_("krea_passport_hint", {}, "Krea 2 фиксирует лицо строго по этому паспорту. Фотография лица анализируется Vision-нейросетью для извлечения черт лица.")}</span>
+          </div>
+
+          <div class="modal-field">
+            <label for="p-personality">{$_("krea_persona_personality", {}, "Характер, биография и манера речи (Lore & Voice):")}</label>
+            <textarea
+              id="p-personality"
+              rows="3"
+              placeholder={$_("krea_persona_personality_placeholder", {}, "например: 23 года, графический дизайнер, самоирония, любит утренний чёрный кофе, винтаж и плёночное зерно, пишет просто и тепло от первого лица...")}
+              bind:value={personaFormPersonality}
+              class="modal-textarea"
+            ></textarea>
+            <span class="field-hint">{$_("krea_personality_hint", {}, "Инжектится в контекст LLM для Режиссёра, реплик в раскадровке, постов от лица персоны и будущих диалогов в чате.")}</span>
+          </div>
+
+          <div class="modal-field" style="background: rgba(120, 140, 255, 0.05); border: 1px solid rgba(120, 140, 255, 0.18); border-radius: 10px; padding: 10px 12px;">
+            <div class="modal-label-row" style="align-items: center; justify-content: space-between; display: flex; gap: 8px; flex-wrap: wrap;">
+              <label style="display: inline-flex; align-items: center; gap: 8px; margin: 0; cursor: pointer;">
+                <input type="checkbox" bind:checked={personaFormPresetEnabled} />
+                <span>🎛️ {$_("krea_persona_native_preset", {}, "Закрепить родную модель и веса LoRA за персоной")}</span>
+              </label>
+              <button
+                type="button"
+                class="vision-inline-link"
+                on:click={captureStudioSettingsIntoPersonaForm}
+              >
+                📥 {$_("krea_capture_studio_settings", {}, "Взять текущие из Студии")}
+              </button>
+            </div>
+            {#if personaFormPresetEnabled}
+              <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 9px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: center;">
+                  <div>
+                    <label for="p-base-model" style="font-size: 11.5px; opacity: 0.85;">{$_("krea_base_engine", {}, "Базовая модель:")}</label>
+                    <select id="p-base-model" bind:value={personaFormBaseModel} class="select-styled modal-input">
+                      <option value="realism">Krea 2 Realism</option>
+                      <option value="semi_realism">Muse Semi-Realism</option>
+                      <option value="anima">Anima Aesthetic 2D</option>
+                    </select>
+                  </div>
+                  <div style="padding-top: 14px;">
+                    <label style="display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;">
+                      <input type="checkbox" bind:checked={personaFormUseFaceRef} />
+                      <span>📸 Face Lock с аватара</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <span style="font-size: 11.5px; opacity: 0.85;">{$_("krea_persona_archetypes", {}, "Персонажные LoRA / Типажи:")}</span>
+                  <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px;">
+                    {#each personaModalArchetypes as arch}
+                      <button
+                        type="button"
+                        on:click={() => togglePersonaFormArchetype(arch.id)}
+                        style="font-size: 12px; padding: 4px 9px; border-radius: 7px; cursor: pointer; border: 1px solid {personaFormArchetypes.includes(arch.id) ? '#6c8cff' : 'rgba(255,255,255,0.14)'}; background: {personaFormArchetypes.includes(arch.id) ? 'rgba(108,140,255,0.22)' : 'rgba(0,0,0,0.2)'}; color: inherit;"
+                      >
+                        {arch.icon || ""} {arch.name}
+                      </button>
+                    {/each}
+                  </div>
+                  {#each personaFormArchetypes as aid}
+                    <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px;">
+                      <span style="min-width: 90px; opacity: 0.85;">Вес {aid}:</span>
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="1.4"
+                        step="0.05"
+                        value={personaFormArchetypeWeights[aid] ?? 0.8}
+                        on:input={(ev) => { personaFormArchetypeWeights = { ...personaFormArchetypeWeights, [aid]: parseFloat(ev.target.value) }; }}
+                        style="flex: 1;"
+                      />
+                      <span style="min-width: 34px; text-align: right;">{(personaFormArchetypeWeights[aid] ?? 0.8).toFixed(2)}</span>
+                    </div>
+                  {/each}
+                </div>
+
+                <div>
+                  <span style="font-size: 11.5px; opacity: 0.85;">{$_("krea_persona_styles", {}, "Стилевые LoRA (необязательно):")}</span>
+                  <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px;">
+                    {#each personaModalStyles as st}
+                      <button
+                        type="button"
+                        on:click={() => togglePersonaFormStyle(st.id)}
+                        style="font-size: 12px; padding: 4px 9px; border-radius: 7px; cursor: pointer; border: 1px solid {personaFormStyles.includes(st.id) ? '#6c8cff' : 'rgba(255,255,255,0.14)'}; background: {personaFormStyles.includes(st.id) ? 'rgba(108,140,255,0.22)' : 'rgba(0,0,0,0.2)'}; color: inherit;"
+                      >
+                        {st.icon || ""} {st.name}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+                <span class="field-hint">При выборе этой персоны Студия (и автогенерация) автоматически подставит её модель и веса. Для собственной LoRA (например, Kate) Face Lock лучше отключить.</span>
+              </div>
+            {/if}
           </div>
 
           <div class="modal-field">
@@ -4173,6 +6439,17 @@
               </div>
             </div>
           </div>
+          {#if effectiveCivitaiAccounts.length > 0}
+            <div class="modal-field">
+              <label for="p-civitai-acc">Аккаунт публикации на CivitAI (MCP):</label>
+              <select id="p-civitai-acc" bind:value={personaFormCivitaiAccount} class="select-styled modal-input">
+                <option value="">По умолчанию</option>
+                {#each effectiveCivitaiAccounts as acc}
+                  <option value={acc.id}>{acc.label}</option>
+                {/each}
+              </select>
+            </div>
+          {/if}
         </div>
 
         <div class="modal-footer">
@@ -4184,6 +6461,150 @@
           >
             {isSavingPersona ? $_("krea_saving", {}, "Сохранение...") : $_("krea_save", {}, "Сохранить")}
           </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Modal: Direct CivitAI API Publish -->
+  {#if showCivitaiPublishModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => { if (!isPublishingCivitai) showCivitaiPublishModal = false; }}>
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="persona-modal-card civitai-publish-modal" on:click|stopPropagation>
+        <div class="modal-header">
+          <h3>🚀 Публикация на CivitAI {civitaiPubMode === "story" ? `(${civitaiPubItems.length} кадр.)` : ""}</h3>
+          <button class="modal-close-btn" disabled={isPublishingCivitai} on:click={() => (showCivitaiPublishModal = false)}>✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="modal-field">
+            <label for="civ-pub-acc">Аккаунт публикации (из ваших MCP-ключей):</label>
+            <select id="civ-pub-acc" bind:value={civitaiPubAccountId} class="select-styled modal-input" disabled={isPublishingCivitai}>
+              {#each effectiveCivitaiAccounts as acc}
+                <option value={acc.id}>{acc.label}</option>
+              {/each}
+              <option value="custom">➕ Добавить / другой API-ключ CivitAI...</option>
+            </select>
+          </div>
+
+          {#if civitaiPubAccountId === "custom"}
+            <div class="modal-field">
+              <label for="civ-pub-tok">API-ключ CivitAI (Bearer):</label>
+              <input
+                id="civ-pub-tok"
+                type="password"
+                placeholder="Вставьте API-ключ нужного аккаунта CivitAI..."
+                bind:value={civitaiPubCustomToken}
+                class="modal-input"
+                disabled={isPublishingCivitai}
+              />
+              <label class="civitai-check-row" style="margin-top: 6px;">
+                <input type="checkbox" bind:checked={civitaiPubSaveKey} disabled={isPublishingCivitai} />
+                <span>Сохранить этот аккаунт в мои MCP-ключи (зашифровано в DID)</span>
+              </label>
+            </div>
+          {/if}
+
+          <div class="modal-field">
+            <label for="civ-pub-title">Заголовок поста:</label>
+            <input
+              id="civ-pub-title"
+              type="text"
+              placeholder="Название работы или серии..."
+              bind:value={civitaiPubTitle}
+              class="modal-input"
+              disabled={isPublishingCivitai}
+            />
+          </div>
+
+          <div class="modal-field">
+            <label for="civ-pub-detail">Описание / история:</label>
+            <textarea
+              id="civ-pub-detail"
+              rows={civitaiPubMode === "story" ? 5 : 3}
+              placeholder="Подпись к посту на CivitAI (необязательно)..."
+              bind:value={civitaiPubDetail}
+              class="modal-textarea"
+              disabled={isPublishingCivitai}
+            ></textarea>
+          </div>
+
+          <div class="modal-field">
+            <label for="civ-pub-tags">Теги (через запятую, необязательно):</label>
+            <input
+              id="civ-pub-tags"
+              type="text"
+              placeholder="например: anime, portrait, cyberpunk"
+              bind:value={civitaiPubTags}
+              class="modal-input"
+              disabled={isPublishingCivitai}
+            />
+          </div>
+
+          <div class="civitai-pub-toggles">
+            <label class="civitai-check-row">
+              <input type="checkbox" bind:checked={civitaiPubIncludeMeta} disabled={isPublishingCivitai} />
+              <span>Прикрепить промпт, чекпоинт и LoRA (для попадания в галереи моделей)</span>
+            </label>
+            <label class="civitai-check-row">
+              <input type="checkbox" bind:checked={civitaiPubImmediate} disabled={isPublishingCivitai} />
+              <span>Опубликовать сразу (если снять — сохранится как черновик на аккаунте)</span>
+            </label>
+          </div>
+
+          {#if civitaiPubError}
+            <div class="civitai-pub-alert error">⚠️ {civitaiPubError}</div>
+          {/if}
+
+          {#if civitaiPubResult}
+            <div class="civitai-pub-alert success">
+              <div class="civitai-pub-success-head">
+                <strong>
+                  {civitaiPubResult.published ? "✅ Пост опубликован!" : "📝 Черновик сохранён!"}
+                </strong>
+                {#if civitaiPubResult.username}
+                  <span class="civitai-user-pill">@{civitaiPubResult.username}</span>
+                {/if}
+              </div>
+              {#if civitaiPubResult.linked_resources && civitaiPubResult.linked_resources.length > 0}
+                <div class="civitai-linked-res">
+                  Привязаны ресурсы: {civitaiPubResult.linked_resources.join(" • ")}
+                </div>
+              {/if}
+              <div class="civitai-pub-links">
+                <a href={civitaiPubResult.post_url} target="_blank" rel="noopener noreferrer" class="civitai-open-post-btn">
+                  Открыть на CivitAI ↗
+                </a>
+                {#if civitaiPubResult.published && civitaiPubResult.edit_url}
+                  <a href={civitaiPubResult.edit_url} target="_blank" rel="noopener noreferrer" class="civitai-edit-post-link">
+                    Редактировать
+                  </a>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-footer">
+          <button class="cancel-btn" disabled={isPublishingCivitai} on:click={() => (showCivitaiPublishModal = false)}>
+            {civitaiPubResult ? "Готово" : "Отмена"}
+          </button>
+          {#if !civitaiPubResult}
+            <button
+              class="save-btn civitai-submit-btn"
+              disabled={isPublishingCivitai}
+              on:click={submitCivitaiPublish}
+            >
+              {#if isPublishingCivitai}
+                ⏳ Загрузка на CivitAI...
+              {:else}
+                {civitaiPubImmediate ? "🚀 Опубликовать" : "📝 В черновики"}
+              {/if}
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -4969,6 +7390,12 @@
     animation: indeterminateProgress 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
 
+  .progress-bar-fill.determinate {
+    left: 0;
+    animation: none;
+    transition: width 0.22s ease;
+  }
+
   @keyframes indeterminateProgress {
     0% { left: -35%; width: 35%; }
     50% { left: 40%; width: 45%; }
@@ -5032,6 +7459,8 @@
     font-size: 12px;
     gap: 6px;
     min-height: 40px;
+    position: relative;
+    overflow: hidden;
   }
 
   .card-meta {
@@ -5050,12 +7479,29 @@
     color: #cbd5e1;
     font-weight: 500;
     font-size: 11.5px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .card-thumb-badges {
+    position: absolute;
+    left: 7px;
+    right: 7px;
+    bottom: 7px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    pointer-events: none;
+    z-index: 2;
   }
 
   .persona-tag {
     font-size: 10px;
-    background: rgba(139, 92, 246, 0.2);
-    color: #c4b5fd;
+    background: rgba(30, 27, 75, 0.78);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    color: #ede9fe;
     padding: 2px 6px;
     border-radius: 6px;
     white-space: nowrap;
@@ -5064,8 +7510,10 @@
 
   .card-time-tag {
     font-size: 10px;
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.75);
+    background: rgba(15, 23, 42, 0.78);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #f8fafc;
     padding: 2px 6px;
     border-radius: 6px;
     white-space: nowrap;
@@ -5075,7 +7523,7 @@
     gap: 3px;
   }
   .card-time-tag .gpu-sub {
-    color: #a78bfa;
+    color: #c4b5fd;
     font-size: 9.5px;
     font-weight: 600;
   }
@@ -5085,6 +7533,28 @@
     align-items: center;
     gap: 3px;
     flex-shrink: 0;
+  }
+
+  @media (hover: hover) {
+    .gallery-card .card-toolbar {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
+      padding-left: 16px;
+      background: linear-gradient(90deg, rgba(15, 20, 30, 0) 0%, rgba(15, 20, 30, 0.96) 18%, rgba(15, 20, 30, 1) 100%);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.16s ease;
+    }
+    .gallery-card:hover .card-toolbar,
+    .gallery-card:focus-within .card-toolbar {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .krea-studio-root.light-theme .gallery-card .card-toolbar {
+      background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.96) 18%, #ffffff 100%);
+    }
   }
 
   .card-toolbar .toolbar-btn {
@@ -5148,6 +7618,18 @@
     box-sizing: border-box;
   }
 
+  .composer-controls-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  .pill-label-mobile {
+    display: none;
+  }
+
   .active-persona-pill {
     display: inline-flex;
     align-items: center;
@@ -5186,7 +7668,8 @@
     padding: 0 2px;
   }
 
-  .pick-persona-btn {
+  .pick-persona-btn,
+  .add-photo-pill {
     background: transparent;
     border: 1px solid rgba(167, 139, 250, 0.3);
     color: #c4b5fd;
@@ -5209,10 +7692,22 @@
     text-overflow: ellipsis;
   }
 
-  .pick-persona-btn:hover {
+  .pick-persona-btn:hover,
+  .add-photo-pill:hover:not(:disabled) {
     background: rgba(139, 92, 246, 0.15);
     border-color: rgba(167, 139, 250, 0.5);
     color: #ede9fe;
+  }
+
+  .add-photo-pill.active {
+    background: rgba(139, 92, 246, 0.2);
+    border-color: rgba(167, 139, 250, 0.5);
+    color: #ede9fe;
+  }
+
+  .add-photo-pill:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .composer-controls-right {
@@ -5224,6 +7719,7 @@
     flex-shrink: 0;
   }
 
+  .toggle-history-pill,
   .toggle-tokens-btn,
   .toggle-sliders-btn {
     background: transparent;
@@ -5244,6 +7740,7 @@
     transition: all 0.15s ease;
   }
 
+  .toggle-history-pill:hover,
   .toggle-tokens-btn:hover,
   .toggle-sliders-btn:hover {
     background: rgba(139, 92, 246, 0.15);
@@ -5251,6 +7748,8 @@
     color: #ede9fe;
   }
 
+  .toggle-history-pill.open,
+  .toggle-history-pill.active,
   .toggle-tokens-btn.open,
   .toggle-tokens-btn.active,
   .toggle-sliders-btn.open {
@@ -6202,18 +8701,20 @@
 
   .prompt-textarea {
     flex: 1;
+    display: block;
+    margin: 0;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 10px;
     color: #fff;
-    padding: 9px 14px;
+    padding: 10px 14px;
     font-size: 14px;
     font-family: inherit;
     resize: none;
     line-height: 20px;
-    height: 40px;
-    min-height: 40px;
-    max-height: 125px;
+    height: 42px;
+    min-height: 42px;
+    max-height: 126px;
     box-sizing: border-box;
     outline: none;
     overflow-y: hidden;
@@ -6228,28 +8729,6 @@
     display: flex;
     gap: 8px;
     align-items: center;
-  }
-
-  /* Prompts History Button */
-  .prompts-history-btn {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #94a3b8;
-    width: 42px;
-    height: 42px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .prompts-history-btn:hover,
-  .prompts-history-btn.active {
-    background: rgba(139, 92, 246, 0.2);
-    border-color: #8b5cf6;
-    color: #c084fc;
   }
 
   /* Prompts Popup */
@@ -6434,49 +8913,6 @@
     font-size: 0.85rem;
   }
 
-  .random-idea-btn {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #fff;
-    width: 42px;
-    height: 42px;
-    border-radius: 10px;
-    font-size: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .random-idea-btn:hover {
-    background: rgba(255, 255, 255, 0.15);
-  }
-
-  .random-idea-btn .dice-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    transform-origin: center center;
-    will-change: transform;
-    pointer-events: none;
-  }
-
-  .random-idea-btn.spinning {
-    opacity: 0.85;
-    cursor: wait;
-  }
-
-  .random-idea-btn.spinning .dice-icon {
-    animation: diceSpin 0.7s linear infinite;
-  }
-
-  @keyframes diceSpin {
-    0% { transform: rotate(0deg) scale(0.92); }
-    50% { transform: rotate(180deg) scale(1.18); }
-    100% { transform: rotate(360deg) scale(0.92); }
-  }
 
   .generate-submit-btn {
     height: 42px;
@@ -7180,13 +9616,11 @@
     color: #0f172a;
   }
   .krea-studio-root.light-theme .card-title {
-    color: #334155;
-  }
-  .krea-studio-root.light-theme .card-title {
     color: #1e293b;
   }
-  .krea-studio-root.light-theme .persona-tag {
+  .krea-studio-root.light-theme .placeholder-footer .persona-tag {
     background: #ede9fe;
+    border-color: rgba(109, 40, 217, 0.2);
     color: #6d28d9;
   }
 
@@ -7210,6 +9644,8 @@
     color: #7c3aed;
   }
   .krea-studio-root.light-theme .pick-persona-btn,
+  .krea-studio-root.light-theme .add-photo-pill,
+  .krea-studio-root.light-theme .toggle-history-pill,
   .krea-studio-root.light-theme .toggle-tokens-btn,
   .krea-studio-root.light-theme .toggle-sliders-btn,
   .krea-studio-root.light-theme .advanced-gear-btn {
@@ -7219,6 +9655,8 @@
     box-shadow: 0 1px 3px rgba(109, 40, 217, 0.06);
   }
   .krea-studio-root.light-theme .pick-persona-btn:hover,
+  .krea-studio-root.light-theme .add-photo-pill:hover:not(:disabled),
+  .krea-studio-root.light-theme .toggle-history-pill:hover,
   .krea-studio-root.light-theme .toggle-tokens-btn:hover,
   .krea-studio-root.light-theme .toggle-sliders-btn:hover,
   .krea-studio-root.light-theme .advanced-gear-btn:hover {
@@ -7226,6 +9664,9 @@
     color: #5b21b6;
     border-color: #a78bfa;
   }
+  .krea-studio-root.light-theme .add-photo-pill.active,
+  .krea-studio-root.light-theme .toggle-history-pill.open,
+  .krea-studio-root.light-theme .toggle-history-pill.active,
   .krea-studio-root.light-theme .toggle-tokens-btn.open,
   .krea-studio-root.light-theme .toggle-tokens-btn.active,
   .krea-studio-root.light-theme .toggle-sliders-btn.open,
@@ -7567,43 +10008,6 @@
   .krea-studio-root.light-theme .prompt-textarea:focus {
     border-color: #8b5cf6;
     box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
-  }
-  .krea-studio-root.light-theme .random-idea-btn {
-    background: #ffffff;
-    border-color: #cbd5e1;
-    color: #475569;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-  }
-  .krea-studio-root.light-theme .random-idea-btn:hover {
-    background: #f8fafc;
-    color: #0f172a;
-  }
-  .krea-studio-root.light-theme .prompts-history-btn {
-    background: #ffffff;
-    border-color: #cbd5e1;
-    color: #64748b;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-  }
-  .krea-studio-root.light-theme .prompts-history-btn:hover,
-  .krea-studio-root.light-theme .prompts-history-btn.active {
-    background: #f5f3ff;
-    border-color: #7c3aed;
-    color: #7c3aed;
-  }
-  .krea-studio-root.light-theme .attach-ref-btn {
-    background: #ffffff;
-    border-color: #cbd5e1;
-    color: #64748b;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-  }
-  .krea-studio-root.light-theme .attach-ref-btn:hover,
-  .krea-studio-root.light-theme .attach-ref-btn.active {
-    background: #f5f3ff;
-    border-color: #7c3aed;
-    color: #7c3aed;
-  }
-  .krea-studio-root.light-theme .ref-badge-num {
-    border-color: #ffffff;
   }
   .krea-studio-root.light-theme .attached-refs-bar {
     background: #ffffff;
@@ -8013,62 +10417,6 @@
     color: #c084fc;
   }
 
-  .attach-ref-btn {
-    position: relative;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #94a3b8;
-    width: 42px;
-    height: 42px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .attach-ref-btn svg {
-    display: block;
-    transition: transform 0.2s ease;
-  }
-
-  .attach-ref-btn:hover svg {
-    transform: scale(1.08);
-  }
-
-  .spin-icon {
-    animation: spin-ref 0.8s linear infinite;
-  }
-
-  @keyframes spin-ref {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
-  .attach-ref-btn:hover,
-  .attach-ref-btn.active {
-    background: rgba(139, 92, 246, 0.2);
-    border-color: #8b5cf6;
-    color: #c084fc;
-  }
-
-  .ref-badge-num {
-    position: absolute;
-    top: -4px;
-    right: -4px;
-    background: #8b5cf6;
-    color: #ffffff;
-    font-size: 0.65rem;
-    font-weight: 700;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 2px solid #0f172a;
-  }
 
   .card-ref-btn {
     background: rgba(255, 255, 255, 0.1);
@@ -8258,42 +10606,67 @@
       justify-content: space-between;
     }
 
-    .composer-controls-right {
-      margin-left: auto;
-      justify-content: flex-end;
+    .composer-controls-left {
       gap: 4px;
       flex-wrap: nowrap;
-      flex-shrink: 0;
-    }
-
-    .toggle-tokens-btn {
-      display: none !important;
-    }
-
-    .pick-persona-btn,
-    .active-persona-pill,
-    .toggle-sliders-btn,
-    .advanced-gear-btn {
-      font-size: 11px;
-      padding: 0 6px;
-      gap: 4px;
-      height: 26px;
-      white-space: nowrap;
-    }
-
-    .pick-persona-btn {
-      flex-shrink: 1;
       min-width: 0;
+      flex-shrink: 1;
+    }
+
+    .active-personas-wrap {
+      flex-wrap: nowrap;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .active-persona-pill .pill-name {
+      max-width: 58px;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
-    .toggle-sliders-btn,
-    .advanced-gear-btn {
+    .composer-controls-right {
+      margin-left: auto;
+      justify-content: flex-end;
+      gap: 3px;
+      flex-wrap: nowrap;
       flex-shrink: 0;
     }
 
-    /* Input Row: prompt full-width on top, action buttons row below */
+    .pill-label-desktop {
+      display: none !important;
+    }
+
+    .pill-label-mobile {
+      display: inline-flex;
+      align-items: center;
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .pick-persona-btn,
+    .add-more-personas-btn,
+    .add-photo-pill,
+    .active-persona-pill,
+    .toggle-director-pill,
+    .toggle-history-pill,
+    .toggle-tokens-btn,
+    .toggle-sliders-btn,
+    .advanced-gear-btn {
+      font-size: 11px;
+      padding: 0 6px;
+      gap: 3px;
+      height: 26px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .active-persona-pill {
+      flex-shrink: 1;
+      min-width: 0;
+    }
+
+    /* Input Row: prompt full-width on top, action button row below */
     .composer-input-row {
       flex-direction: column;
       align-items: stretch;
@@ -8315,14 +10688,6 @@
       display: flex;
       align-items: center;
       gap: 6px;
-    }
-
-    .attach-ref-btn,
-    .prompts-history-btn,
-    .random-idea-btn {
-      width: 40px;
-      height: 40px;
-      flex-shrink: 0;
     }
 
     .generate-submit-btn {
@@ -8360,12 +10725,1467 @@
     }
   }
 
-  @media (max-width: 440px) {
+  @media (max-width: 640px) {
     .mode-text-full {
       display: none;
     }
     .mode-text-short {
       display: inline;
+    }
+  }
+
+  /* =======================================================================
+     🎬 AI DIRECTOR'S CHAIR & SPLIT WORKSPACE STYLES
+     ======================================================================= */
+  .studio-body-split {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .studio-canvas-col {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .director-icon-btn.is-active {
+    color: #c4b5fd;
+    background: rgba(139, 92, 246, 0.16);
+    border-color: rgba(167, 139, 250, 0.45);
+  }
+
+  .toggle-director-pill {
+    background: transparent;
+    border: 1px solid rgba(167, 139, 250, 0.3);
+    color: #c4b5fd;
+    padding: 0 10px;
+    border-radius: 12px;
+    height: 26px;
+    font-size: 11px;
+    font-weight: 500;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .toggle-director-pill:hover {
+    background: rgba(139, 92, 246, 0.15);
+    border-color: rgba(167, 139, 250, 0.5);
+    color: #ede9fe;
+  }
+
+  .toggle-director-pill.open,
+  .toggle-director-pill.active {
+    background: rgba(139, 92, 246, 0.22);
+    border-color: rgba(167, 139, 250, 0.55);
+    color: #ede9fe;
+    font-weight: 600;
+  }
+
+  /* Story Subfolders Filter Bar in Gallery */
+  .story-folders-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .story-folder-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 14px;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #cbd5e1;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .story-folder-pill:hover {
+    background: rgba(139, 92, 246, 0.16);
+    border-color: rgba(139, 92, 246, 0.4);
+    color: #fff;
+  }
+
+  .story-folder-pill.active {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    border-color: transparent;
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .story-open-director-chip {
+    margin-left: auto;
+    padding: 5px 11px;
+    border-radius: 14px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(236, 72, 153, 0.18);
+    border: 1px solid rgba(236, 72, 153, 0.45);
+    color: #fbcfe8;
+    cursor: pointer;
+  }
+
+  /* Director Panel */
+  .director-panel {
+    position: relative;
+    flex-shrink: 0;
+    width: 390px;
+    min-width: 320px;
+    max-width: 820px;
+    height: 100%;
+    background: rgba(14, 18, 26, 0.98);
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+    z-index: 35;
+    box-shadow: -8px 0 28px rgba(0, 0, 0, 0.45);
+  }
+
+  .director-resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    width: 8px;
+    cursor: col-resize;
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+
+  .director-resize-handle::after {
+    content: "";
+    width: 2px;
+    height: 100%;
+    background: transparent;
+    transition: background 0.15s ease;
+  }
+
+  .director-resize-handle:hover::after,
+  .director-resize-handle.active::after {
+    background: #8b5cf6;
+  }
+
+  .director-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(22, 27, 38, 0.8);
+  }
+
+  .director-title-group {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .director-icon {
+    font-size: 20px;
+  }
+
+  .director-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #f8fafc;
+  }
+
+  .director-subtitle {
+    font-size: 11px;
+    color: #94a3b8;
+  }
+
+  .director-close-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 15px;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .director-close-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+  }
+
+  .director-mode-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin: 8px 12px;
+    padding: 3px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .director-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 10px;
+    border-radius: 9px;
+    border: none;
+    background: transparent;
+    color: #cbd5e1;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .director-tab-btn:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .director-tab-btn.active {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+  }
+
+  .director-tab-badge {
+    font-size: 10px;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 1px 6px;
+    border-radius: 8px;
+  }
+
+  .director-context-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.025);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .ctx-chip {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(167, 139, 250, 0.3);
+    background: rgba(139, 92, 246, 0.18);
+    color: #ede9fe;
+  }
+
+  .ctx-chip.persona {
+    border-color: rgba(244, 114, 182, 0.35);
+    background: rgba(236, 72, 153, 0.18);
+    color: #fce7f3;
+  }
+
+  .ctx-chip.muted {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+    color: #cbd5e1;
+  }
+
+  .ctx-undo-btn {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 7px;
+    border: 1px solid rgba(250, 204, 21, 0.45);
+    background: rgba(250, 204, 21, 0.15);
+    color: #fef08a;
+    cursor: pointer;
+  }
+
+  .director-quick-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .quick-chip {
+    font-size: 11px;
+    font-weight: 500;
+    font-family: inherit;
+    padding: 4px 9px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e2e8f0;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .quick-chip:hover {
+    background: rgba(139, 92, 246, 0.2);
+    border-color: rgba(167, 139, 250, 0.45);
+    color: #fff;
+  }
+
+  .director-feed {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .director-empty-hint {
+    margin: auto 0;
+    text-align: center;
+    color: #94a3b8;
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 16px 10px;
+  }
+
+  .director-empty-hint.compact {
+    margin: 12px 0;
+    padding: 14px 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+  }
+
+  .empty-clapper {
+    font-size: 28px;
+    margin-bottom: 8px;
+  }
+
+  .director-msg {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 94%;
+  }
+
+  .director-msg.user {
+    align-self: flex-end;
+  }
+
+  .director-msg.assistant {
+    align-self: flex-start;
+  }
+
+  .msg-bubble {
+    padding: 8px 11px;
+    border-radius: 11px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .director-msg.user .msg-bubble {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color: #fff;
+    border-bottom-right-radius: 3px;
+  }
+
+  .director-msg.assistant .msg-bubble {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #e2e8f0;
+    border-bottom-left-radius: 3px;
+  }
+
+  .director-msg.error .msg-bubble {
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #fca5a5;
+  }
+
+  .thinking-bubble {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #c4b5fd !important;
+  }
+
+  .dot-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ec4899;
+    animation: pulse 1s infinite ease-in-out;
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(0.85); opacity: 0.5; }
+    50% { transform: scale(1.2); opacity: 1; }
+  }
+
+  .msg-prompt-preview {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    border-radius: 9px;
+    padding: 8px 10px;
+  }
+
+  .msg-prompt-text {
+    font-size: 11.5px;
+    color: #cbd5e1;
+    line-height: 1.4;
+    max-height: 110px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .msg-prompt-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .mini-act-btn {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e2e8f0;
+    cursor: pointer;
+  }
+
+  .mini-act-btn.primary {
+    background: #8b5cf6;
+    border-color: transparent;
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .director-composer {
+    padding: 10px 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(18, 23, 33, 0.95);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .director-textarea {
+    width: 100%;
+    display: block;
+    margin: 0;
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    color: #f1f5f9;
+    padding: 10px 12px;
+    font-size: 13.5px;
+    line-height: 20px;
+    height: 42px;
+    min-height: 42px;
+    max-height: 140px;
+    font-family: inherit;
+    resize: none;
+    overflow-y: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .dir-textarea,
+  .dir-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9px;
+    color: #f1f5f9;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    font-family: inherit;
+    resize: vertical;
+  }
+
+  .director-textarea:focus,
+  .dir-textarea:focus,
+  .dir-input:focus {
+    outline: none;
+    border-color: #8b5cf6;
+  }
+
+  .dir-input.small {
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+
+  .director-composer-btns {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .dir-clear-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #94a3b8;
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+
+  .dir-rewrite-btn {
+    flex: 1;
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    border: none;
+    color: #fff;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .dir-shoot-now-btn {
+    background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%);
+    border: none;
+    color: #fff;
+    border-radius: 8px;
+    padding: 7px 11px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .dir-rewrite-btn:disabled,
+  .dir-shoot-now-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* Storyboard Tab */
+  .storyboard-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .story-projects-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .story-select {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 7px;
+    color: #e2e8f0;
+    padding: 5px 8px;
+    font-size: 11.5px;
+  }
+
+  .story-new-btn {
+    background: rgba(139, 92, 246, 0.18);
+    border: 1px solid rgba(139, 92, 246, 0.4);
+    color: #ddd6fe;
+    border-radius: 7px;
+    padding: 5px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .story-new-btn.subtle {
+    background: rgba(236, 72, 153, 0.14);
+    border-color: rgba(236, 72, 153, 0.35);
+    color: #fbcfe8;
+  }
+
+  .story-setup-card {
+    margin: 8px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.025);
+    flex-shrink: 0;
+  }
+
+  .setup-card-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 11px;
+    background: transparent;
+    border: none;
+    color: #e2e8f0;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .setup-toggle-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .slug-pill {
+    font-size: 10.5px;
+    color: #a78bfa;
+    margin-left: 4px;
+    font-weight: 500;
+  }
+
+  .setup-fields {
+    padding: 4px 10px 10px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .field-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #94a3b8;
+  }
+
+  .text-link-btn {
+    background: transparent;
+    border: none;
+    color: #c4b5fd;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .setting-presets-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .preset-chip-wrap {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(139, 92, 246, 0.14);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .preset-chip {
+    background: transparent;
+    border: none;
+    color: #ddd6fe;
+    font-size: 10.5px;
+    padding: 2px 6px;
+    cursor: pointer;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .preset-chip-x {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 10px;
+    padding: 2px 5px;
+    cursor: pointer;
+  }
+
+  .plan-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .scene-count-label {
+    font-size: 11.5px;
+    color: #94a3b8;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .count-select {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    color: #fff;
+    padding: 3px 5px;
+    font-size: 11.5px;
+  }
+
+  .plan-btn {
+    border: none;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    color: #fff;
+  }
+
+  .plan-btn.primary {
+    flex: 1;
+    background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+  }
+
+  .plan-btn.secondary {
+    background: rgba(255, 255, 255, 0.08);
+    color: #cbd5e1;
+  }
+
+  .plan-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .story-scenes-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 12px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .scene-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 11px;
+    padding: 9px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .scene-card.shooting {
+    border-color: #ec4899;
+    box-shadow: 0 0 14px rgba(236, 72, 153, 0.25);
+  }
+
+  .scene-card.done {
+    border-color: rgba(16, 185, 129, 0.35);
+  }
+
+  .scene-card-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .scene-num {
+    font-size: 11px;
+    font-weight: 700;
+    color: #c4b5fd;
+    background: rgba(139, 92, 246, 0.2);
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+
+  .scene-title-input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: #f1f5f9;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 2px 5px;
+  }
+
+  .scene-title-input:focus {
+    outline: none;
+    border-color: rgba(139, 92, 246, 0.5);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .scene-aspect-select {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 5px;
+    color: #cbd5e1;
+    font-size: 11px;
+    padding: 2px 4px;
+  }
+
+  .scene-del-btn {
+    background: transparent;
+    border: none;
+    color: #64748b;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .scene-del-btn:hover {
+    color: #f87171;
+  }
+
+  .scene-thumb-box {
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    max-height: 180px;
+    background: #05070a;
+  }
+
+  .scene-thumb-img {
+    width: 100%;
+    max-height: 180px;
+    object-fit: cover;
+    display: block;
+  }
+
+  .scene-done-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(16, 185, 129, 0.9);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+
+  .scene-narrative-box,
+  .scene-vprompt-box {
+    width: 100%;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    color: #e2e8f0;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.42;
+    font-family: inherit;
+    resize: vertical;
+  }
+
+  .scene-vprompt-box {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #cbd5e1;
+    border-color: rgba(139, 92, 246, 0.3);
+  }
+
+  .scene-sub-toggles {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .scene-sub-link {
+    background: transparent;
+    border: none;
+    color: #a78bfa;
+    font-size: 11px;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .scene-sub-link:hover {
+    text-decoration: underline;
+  }
+
+  .scene-refine-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .scene-actions-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .shoot-scene-btn {
+    width: 100%;
+    border: 1px solid rgba(139, 92, 246, 0.4);
+    background: rgba(139, 92, 246, 0.16);
+    color: #ede9fe;
+    border-radius: 7px;
+    padding: 5px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .shoot-scene-btn:hover:not(:disabled) {
+    background: #8b5cf6;
+    color: #fff;
+  }
+
+  .shoot-scene-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .story-continue-inline {
+    display: flex;
+    gap: 6px;
+    padding-top: 2px;
+  }
+
+  .add-scene-inline-btn {
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px dashed rgba(255, 255, 255, 0.16);
+    background: transparent;
+    color: #94a3b8;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+
+  .add-scene-inline-btn.highlight {
+    border-color: rgba(236, 72, 153, 0.45);
+    color: #f9a8d4;
+  }
+
+  .storyboard-footer {
+    padding: 10px 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(18, 23, 33, 0.96);
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .series-shoot-all-btn,
+  .series-stop-btn {
+    width: 100%;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .series-shoot-all-btn {
+    background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+  }
+
+  .series-stop-btn {
+    background: #ef4444;
+  }
+
+  .storyboard-footer-sub {
+    display: flex;
+    gap: 6px;
+  }
+
+  .story-util-btn {
+    flex: 1;
+    padding: 5px 8px;
+    border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: #cbd5e1;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .story-util-btn.civitai {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: rgba(56, 189, 248, 0.12);
+    color: #7dd3fc;
+  }
+
+  /* Light Theme Overrides for Director Panel & Buttons */
+  .krea-studio-root.light-theme .director-icon-btn.is-active {
+    background: #ede9fe;
+    border-color: #8b5cf6;
+    color: #5b21b6;
+  }
+
+  .krea-studio-root.light-theme .toggle-director-pill {
+    background: #ffffff;
+    border: 1px solid #c4b5fd;
+    color: #6d28d9;
+    box-shadow: 0 1px 3px rgba(109, 40, 217, 0.06);
+  }
+  .krea-studio-root.light-theme .toggle-director-pill:hover {
+    background: #f5f3ff;
+    color: #5b21b6;
+    border-color: #a78bfa;
+  }
+  .krea-studio-root.light-theme .toggle-director-pill.open,
+  .krea-studio-root.light-theme .toggle-director-pill.active {
+    background: #ede9fe;
+    color: #5b21b6;
+    border-color: #8b5cf6;
+    font-weight: 600;
+  }
+
+  .krea-studio-root.light-theme .story-folders-bar {
+    border-bottom-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .story-folder-pill:not(.active) {
+    background: #ffffff;
+    border-color: #cbd5e1;
+    color: #334155;
+  }
+  .krea-studio-root.light-theme .story-folder-pill:not(.active):hover {
+    background: #ede9fe;
+    border-color: #a78bfa;
+    color: #5b21b6;
+  }
+  .krea-studio-root.light-theme .story-open-director-chip {
+    background: #ede9fe;
+    border-color: #8b5cf6;
+    color: #5b21b6;
+  }
+
+  .krea-studio-root.light-theme .director-panel {
+    background: #f8fafc;
+    border-left-color: #cbd5e1;
+    color: #0f172a;
+    box-shadow: -6px 0 22px rgba(15, 23, 42, 0.08);
+  }
+  .krea-studio-root.light-theme .director-header,
+  .krea-studio-root.light-theme .director-composer,
+  .krea-studio-root.light-theme .storyboard-footer {
+    background: #ffffff;
+    border-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .director-title,
+  .krea-studio-root.light-theme .scene-title-input,
+  .krea-studio-root.light-theme .setup-card-toggle {
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .director-subtitle {
+    color: #475569;
+  }
+  .krea-studio-root.light-theme .director-close-btn {
+    color: #475569;
+  }
+  .krea-studio-root.light-theme .director-close-btn:hover {
+    background: #e2e8f0;
+    color: #0f172a;
+  }
+
+  .krea-studio-root.light-theme .director-mode-tabs {
+    background: #e2e8f0;
+    border-color: #cbd5e1;
+  }
+  .krea-studio-root.light-theme .director-tab-btn {
+    color: #334155;
+    background: transparent;
+  }
+  .krea-studio-root.light-theme .director-tab-btn:hover {
+    color: #0f172a;
+    background: rgba(255, 255, 255, 0.55);
+  }
+  .krea-studio-root.light-theme .director-tab-btn.active {
+    background: #ffffff;
+    color: #5b21b6;
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+  }
+  .krea-studio-root.light-theme .director-tab-badge {
+    background: #cbd5e1;
+    color: #1e293b;
+  }
+  .krea-studio-root.light-theme .director-tab-btn.active .director-tab-badge {
+    background: #ede9fe;
+    color: #5b21b6;
+  }
+
+  .krea-studio-root.light-theme .director-context-bar {
+    background: #ffffff;
+    border-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .ctx-chip {
+    background: #ede9fe;
+    border-color: #c4b5fd;
+    color: #5b21b6;
+    font-weight: 600;
+  }
+  .krea-studio-root.light-theme .ctx-chip.persona {
+    background: #fce7f3;
+    border-color: #f9a8d4;
+    color: #9d174d;
+    font-weight: 600;
+  }
+  .krea-studio-root.light-theme .ctx-chip.muted {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #334155;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .ctx-undo-btn {
+    background: #fef9c3;
+    border-color: #eab308;
+    color: #854d0e;
+  }
+
+  .krea-studio-root.light-theme .director-quick-chips {
+    background: #f8fafc;
+    border-bottom-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .quick-chip {
+    background: #ffffff;
+    border-color: #cbd5e1;
+    color: #1e293b;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+  .krea-studio-root.light-theme .quick-chip:hover {
+    background: #ede9fe;
+    border-color: #8b5cf6;
+    color: #5b21b6;
+  }
+
+  .krea-studio-root.light-theme .director-empty-hint {
+    color: #334155;
+  }
+  .krea-studio-root.light-theme .director-empty-hint.compact {
+    background: #ffffff;
+    border-color: #cbd5e1;
+    color: #334155;
+  }
+
+  .krea-studio-root.light-theme .director-msg.assistant .msg-bubble,
+  .krea-studio-root.light-theme .scene-card,
+  .krea-studio-root.light-theme .story-setup-card {
+    background: #ffffff;
+    border-color: #cbd5e1;
+    color: #0f172a;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  }
+  .krea-studio-root.light-theme .director-msg.error .msg-bubble {
+    background: #fef2f2;
+    border-color: #f87171;
+    color: #b91c1c;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .thinking-bubble {
+    color: #5b21b6 !important;
+  }
+  .krea-studio-root.light-theme .msg-prompt-preview {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+  }
+  .krea-studio-root.light-theme .msg-prompt-text {
+    color: #1e293b;
+  }
+  .krea-studio-root.light-theme .mini-act-btn {
+    background: #ffffff;
+    border-color: #cbd5e1;
+    color: #1e293b;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .mini-act-btn:hover {
+    background: #ede9fe;
+    border-color: #8b5cf6;
+    color: #5b21b6;
+  }
+  .krea-studio-root.light-theme .mini-act-btn.primary {
+    background: #6d28d9;
+    border-color: #6d28d9;
+    color: #ffffff;
+  }
+
+  .krea-studio-root.light-theme .director-textarea,
+  .krea-studio-root.light-theme .dir-textarea,
+  .krea-studio-root.light-theme .dir-input,
+  .krea-studio-root.light-theme .scene-narrative-box,
+  .krea-studio-root.light-theme .story-select,
+  .krea-studio-root.light-theme .count-select,
+  .krea-studio-root.light-theme .scene-aspect-select {
+    background: #ffffff;
+    border-color: #94a3b8;
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .director-textarea::placeholder,
+  .krea-studio-root.light-theme .dir-textarea::placeholder,
+  .krea-studio-root.light-theme .dir-input::placeholder {
+    color: #64748b;
+  }
+  .krea-studio-root.light-theme .scene-vprompt-box {
+    background: #f5f3ff;
+    border-color: #a78bfa;
+    color: #1e1b4b;
+  }
+  .krea-studio-root.light-theme .dir-clear-btn {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #334155;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .dir-clear-btn:hover {
+    background: #e2e8f0;
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .dir-rewrite-btn:disabled,
+  .krea-studio-root.light-theme .dir-shoot-now-btn:disabled,
+  .krea-studio-root.light-theme .plan-btn:disabled {
+    background: #e2e8f0;
+    color: #64748b;
+    border: 1px solid #cbd5e1;
+    opacity: 1;
+  }
+
+  .krea-studio-root.light-theme .story-projects-bar {
+    background: #ffffff;
+    border-bottom-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .story-new-btn {
+    background: #ede9fe;
+    border-color: #a78bfa;
+    color: #5b21b6;
+  }
+  .krea-studio-root.light-theme .story-new-btn.subtle {
+    background: #fce7f3;
+    border-color: #f472b6;
+    color: #9d174d;
+  }
+  .krea-studio-root.light-theme .slug-pill,
+  .krea-studio-root.light-theme .text-link-btn,
+  .krea-studio-root.light-theme .scene-sub-link {
+    color: #6d28d9;
+    font-weight: 600;
+  }
+  .krea-studio-root.light-theme .field-label-row,
+  .krea-studio-root.light-theme .scene-count-label {
+    color: #334155;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .preset-chip-wrap {
+    background: #ede9fe;
+    border-color: #c4b5fd;
+  }
+  .krea-studio-root.light-theme .preset-chip {
+    color: #5b21b6;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .preset-chip-x {
+    color: #475569;
+  }
+  .krea-studio-root.light-theme .plan-btn.secondary {
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    color: #1e293b;
+  }
+  .krea-studio-root.light-theme .scene-num {
+    background: #ede9fe;
+    border: 1px solid #c4b5fd;
+    color: #5b21b6;
+  }
+  .krea-studio-root.light-theme .shoot-scene-btn {
+    background: #ede9fe;
+    border-color: #8b5cf6;
+    color: #5b21b6;
+  }
+  .krea-studio-root.light-theme .shoot-scene-btn:hover:not(:disabled) {
+    background: #6d28d9;
+    border-color: #6d28d9;
+    color: #ffffff;
+  }
+  .krea-studio-root.light-theme .add-scene-inline-btn {
+    background: #ffffff;
+    border-color: #94a3b8;
+    color: #334155;
+    font-weight: 500;
+  }
+  .krea-studio-root.light-theme .add-scene-inline-btn.highlight {
+    background: #fdf2f8;
+    border-color: #db2777;
+    color: #9d174d;
+  }
+  .krea-studio-root.light-theme .story-util-btn {
+    background: #f8fafc;
+    border-color: #cbd5e1;
+    color: #1e293b;
+  }
+  .krea-studio-root.light-theme .story-util-btn:hover {
+    background: #e2e8f0;
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .story-util-btn.civitai {
+    background: #e0f2fe;
+    border-color: #38bdf8;
+    color: #0369a1;
+  }
+
+  .civitai-publish-btn.published {
+    color: #34d399 !important;
+  }
+  .civitai-publish-modal {
+    max-width: 520px;
+    width: 94%;
+  }
+  .civitai-pub-toggles {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .civitai-check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: #cbd5e1;
+    cursor: pointer;
+    user-select: none;
+  }
+  .civitai-check-row input[type="checkbox"] {
+    accent-color: #8b5cf6;
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+  }
+  .civitai-pub-alert {
+    margin-top: 10px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  .civitai-pub-alert.error {
+    background: rgba(239, 68, 68, 0.14);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+  }
+  .civitai-pub-alert.success {
+    background: rgba(16, 185, 129, 0.13);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #d1fae5;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .civitai-pub-success-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .civitai-user-pill {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(139, 92, 246, 0.25);
+    color: #ddd6fe;
+  }
+  .civitai-linked-res {
+    font-size: 11.5px;
+    opacity: 0.9;
+  }
+  .civitai-pub-links {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 2px;
+  }
+  .civitai-open-post-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 12px;
+    border-radius: 8px;
+    background: #10b981;
+    color: #ffffff !important;
+    font-weight: 600;
+    font-size: 12px;
+    text-decoration: none;
+  }
+  .civitai-open-post-btn:hover {
+    background: #059669;
+  }
+  .civitai-edit-post-link {
+    font-size: 12px;
+    color: #93c5fd;
+    text-decoration: underline;
+  }
+  .krea-studio-root.light-theme .civitai-pub-toggles {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .civitai-check-row {
+    color: #334155;
+  }
+  .krea-studio-root.light-theme .civitai-pub-alert.error {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #b91c1c;
+  }
+  .krea-studio-root.light-theme .civitai-pub-alert.success {
+    background: #ecfdf5;
+    border-color: #a7f3d0;
+    color: #065f46;
+  }
+  .krea-studio-root.light-theme .civitai-user-pill {
+    background: #ede9fe;
+    color: #5b21b6;
+  }
+  .krea-studio-root.light-theme .civitai-edit-post-link {
+    color: #2563eb;
+  }
+
+  @media (max-width: 960px) {
+    .director-panel {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(100%, 390px);
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .director-resize-handle {
+      display: none;
     }
   }
 </style>
