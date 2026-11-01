@@ -2926,7 +2926,7 @@
             </div>
 
             <div class="card">
-              <h4 class="card-title">🔔 {$_("web_push_title", {}, "Push-уведомления")}</h4>
+              <h4 class="card-title">{$_("web_push_title", {}, "Push-уведомления")}</h4>
               <p class="card-subtitle">{$_("web_push_desc", {}, "Мгновенные уведомления от вашего AI-узла прямо на это устройство (с превью изображений и модерацией в 1 тап).")}</p>
               {#if !webPushSupported}
                 <p class="row-sub" style="margin-top: 8px;">
@@ -2937,32 +2937,42 @@
               {:else}
                 <div class="setting-row">
                   <div class="row-text">
-                    <span class="row-label">{webPushSubscribed ? "Включены на этом устройстве" : "Получать Push на это устройство"}</span>
+                    <span class="row-label">{$_("push_receive_label", {}, "Получать Push на это устройство")}</span>
                     <span class="row-sub">{isNativeApp() ? "Нативные системные Push-уведомления (Android FCM / iOS APNs)" : "Прямая VAPID-подписка через P2P без сторонних мессенджеров"}</span>
                   </div>
-                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                    <button
-                      type="button"
-                      class="btn-secondary"
+                  <label class="switch" style={webPushBusy ? "opacity: 0.6; pointer-events: none;" : ""}>
+                    <input
+                      type="checkbox"
+                      checked={webPushSubscribed}
                       disabled={webPushBusy}
-                      on:click={handleToggleWebPush}
-                      style="padding: 7px 14px; border-radius: 8px; font-weight: 600; cursor: pointer;"
-                    >
-                      {webPushBusy ? "⏳..." : (webPushSubscribed ? "Отключить" : "🔔 Включить Push")}
-                    </button>
-                    {#if webPushSubscribed}
+                      on:change={async (e) => {
+                        const el = e.currentTarget;
+                        await handleToggleWebPush();
+                        if (el) el.checked = webPushSubscribed;
+                      }}
+                    />
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                {#if webPushSubscribed}
+                  <div class="setting-row">
+                    <div class="row-text">
+                      <span class="row-label">{$_("push_test_label", {}, "Проверка уведомлений")}</span>
+                      <span class="row-sub">{$_("push_test_sub", {}, "Отправить тестовый пуш на это устройство")}</span>
+                    </div>
+                    <div class="row-value-badge">
                       <button
                         type="button"
-                        class="btn-secondary"
+                        class="btn-secondary-action btn-sm"
                         disabled={webPushBusy}
                         on:click={handleTestWebPush}
-                        style="padding: 7px 12px; border-radius: 8px; cursor: pointer;"
+                        style="padding: 4px 12px; font-size: 12px;"
                       >
-                        📲 Проверить
+                        <span>{webPushBusy ? "..." : $_("push_test_btn", {}, "Проверить")}</span>
                       </button>
-                    {/if}
+                    </div>
                   </div>
-                </div>
+                {/if}
                 {#if webPushMsg}
                   <div style="margin-top: 8px; font-size: 12.5px; color: {webPushMsgType === 'error' ? '#ef5350' : (webPushMsgType === 'success' ? '#2ac769' : 'inherit')};">
                     {webPushMsg}
