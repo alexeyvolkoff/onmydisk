@@ -45,6 +45,7 @@ public class MainActivity extends BridgeActivity {
 
         // Match system navigation bar and status bar to system dark/light theme
         applySystemBarsTheme();
+        createPushNotificationChannels();
 
         // Keep screen on while app is in foreground to prevent sleep and maintain WebRTC / WebSocket connections
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -473,6 +474,26 @@ public class MainActivity extends BridgeActivity {
                 flags |= android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
             }
             decorView.setSystemUiVisibility(flags);
+        }
+    }
+
+    private void createPushNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+                if (nm != null) {
+                    android.app.NotificationChannel ch = new android.app.NotificationChannel(
+                        "omd_autopilot_high",
+                        "On My Disk AI & Moderation",
+                        android.app.NotificationManager.IMPORTANCE_HIGH
+                    );
+                    ch.setDescription("Rich notifications and moderation alerts from your On My Disk AI node");
+                    ch.enableVibration(true);
+                    nm.createNotificationChannel(ch);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to create notification channel", e);
+            }
         }
     }
 }

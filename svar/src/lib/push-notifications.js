@@ -1,16 +1,38 @@
 /**
- * Custom Rich Web Push Notifications helper for Svar PWA.
- * Subscribes the browser/mobile PWA to the connected AI Node's VAPID push service
- * over P2P HttpDrive (or local fetch fallback) without requiring a centralized server.
+ * Unified Rich Push Notifications helper for Svar PWA & Capacitor Mobile (Android / iOS).
+ * - Web / Mobile PWA: Direct Peer-to-Peer W3C Web Push (RFC 8291 VAPID) via Service Worker.
+ * - Capacitor Native (Android APK / iOS IPA): @capacitor/push-notifications (FCM / APNs)
+ *   routed via OMD Push Relay on onmydisk.net.
  */
+import { Capacitor } from "@capacitor/core";
+import { PushNotifications } from "@capacitor/push-notifications";
 
-export function isWebPushSupported() {
+const NATIVE_SUB_STORAGE_KEY = "omd_native_push_sub";
+const DEFAULT_RELAY_URL = "https://onmydisk.net/api/push/native";
+const DEFAULT_PUBLIC_ORIGIN = "https://onmydisk.net";
+
+let _nativeListenersBound = false;
+
+export function isNativeApp() {
+  return typeof window !== "undefined" && Boolean(Capacitor?.isNativePlatform?.());
+}
+
+export function isNativePushAvailable() {
+  return isNativeApp() && Boolean(Capacitor?.isPluginAvailable?.("PushNotifications"));
+}
+
+export function isWebBrowserPushSupported() {
   return (
     typeof window !== "undefined" &&
+    !isNativeApp() &&
     "serviceWorker" in navigator &&
     "PushManager" in window &&
     "Notification" in window
   );
+}
+
+export function isWebPushSupported() {
+  return isNativePushAvailable() || isWebBrowserPushSupported();
 }
 
 export function urlBase64ToUint8Array(base64String) {
@@ -24,8 +46,34 @@ export function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
+function getSavedNativeSub() {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(NATIVE_SUB_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.endpoint && parsed.token && parsed.platform) {
+      return parsed;
+    }
+  } catch (_) {}
+  return null;
+}
+
 export async function getBrowserPushSubscription() {
-  if (!isWebPushSupported()) return null;
+  if (isNativePushAvailable()) {
+    if (typeof localStorage !== "undefined" && localStorage.getItem("omd_webpush_enabled") !== "1") {
+      return null;
+    }
+    try {
+      const perm = await PushNotifications.checkPermissions();
+      if (perm?.receive !== "granted") return null;
+    } catch (_) {
+      return null;
+    }
+    return getSavedNativeSub();
+  }
+
+  if (!isWebBrowserPushSupported()) return null;
   try {
     const reg = await navigator.serviceWorker.ready;
     return await reg.pushManager.getSubscription();
@@ -34,16 +82,127 @@ export async function getBrowserPushSubscription() {
   }
 }
 
+async function registerNativeDeviceToken(timeoutMs = 14000) {
+  let perm = await PushNotifications.checkPermissions();
+  if (perm.receive === "prompt" || perm.receive === "prompt-with-rationale") {
+    perm = await PushNotifications.requestPermissions();
+  }
+  if (perm.receive !== "granted") {
+    throw new Error("Разрешение на уведомления отключено в настройках телефона.");
+  }
+
+  return new Promise(async (resolve, reject) => {
+    let settled = false;
+    let regHandle = null;
+    let errHandle = null;
+
+    const cleanup = () => {
+      if (regHandle && typeof regHandle.remove === "function") {
+        try { regHandle.remove(); } catch (_) {}
+      }
+      if (errHandle && typeof errHandle.remove === "function") {
+        try { errHandle.remove(); } catch (_) {}
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(
+        new Error(
+          Capacitor.getPlatform() === "android"
+            ? "Таймаут получения FCM-токена (убедитесь, что APK собран с google-services.json и доступны Google Play Services)."
+            : "Таймаут получения APNs-токена от iOS."
+        )
+      );
+    }, timeoutMs);
+
+    try {
+      regHandle = await PushNotifications.addListener("registration", (token) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        if (token && token.value) {
+          resolve(String(token.value));
+        } else {
+          reject(new Error("Получен пустой Push-токен устройства."));
+        }
+      });
+
+      errHandle = await PushNotifications.addListener("registrationError", (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        reject(new Error("Ошибка регистрации Push: " + (err?.error || JSON.stringify(err))));
+      });
+
+      await PushNotifications.register();
+    } catch (e) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        reject(e);
+      }
+    }
+  });
+}
+
 export async function subscribeToNodeWebPush({
   fetchFn,
   omdKey = "",
   defaultStorage = "",
   deviceLabel = ""
 }) {
-  if (!isWebPushSupported()) {
+  const effectiveFetch = fetchFn || ((p, opts) => window.fetch(p, opts));
+
+  // ── Path A: Native Android / iOS App (Capacitor) ──
+  if (isNativeApp()) {
+    if (!isNativePushAvailable()) {
+      throw new Error("Обновите мобильное приложение On My Disk (APK / TestFlight), чтобы включить нативные Push-уведомления.");
+    }
+    const platform = Capacitor.getPlatform(); // 'android' | 'ios'
+    const token = await registerNativeDeviceToken();
+    const endpoint = `native://${platform}/${token}`;
+    const subJson = {
+      kind: "native",
+      platform,
+      token,
+      endpoint,
+      relay_url: DEFAULT_RELAY_URL,
+      public_origin: DEFAULT_PUBLIC_ORIGIN
+    };
+    const autoLabel =
+      deviceLabel || (platform === "ios" ? "iPhone / iPad App" : "Android App");
+
+    const saveRes = await effectiveFetch("/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subscription: subJson,
+        omd_key: omdKey || "",
+        default_storage: defaultStorage || "",
+        device_label: autoLabel
+      })
+    });
+    if (!saveRes || !saveRes.ok) {
+      throw new Error("Не удалось зарегистрировать Push-токен на AI-узле.");
+    }
+    const saveData = await saveRes.json();
+    try {
+      localStorage.setItem(NATIVE_SUB_STORAGE_KEY, JSON.stringify(subJson));
+      localStorage.setItem("omd_webpush_enabled", "1");
+    } catch (_) {}
+    return { subscription: subJson, ...saveData };
+  }
+
+  // ── Path B: Browser / Mobile PWA (W3C Web Push + VAPID) ──
+  if (!isWebBrowserPushSupported()) {
     throw new Error("Браузер не поддерживает Web Push уведомления (на iOS добавьте приложение на экран «Домой»).");
   }
-  const effectiveFetch = fetchFn || ((p, opts) => window.fetch(p, opts));
 
   const perm = await Notification.requestPermission();
   if (perm !== "granted") {
@@ -65,7 +224,6 @@ export async function subscribeToNodeWebPush({
   const appServerKey = urlBase64ToUint8Array(publicKey);
 
   if (sub) {
-    // Check if existing subscription uses a different applicationServerKey
     try {
       const existingKey = sub.options && sub.options.applicationServerKey;
       if (existingKey) {
@@ -122,17 +280,52 @@ export async function syncExistingWebPushSubscription({
   omdKey = "",
   defaultStorage = ""
 }) {
-  if (!isWebPushSupported()) return false;
+  if (!fetchFn) return false;
+  if (typeof localStorage !== "undefined" && localStorage.getItem("omd_webpush_enabled") !== "1") {
+    return false;
+  }
+
+  if (isNativePushAvailable()) {
+    try {
+      const perm = await PushNotifications.checkPermissions();
+      if (perm?.receive !== "granted") return false;
+      // Re-register silently to pick up any refreshed FCM/APNs token
+      const token = await registerNativeDeviceToken(8000);
+      const platform = Capacitor.getPlatform();
+      const subJson = {
+        kind: "native",
+        platform,
+        token,
+        endpoint: `native://${platform}/${token}`,
+        relay_url: DEFAULT_RELAY_URL,
+        public_origin: DEFAULT_PUBLIC_ORIGIN
+      };
+      localStorage.setItem(NATIVE_SUB_STORAGE_KEY, JSON.stringify(subJson));
+      await fetchFn("/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subscription: subJson,
+          omd_key: omdKey || "",
+          default_storage: defaultStorage || ""
+        })
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  if (!isWebBrowserPushSupported()) return false;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
-  if (typeof localStorage !== "undefined" && localStorage.getItem("omd_webpush_enabled") !== "1") return false;
   try {
     const sub = await getBrowserPushSubscription();
-    if (!sub || !fetchFn) return false;
+    if (!sub) return false;
     await fetchFn("/push/subscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        subscription: sub.toJSON(),
+        subscription: sub.toJSON ? sub.toJSON() : sub,
         omd_key: omdKey || "",
         default_storage: defaultStorage || ""
       })
@@ -145,6 +338,28 @@ export async function syncExistingWebPushSubscription({
 
 export async function unsubscribeFromNodeWebPush({ fetchFn, omdKey = "" }) {
   const effectiveFetch = fetchFn || ((p, opts) => window.fetch(p, opts));
+
+  if (isNativePushAvailable()) {
+    const saved = getSavedNativeSub();
+    if (saved && saved.endpoint) {
+      try {
+        await effectiveFetch("/push/unsubscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: saved.endpoint, omd_key: omdKey || "" })
+        });
+      } catch (_) {}
+    }
+    try {
+      await PushNotifications.unregister();
+    } catch (_) {}
+    try {
+      localStorage.removeItem(NATIVE_SUB_STORAGE_KEY);
+      localStorage.removeItem("omd_webpush_enabled");
+    } catch (_) {}
+    return true;
+  }
+
   const sub = await getBrowserPushSubscription();
   if (sub) {
     const endpoint = sub.endpoint;
@@ -155,9 +370,11 @@ export async function unsubscribeFromNodeWebPush({ fetchFn, omdKey = "" }) {
         body: JSON.stringify({ endpoint, omd_key: omdKey || "" })
       });
     } catch (_) {}
-    try {
-      await sub.unsubscribe();
-    } catch (_) {}
+    if (typeof sub.unsubscribe === "function") {
+      try {
+        await sub.unsubscribe();
+      } catch (_) {}
+    }
   }
   try {
     localStorage.removeItem("omd_webpush_enabled");
@@ -178,8 +395,48 @@ export async function sendTestNodeWebPush({ fetchFn, omdKey = "", defaultStorage
     })
   });
   if (!res || !res.ok) {
-    throw new Error("Не удалось отправить тестовый Push.");
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Не удалось отправить тестовый Push.");
   }
   return await res.json();
 }
 
+function normalizeNativeNotificationPayload(notif) {
+  const raw = notif?.data || {};
+  if (raw.payload_json && typeof raw.payload_json === "string") {
+    try {
+      const parsed = JSON.parse(raw.payload_json);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (_) {}
+  }
+  const innerData = raw.data && typeof raw.data === "object" ? raw.data : raw;
+  return {
+    title: notif?.title || raw.title || "",
+    body: notif?.body || raw.body || "",
+    image: raw.image || innerData.image || "",
+    data: innerData
+  };
+}
+
+export function initNativePushListeners(onPushAction, onForegroundBanner) {
+  if (!isNativePushAvailable() || _nativeListenersBound) return;
+  _nativeListenersBound = true;
+
+  PushNotifications.addListener("pushNotificationActionPerformed", (event) => {
+    const rawAction = String(event?.actionId || "tap").toLowerCase();
+    const mappedAction = rawAction === "tap" ? "open" : rawAction;
+    const payload = normalizeNativeNotificationPayload(event?.notification || {});
+    if (typeof onPushAction === "function") {
+      onPushAction(mappedAction, payload);
+    }
+  });
+
+  PushNotifications.addListener("pushNotificationReceived", (notif) => {
+    const payload = normalizeNativeNotificationPayload(notif || {});
+    if (payload?.data?.kind === "autopilot_moderation" && typeof onPushAction === "function") {
+      onPushAction("open", payload);
+    } else if (typeof onForegroundBanner === "function") {
+      onForegroundBanner(payload);
+    }
+  });
+}

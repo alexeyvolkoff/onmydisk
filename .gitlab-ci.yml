@@ -607,6 +607,7 @@ build-android:
     # 4. Sync Capacitor Web Assets to Native Project
     - cd ../mobile
     - npm install
+    - if [ ! -f android/app/google-services.json ]; then if [ -n "${GOOGLE_SERVICES_JSON:-}" ]; then if [ -f "${GOOGLE_SERVICES_JSON}" ]; then cp "${GOOGLE_SERVICES_JSON}" android/app/google-services.json; else printf "%s" "${GOOGLE_SERVICES_JSON}" > android/app/google-services.json; fi; elif [ -f "/home/alexey/projects/omd/etc/fcm/google-services.json" ]; then cp "/home/alexey/projects/omd/etc/fcm/google-services.json" android/app/google-services.json; echo "Copied local FCM google-services.json"; fi; fi
     - npx cap sync android
     - chmod +x android/gradlew || true
   script:

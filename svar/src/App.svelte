@@ -51,7 +51,7 @@
   import { setProfile } from "./lib/profile-store.js";
   import { parseStoragePath, formatStoragePath, persistStoragePath } from "./lib/storage-path.js";
   import { getViewerSettings } from "./lib/viewer-settings.js";
-  import { syncExistingWebPushSubscription } from "./lib/push-notifications.js";
+  import { syncExistingWebPushSubscription, initNativePushListeners } from "./lib/push-notifications.js";
   import lightGallery from 'lightgallery';
   import lgFullscreen from 'lightgallery/plugins/fullscreen';
   import { setupGalleryPagination, getGalleryCaption } from "./lib/gallery-pagination.js";
@@ -1013,6 +1013,15 @@
         }
       });
     }
+
+    // Native Android / iOS Push Notification listeners (Capacitor)
+    initNativePushListeners(
+      (action, payload) => handlePushActionDispatch(action || 'open', payload || {}),
+      (payload) => {
+        const msg = [payload?.title, payload?.body].filter(Boolean).join(' — ');
+        if (msg) showPushToast(msg);
+      }
+    );
 
     // Cold-start deep link from tapping a Rich Push Notification or its action button
     try {

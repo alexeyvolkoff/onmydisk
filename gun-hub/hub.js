@@ -1,4 +1,5 @@
 import http from 'http';
+import http2 from 'http2';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -2047,6 +2048,370 @@ async function handleRequestEmailChange(req, res) {
   });
 }
 
+// ── Native Mobile Push Relay (FCM HTTP v1 + APNs HTTP/2) ───────
+// Keeps Apple (.p8) and Firebase Service Account keys on the central OMD hub
+// so self-hosted user AI nodes can dispatch rich native pushes without holding
+// app-store signing secrets. Hot-loads credentials from /data (repoPath).
+
+let _fcmTokenCache = { accessToken: '', expiresAt: 0, clientEmail: '' };
+let _apnsJwtCache = { token: '', issuedAt: 0, keyId: '' };
+
+function resolveFcmServiceAccount() {
+  const candidates = [
+    process.env.FCM_SERVICE_ACCOUNT_PATH,
+    path.join(repoPath, 'fcm-service-account.json'),
+    path.join(path.dirname(new URL(import.meta.url).pathname), 'fcm-service-account.json'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (parsed && parsed.project_id && parsed.client_email && parsed.private_key) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('[push-relay] Failed reading FCM service account:', e?.message || e);
+    }
+  }
+  return null;
+}
+
+function resolveApnsConfig() {
+  let cfg = {
+    teamId: process.env.APNS_TEAM_ID || 'UMAS9T29TH',
+    bundleId: process.env.APNS_BUNDLE_ID || 'net.onmydisk.app',
+    keyId: process.env.APNS_KEY_ID || '',
+    keyPath: process.env.APNS_KEY_PATH || '',
+  };
+  const cfgJsonPath = path.join(repoPath, 'apns.json');
+  try {
+    if (fs.existsSync(cfgJsonPath)) {
+      const loaded = JSON.parse(fs.readFileSync(cfgJsonPath, 'utf8'));
+      cfg = { ...cfg, ...loaded };
+    }
+  } catch (_) {}
+
+  if (!cfg.keyPath || !fs.existsSync(cfg.keyPath)) {
+    try {
+      const files = fs.readdirSync(repoPath);
+      const p8 = files.find((f) => /^AuthKey_[A-Z0-9]{10}\.p8$/i.test(f)) || files.find((f) => f.endsWith('.p8'));
+      if (p8) {
+        cfg.keyPath = path.join(repoPath, p8);
+        if (!cfg.keyId) {
+          const m = p8.match(/^AuthKey_([A-Z0-9]{10})\.p8$/i);
+          if (m) cfg.keyId = m[1];
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (cfg.keyPath && fs.existsSync(cfg.keyPath) && cfg.keyId && cfg.teamId && cfg.bundleId) {
+    try {
+      const privateKey = fs.readFileSync(cfg.keyPath, 'utf8');
+      return { ...cfg, privateKey };
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function getFcmAccessToken(sa) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (
+    _fcmTokenCache.accessToken &&
+    _fcmTokenCache.clientEmail === sa.client_email &&
+    _fcmTokenCache.expiresAt - 300 > nowSec
+  ) {
+    return _fcmTokenCache.accessToken;
+  }
+
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+  const claim = Buffer.from(
+    JSON.stringify({
+      iss: sa.client_email,
+      scope: 'https://www.googleapis.com/auth/firebase.messaging',
+      aud: sa.token_uri || 'https://oauth2.googleapis.com/token',
+      iat: nowSec,
+      exp: nowSec + 3600,
+    })
+  ).toString('base64url');
+
+  const signingInput = `${header}.${claim}`;
+  const sig = crypto.sign('RSA-SHA256', Buffer.from(signingInput), sa.private_key).toString('base64url');
+  const assertion = `${signingInput}.${sig}`;
+
+  const resp = await fetch(sa.token_uri || 'https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }),
+  });
+  const tokenJson = await resp.json().catch(() => ({}));
+  if (!resp.ok || !tokenJson.access_token) {
+    throw new Error(`FCM OAuth2 token error (${resp.status}): ${JSON.stringify(tokenJson).slice(0, 200)}`);
+  }
+  _fcmTokenCache = {
+    accessToken: tokenJson.access_token,
+    expiresAt: nowSec + Number(tokenJson.expires_in || 3600),
+    clientEmail: sa.client_email,
+  };
+  return _fcmTokenCache.accessToken;
+}
+
+function getApnsJwt(apnsCfg) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (_apnsJwtCache.token && _apnsJwtCache.keyId === apnsCfg.keyId && nowSec - _apnsJwtCache.issuedAt < 2700) {
+    return _apnsJwtCache.token;
+  }
+  const header = Buffer.from(JSON.stringify({ alg: 'ES256', kid: apnsCfg.keyId })).toString('base64url');
+  const claims = Buffer.from(JSON.stringify({ iss: apnsCfg.teamId, iat: nowSec })).toString('base64url');
+  const signingInput = `${header}.${claims}`;
+  const sig = crypto
+    .sign('sha256', Buffer.from(signingInput), {
+      key: apnsCfg.privateKey,
+      dsaEncoding: 'ieee-p1363',
+    })
+    .toString('base64url');
+  const jwt = `${signingInput}.${sig}`;
+  _apnsJwtCache = { token: jwt, issuedAt: nowSec, keyId: apnsCfg.keyId };
+  return jwt;
+}
+
+function sendApnsHttp2Once(host, deviceToken, apnsCfg, jwt, apnsPayload, collapseId = '') {
+  return new Promise((resolve) => {
+    const client = http2.connect(`https://${host}`);
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try { client.close(); } catch (_) {}
+      resolve(result);
+    };
+
+    client.on('error', (err) => {
+      finish({ ok: false, status: 502, reason: err?.message || 'http2_connect_error' });
+    });
+    client.setTimeout(12000, () => {
+      finish({ ok: false, status: 504, reason: 'apns_timeout' });
+    });
+
+    const headers = {
+      ':method': 'POST',
+      ':path': `/3/device/${encodeURIComponent(deviceToken)}`,
+      authorization: `bearer ${jwt}`,
+      'apns-topic': apnsCfg.bundleId,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'content-type': 'application/json',
+    };
+    if (collapseId) {
+      headers['apns-collapse-id'] = String(collapseId).slice(0, 64);
+    }
+
+    const req = client.request(headers);
+    let respStatus = 0;
+    const chunks = [];
+
+    req.on('response', (hdrs) => {
+      respStatus = Number(hdrs[':status'] || 0);
+    });
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      let reason = raw;
+      try {
+        const j = JSON.parse(raw);
+        if (j && j.reason) reason = j.reason;
+      } catch (_) {}
+      finish({
+        ok: respStatus >= 200 && respStatus < 300,
+        status: respStatus || 500,
+        reason: reason || '',
+      });
+    });
+    req.on('error', (err) => {
+      finish({ ok: false, status: 502, reason: err?.message || 'apns_stream_error' });
+    });
+
+    req.end(JSON.stringify(apnsPayload));
+  });
+}
+
+async function handlePushStatus(req, res) {
+  const fcm = resolveFcmServiceAccount();
+  const apns = resolveApnsConfig();
+  return json(res, 200, {
+    status: 'ok',
+    fcmConfigured: Boolean(fcm),
+    fcmProjectId: fcm ? fcm.project_id : null,
+    apnsConfigured: Boolean(apns),
+    apnsKeyId: apns ? apns.keyId : null,
+    apnsTeamId: apns ? apns.teamId : null,
+    bundleId: apns ? apns.bundleId : 'net.onmydisk.app',
+  });
+}
+
+async function handleNativePushSend(req, res) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch (_) {
+    return json(res, 400, { ok: false, error: 'Invalid JSON body' });
+  }
+
+  const platform = String(body?.platform || '').toLowerCase().trim();
+  const token = String(body?.token || '').trim();
+  const title = String(body?.title || 'On My Disk');
+  const textBody = String(body?.body || '');
+  const image = String(body?.image || '').trim();
+  const tag = String(body?.tag || '').trim();
+  const category = String(body?.category || '').trim();
+  const rawData = body?.data && typeof body.data === 'object' ? body.data : {};
+
+  if (!token || !['android', 'ios'].includes(platform)) {
+    return json(res, 400, { ok: false, error: 'platform ("android"|"ios") and token are required' });
+  }
+
+  // Per-IP basic rate guard against abuse (max 120 push dispatches / 15 min per node IP)
+  const callerIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
+  if (!rateLimit(`push:${callerIp}`, 120)) {
+    return json(res, 429, { ok: false, error: 'Rate limit exceeded' });
+  }
+
+  if (platform === 'android') {
+    const sa = resolveFcmServiceAccount();
+    if (!sa) {
+      return json(res, 503, {
+        ok: false,
+        status: 503,
+        error: 'FCM Service Account is not configured on OMD Push Relay (/data/fcm-service-account.json)',
+      });
+    }
+    try {
+      const accessToken = await getFcmAccessToken(sa);
+      const stringData = {};
+      for (const [k, v] of Object.entries(rawData)) {
+        if (v !== undefined && v !== null) {
+          stringData[String(k)] = typeof v === 'string' ? v : JSON.stringify(v);
+        }
+      }
+      stringData.title = title;
+      stringData.body = textBody;
+      if (image) stringData.image = image;
+      stringData.payload_json = JSON.stringify({
+        title,
+        body: textBody,
+        image,
+        tag,
+        category,
+        data: rawData,
+      });
+
+      const validHttpsImage = /^https:\/\//i.test(image) ? image : undefined;
+      const fcmMessage = {
+        message: {
+          token,
+          notification: {
+            title,
+            body: textBody,
+            ...(validHttpsImage ? { image: validHttpsImage } : {}),
+          },
+          data: stringData,
+          android: {
+            priority: 'HIGH',
+            ...(tag ? { collapse_key: tag.slice(0, 64) } : {}),
+            notification: {
+              channel_id: 'omd_autopilot_high',
+              sound: 'default',
+              default_vibrate_timings: true,
+              ...(validHttpsImage ? { image: validHttpsImage } : {}),
+            },
+          },
+        },
+      };
+
+      const fcmResp = await fetch(
+        `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(sa.project_id)}/messages:send`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(fcmMessage),
+        }
+      );
+      const fcmJson = await fcmResp.json().catch(() => ({}));
+      if (fcmResp.ok) {
+        return json(res, 200, { ok: true, platform: 'android', id: fcmJson.name || '' });
+      }
+      const errCode = fcmJson?.error?.details?.[0]?.errorCode || fcmJson?.error?.status || '';
+      const unregistered = errCode === 'UNREGISTERED' || fcmResp.status === 404 || fcmResp.status === 410;
+      return json(res, unregistered ? 410 : fcmResp.status, {
+        ok: false,
+        status: unregistered ? 410 : fcmResp.status,
+        unregistered,
+        error: fcmJson?.error?.message || errCode || 'FCM send failed',
+      });
+    } catch (err) {
+      return json(res, 502, { ok: false, status: 502, error: err?.message || String(err) });
+    }
+  }
+
+  // iOS APNs HTTP/2
+  const apnsCfg = resolveApnsConfig();
+  if (!apnsCfg) {
+    return json(res, 503, {
+      ok: false,
+      status: 503,
+      error: 'APNs .p8 key is not configured on OMD Push Relay (/data/AuthKey_<KEYID>.p8)',
+    });
+  }
+  try {
+    const jwt = getApnsJwt(apnsCfg);
+    const apnsPayload = {
+      aps: {
+        alert: { title, body: textBody },
+        sound: 'default',
+        'mutable-content': 1,
+        ...(category ? { category } : {}),
+      },
+      image,
+      data: rawData,
+      payload_json: JSON.stringify({
+        title,
+        body: textBody,
+        image,
+        tag,
+        category,
+        data: rawData,
+      }),
+    };
+
+    let result = await sendApnsHttp2Once('api.push.apple.com', token, apnsCfg, jwt, apnsPayload, tag);
+    if (!result.ok && ['BadDeviceToken', 'DeviceTokenNotForTopic'].includes(result.reason)) {
+      // Fallback for Xcode debug / sandbox tokens
+      const sbResult = await sendApnsHttp2Once('api.sandbox.push.apple.com', token, apnsCfg, jwt, apnsPayload, tag);
+      if (sbResult.ok) result = sbResult;
+    }
+
+    if (result.ok) {
+      return json(res, 200, { ok: true, platform: 'ios' });
+    }
+    const unregistered = result.status === 410 || result.reason === 'Unregistered';
+    return json(res, unregistered ? 410 : (result.status || 502), {
+      ok: false,
+      status: unregistered ? 410 : (result.status || 502),
+      unregistered,
+      error: result.reason || 'APNs send failed',
+    });
+  } catch (err) {
+    return json(res, 502, { ok: false, status: 502, error: err?.message || String(err) });
+  }
+}
+
 // ── HTTP Handler ───────────────────────────────────────────────
 
 async function handler(req, res) {
@@ -2103,6 +2468,12 @@ async function handler(req, res) {
     return handleGetKnowledgeCard(req, res);
   if (req.method === 'GET' && req.url.startsWith('/api/knowledge'))
     return handleGetAllKnowledge(req, res);
+
+  // Native Mobile Push Relay (Android FCM HTTP v1 / iOS APNs HTTP/2)
+  if (req.method === 'POST' && req.url === '/api/push/native')
+    return handleNativePushSend(req, res);
+  if (req.method === 'GET' && req.url === '/api/push/status')
+    return handlePushStatus(req, res);
 
   // Health / status
   if (req.method === 'GET' && req.url === '/health')

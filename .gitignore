@@ -132,3 +132,16 @@ mobile/ios/App/Podfile.lock
 mobile/ios/App/App/public/
 mobile/android/app/src/main/assets/public/
 
+
+# Native Push / Capacitor sync artifacts & secrets
+mobile/android/app/src/main/assets/capacitor.config.json
+mobile/android/app/src/main/assets/capacitor.plugins.json
+mobile/android/app/src/main/res/xml/config.xml
+mobile/android/capacitor-cordova-android-plugins/
+mobile/android/app/google-services.json
+mobile/ios/App/App/capacitor.config.json
+mobile/ios/App/App/config.xml
+mobile/ios/capacitor-cordova-ios-plugins/
+fcm-service-account.json
+apns.json
+*.p8

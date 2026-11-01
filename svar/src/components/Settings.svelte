@@ -19,6 +19,7 @@
   import { parseStoragePath, formatStoragePath, persistStoragePath, DEFAULT_STORAGE_PATH, getLocalDevice } from "../lib/storage-path.js";
   import { DEFAULT_JUNE_SYSTEM_PROMPT, DEFAULT_JUNE_FUN_PROMPT, blobToDataUrl } from "../lib/assistant-defaults.js";
   import {
+    isNativeApp,
     isWebPushSupported,
     getBrowserPushSubscription,
     subscribeToNodeWebPush,
@@ -2925,15 +2926,19 @@
             </div>
 
             <div class="card">
-              <h4 class="card-title">🔔 {$_("web_push_title", {}, "Push-уведомления (Web Push)")}</h4>
-              <p class="card-subtitle">{$_("web_push_desc", {}, "Мгновенные уведомления от вашего AI-узла прямо на это устройство (с превью изображений и кнопками действий).")}</p>
+              <h4 class="card-title">🔔 {$_("web_push_title", {}, "Push-уведомления")}</h4>
+              <p class="card-subtitle">{$_("web_push_desc", {}, "Мгновенные уведомления от вашего AI-узла прямо на это устройство (с превью изображений и модерацией в 1 тап).")}</p>
               {#if !webPushSupported}
-                <p class="row-sub" style="margin-top: 8px;">Браузер не поддерживает Web Push (на iOS сначала добавьте приложение на экран «Домой»).</p>
+                <p class="row-sub" style="margin-top: 8px;">
+                  {isNativeApp()
+                    ? "Обновите мобильное приложение (APK / TestFlight) до последней сборки с нативным модулем PushNotifications."
+                    : "Браузер не поддерживает Web Push (на iOS добавьте веб-приложение на экран «Домой» или используйте нативное приложение)."}
+                </p>
               {:else}
                 <div class="setting-row">
                   <div class="row-text">
                     <span class="row-label">{webPushSubscribed ? "Включены на этом устройстве" : "Получать Push на это устройство"}</span>
-                    <span class="row-sub">Прямая VAPID-подписка через P2P без сторонних мессенджеров</span>
+                    <span class="row-sub">{isNativeApp() ? "Нативные системные Push-уведомления (Android FCM / iOS APNs)" : "Прямая VAPID-подписка через P2P без сторонних мессенджеров"}</span>
                   </div>
                   <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                     <button

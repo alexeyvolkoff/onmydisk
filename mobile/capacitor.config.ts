@@ -9,6 +9,9 @@ const config: CapacitorConfig = {
     androidScheme: 'https'
   },
   plugins: {
+    PushNotifications: {
+      presentationOptions: ['badge', 'sound', 'alert'],
+    },
     CapacitorUpdater: {
       // IMPORTANT: We use manual update mode via our own version server.
       // autoUpdate MUST be false - if true, the plugin silently contacts
