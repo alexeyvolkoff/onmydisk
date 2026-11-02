@@ -154,22 +154,26 @@ function Install-Ai {
         Write-Host "Portable Python already present at $PyDir"
     }
 
-    # 2. onmychat application
+    # Stop any running OnMyChat instance before updating files or restarting
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*uvicorn api:app*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+    # 2. onmychat application (safe to re-extract on upgrade: user dirs & config.ini are excluded from zip)
     New-Item -ItemType Directory -Force -Path $AiDir | Out-Null
-    if (-not (Test-Path (Join-Path $AiDir "api.py"))) {
-        Write-Host "Downloading OnMyChat app ..."
-        Download "$RepoBase/onmychat-latest.zip" (Join-Path $TmpDir "onmychat.zip")
-        Expand-Archive (Join-Path $TmpDir "onmychat.zip") -DestinationPath $AiDir -Force
-        # user dirs
-        foreach ($sub in "user_data","memory_index","history","avatars","data") {
+    Write-Host "Downloading OnMyChat app ..."
+    Download "$RepoBase/onmychat-latest.zip" (Join-Path $TmpDir "onmychat.zip")
+    Expand-Archive (Join-Path $TmpDir "onmychat.zip") -DestinationPath $AiDir -Force
+    # user dirs
+    foreach ($sub in "user_data","memory_index","history","avatars","data") {
         New-Item -ItemType Directory -Force -Path (Join-Path $AiDir $sub) | Out-Null
-        }
-        # config from example, windows paths
+    }
+    # config from example on first install only (preserve existing config.ini on upgrade)
+    $CfgPath = Join-Path $AiDir "config.ini"
+    if (-not (Test-Path $CfgPath)) {
         $cfg = Get-Content (Join-Path $AiDir "config.example.ini") -Raw
         $cfg = $cfg -replace "APP_ROOT_DIR\s*=\s*/opt/onmychat", ("APP_ROOT_DIR = " + ($AiDir -replace "\\","/"))
-        Set-Content (Join-Path $AiDir "config.ini") $cfg
-    } else {
-        Write-Host "OnMyChat already present at $AiDir"
+        Set-Content $CfgPath $cfg
     }
 
     # 3. python dependencies (this step is long - big wheels like torch/chromadb)

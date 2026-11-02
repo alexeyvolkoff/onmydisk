@@ -450,12 +450,14 @@ self.addEventListener('notificationclick', event => {
             includeUncontrolled: true
         });
 
-        // Custom actionable push (e.g. Autopilot pre-moderation approve / rework / decline / open)
-        if (payload.type === 'custom_push' || extra.kind === 'autopilot_moderation') {
+        // Custom actionable push from a connected node extension
+        if (payload.type === 'custom_push' || extra.widget_url || extra.action_url) {
             const act = action || 'open';
             const params = new URLSearchParams();
             params.set('omd_push_action', act);
-            if (extra.draft_id) params.set('draft_id', extra.draft_id);
+            if (extra.widget_url) params.set('widget_url', extra.widget_url);
+            if (extra.action_url) params.set('action_url', extra.action_url);
+            if (extra.item_id) params.set('item_id', extra.item_id);
             if (extra.action_token) params.set('token', extra.action_token);
             if (extra.default_storage) params.set('storage', extra.default_storage);
             if (extra.filename) params.set('file', extra.filename);

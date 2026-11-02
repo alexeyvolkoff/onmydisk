@@ -433,7 +433,7 @@ export function initNativePushListeners(onPushAction, onForegroundBanner) {
 
   PushNotifications.addListener("pushNotificationReceived", (notif) => {
     const payload = normalizeNativeNotificationPayload(notif || {});
-    if (payload?.data?.kind === "autopilot_moderation" && typeof onPushAction === "function") {
+    if (payload?.data?.widget_url && typeof onPushAction === "function") {
       onPushAction("open", payload);
     } else if (typeof onForegroundBanner === "function") {
       onForegroundBanner(payload);

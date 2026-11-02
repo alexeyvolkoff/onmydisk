@@ -25,7 +25,10 @@ rm -f "$OUT"
 ( cd "$SRC" && zip -qr "$OUT" . \
     -x "venv/*" ".venv/*" "*__pycache__*" "user_data/*" "user-context/*" \
     -x "memory_index/*" "index/*" "history/*" "avatars/*" "data/*" \
-    -x "asset/*" "*.pyc" "logs/*" ".git/*" "config.ini" "agent_sessions.json" )
+    -x "asset/*" "*.pyc" "logs/*" "*.log" ".git/*" ".knowledge/*" ".ruff_cache/*" \
+    -x "extensions/*" "chroma_db/*" "test_data/*" "*.tar.gz" \
+    -x "config.ini" "agent_sessions.json" "index_exclusions.json" \
+    -x "push_subscriptions.json" "vapid_keys.json" )
 
 # Include initial knowledge base snapshot and default avatar
 ( cd "$SRC" && zip -ur "$OUT" memory_index/omd.jsonl avatars/June.png avatars/june.png >/dev/null 2>&1 || true )

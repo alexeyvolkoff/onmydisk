@@ -97,7 +97,8 @@ rm -rf "$BUILD_DIR" "$ROOT/build/release/onmydisk-" "$ROOT/build/win32-release" 
 mkdir -p "$BUILD_DIR" "$ROOT/bin"
 cd "$BUILD_DIR"
 
-QMAKE_ARGS=("$ROOT/Node.pro" CONFIG+=release CONFIG+=static BUILD_VERSION="${BUILD_VERSION:-0}")
+DEFAULT_BV="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)"
+QMAKE_ARGS=("$ROOT/Node.pro" CONFIG+=release CONFIG+=static BUILD_VERSION="${BUILD_VERSION:-$DEFAULT_BV}")
 if [ -n "${LDATACHANNEL_BUILD:-}" ] && [ -f "$LDATACHANNEL_BUILD/libdatachannel.a" ]; then
     QMAKE_ARGS+=("LDATACHANNEL_ROOT=$LDATACHANNEL_ROOT" "LDATACHANNEL_BUILD=$LDATACHANNEL_BUILD")
 fi

@@ -1027,22 +1027,28 @@
     try {
       const urlObj = new URL(window.location.href);
       const pushAct = urlObj.searchParams.get('omd_push_action');
-      const draftId = urlObj.searchParams.get('draft_id');
-      const actToken = urlObj.searchParams.get('token');
+      const widgetUrl = urlObj.searchParams.get('widget_url') || '';
+      const actionUrl = urlObj.searchParams.get('action_url') || '';
+      const itemId = urlObj.searchParams.get('item_id') || '';
+      const actToken = urlObj.searchParams.get('token') || '';
       const storageHint = urlObj.searchParams.get('storage') || '';
       const fileHint = urlObj.searchParams.get('file') || '';
-      if (pushAct && draftId) {
+      if (pushAct && (widgetUrl || actionUrl)) {
         urlObj.searchParams.delete('omd_push_action');
-        urlObj.searchParams.delete('draft_id');
+        urlObj.searchParams.delete('widget_url');
+        urlObj.searchParams.delete('action_url');
+        urlObj.searchParams.delete('item_id');
         urlObj.searchParams.delete('token');
         urlObj.searchParams.delete('storage');
         urlObj.searchParams.delete('file');
         window.history.replaceState({}, '', urlObj.pathname + (urlObj.search ? urlObj.search : '') + urlObj.hash);
         handlePushActionDispatch(pushAct, {
           data: {
-            kind: 'autopilot_moderation',
-            draft_id: draftId,
-            action_token: actToken || '',
+            kind: 'node_widget',
+            widget_url: widgetUrl,
+            action_url: actionUrl,
+            item_id: itemId,
+            action_token: actToken,
             default_storage: storageHint,
             filename: fileHint
           }
@@ -3883,24 +3889,39 @@
 
   // ── Custom Rich Web Push Sync & Pre-Moderation Handler ─────────
   let pushSubscriptionSyncedOnce = false;
-  let pushModToast = "";
-  let pushModToastTimer = null;
-  let showPushModModal = false;
-  let pushModBusy = false;
-  let pushModDraft = null;
-  let pushModToken = "";
-  let pushModPreviewSrc = "";
-  let pushModTitle = "";
-  let pushModCaption = "";
-  let pushModTags = "";
-  let pushModReworkHint = "";
+  let nodePushToast = "";
+  let nodePushToastTimer = null;
+  let showNodeWidgetModal = false;
+  let nodeWidgetLoading = false;
+  let nodeWidgetBusy = false;
+  let nodeWidgetError = "";
+  let nodeWidgetHostEl = null;
+  let nodeWidgetCleanup = null;
 
-  function showPushToast(msg, duration = 4500) {
-    pushModToast = msg;
-    if (pushModToastTimer) clearTimeout(pushModToastTimer);
-    pushModToastTimer = setTimeout(() => {
-      pushModToast = "";
+  function showNodePushToast(msg, duration = 4500) {
+    nodePushToast = msg;
+    if (nodePushToastTimer) clearTimeout(nodePushToastTimer);
+    nodePushToastTimer = setTimeout(() => {
+      nodePushToast = "";
     }, duration);
+  }
+
+  function isSafeNodeRelativePath(p) {
+    return typeof p === "string" && p.startsWith("/") && !p.startsWith("//");
+  }
+
+  function closeNodeWidgetModal() {
+    if (typeof nodeWidgetCleanup === "function") {
+      try { nodeWidgetCleanup(); } catch (_) {}
+    }
+    nodeWidgetCleanup = null;
+    if (nodeWidgetHostEl) {
+      nodeWidgetHostEl.innerHTML = "";
+    }
+    nodeWidgetBusy = false;
+    nodeWidgetLoading = false;
+    nodeWidgetError = "";
+    showNodeWidgetModal = false;
   }
 
   async function waitForAiNodeDrive(maxWaitMs = 12000) {
@@ -3934,8 +3955,9 @@
     }
   }
 
-  function buildP2pPreviewPath(storageStr, filename) {
-    if (!filename) return "";
+  function buildNodeP2pPath(storageStr, relPath) {
+    const cleanRel = String(relPath || "").replace(/^\/+/, "");
+    if (!cleanRel) return "";
     let st = String(storageStr || "").trim();
     if (!st) {
       st =
@@ -3945,118 +3967,98 @@
         "";
     }
     st = st.replace(/^\/p2p\//i, "").replace(/^\/+|\/+$/g, "");
-    return st ? `/p2p/${st}/generated/${filename}` : `/p2p/generated/${filename}`;
-  }
-
-  async function loadPushModerationFallbackBlob(drv, draftId, token, filename) {
-    if (!drv || !filename) return;
-    try {
-      const q = new URLSearchParams({ draft_id: draftId || "", token: token || "" });
-      const res = await drv.fetch(`/autopilot/api/image/${encodeURIComponent(filename)}?${q.toString()}`);
-      if (res && res.ok) {
-        const blob = await res.blob();
-        if (blob && blob.size > 0) {
-          pushModPreviewSrc = URL.createObjectURL(blob);
-        }
-      }
-    } catch (_) {}
+    return st ? `/p2p/${st}/${cleanRel}` : `/p2p/${cleanRel}`;
   }
 
   async function handlePushActionDispatch(action, payload) {
     const extra = (payload && payload.data) || {};
-    const draftId = extra.draft_id || "";
-    const token = extra.action_token || "";
-    if (!draftId) return;
+    const widgetUrl = String(extra.widget_url || "").trim();
+    const actionUrl = String(extra.action_url || "").trim();
+    const itemId = String(extra.item_id || "").trim();
+    const token = String(extra.action_token || "").trim();
 
     if (action === "open") {
-      showPushModModal = true;
-      pushModBusy = true;
-      pushModToken = token;
-      pushModReworkHint = "";
-      pushModDraft = {
-        id: draftId,
-        persona_name: extra.persona_name || "Persona",
-        filename: extra.filename || "",
-        scheduled_for: extra.scheduled_for || 0
-      };
-      pushModTitle = extra.post_title || "";
-      pushModCaption = extra.post_caption || "";
-      pushModTags = Array.isArray(extra.tags) ? extra.tags.join(", ") : (extra.tags || "");
-      pushModPreviewSrc = payload.image || extra.image || buildP2pPreviewPath(extra.default_storage, extra.filename);
+      if (!isSafeNodeRelativePath(widgetUrl)) return;
+      closeNodeWidgetModal();
+      showNodeWidgetModal = true;
+      nodeWidgetLoading = true;
+      nodeWidgetError = "";
 
       try {
         const drv = await waitForAiNodeDrive(12000);
         const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
         const key = (identity && identity.profile && identity.profile.omd_key) || getStoredOmdKey() || "";
-        const q = new URLSearchParams({ token: token || "", omd_key: key });
-        const res = await fetchFn(`/autopilot/draft/${encodeURIComponent(draftId)}?${q.toString()}`);
-        if (res && res.ok) {
-          const dJson = await res.json();
-          if (dJson && dJson.draft) {
-            pushModDraft = dJson.draft;
-            pushModTitle = dJson.draft.post_title || "";
-            pushModCaption = dJson.draft.post_caption || "";
-            pushModTags = (dJson.draft.tags || []).join(", ");
-            if (!pushModPreviewSrc && dJson.draft.filename) {
-              pushModPreviewSrc = buildP2pPreviewPath(extra.default_storage, dJson.draft.filename);
-            }
-          }
+        const curSt =
+          (typeof localStorage !== "undefined" ? localStorage.getItem("omd_default_storage") : "") ||
+          currentProfileData?.defaultStorage ||
+          identity?.profile?.defaultStorage ||
+          DEFAULT_STORAGE_PATH;
+
+        const q = new URLSearchParams({ item_id: itemId, token, omd_key: key });
+        const sep = widgetUrl.includes("?") ? "&" : "?";
+        const res = await fetchFn(`${widgetUrl}${sep}${q.toString()}`);
+        if (!res || !res.ok) {
+          throw new Error(`HTTP ${res ? res.status : "timeout"}`);
+        }
+        const scriptCode = await res.text();
+        nodeWidgetLoading = false;
+        await new Promise((r) => setTimeout(r, 0));
+        if (!showNodeWidgetModal || !nodeWidgetHostEl) return;
+
+        const runner = new Function("host", scriptCode);
+        const maybeCleanup = await runner({
+          container: nodeWidgetHostEl,
+          payload,
+          extra,
+          omdKey: key,
+          defaultStorage: curSt,
+          nodeFetch: (p, opts) => {
+            if (!isSafeNodeRelativePath(p)) throw new Error("Blocked non-relative node path");
+            return fetchFn(p, opts);
+          },
+          buildP2pPath: (st, rel) => buildNodeP2pPath(st, rel),
+          showToast: (msg, ms) => showNodePushToast(msg, ms),
+          setBusy: (b) => { nodeWidgetBusy = Boolean(b); },
+          close: () => closeNodeWidgetModal()
+        });
+        if (typeof maybeCleanup === "function") {
+          nodeWidgetCleanup = maybeCleanup;
         }
       } catch (err) {
-        console.warn("[PushMod] Error loading draft details:", err);
-      } finally {
-        pushModBusy = false;
+        nodeWidgetLoading = false;
+        nodeWidgetError = "Не удалось загрузить виджет узла: " + (err?.message || err);
       }
       return;
     }
 
-    // Direct button tap from OS Push notification (`approve`, `rework`, `decline`)
-    await submitPushModerationAction(action, draftId, token, false);
-  }
-
-  async function submitPushModerationAction(action, explicitDraftId = "", explicitToken = "", includeModalEdits = true) {
-    const draftId = explicitDraftId || (pushModDraft && pushModDraft.id) || "";
-    const token = explicitToken || pushModToken || "";
-    if (!draftId) return;
-
-    pushModBusy = true;
-    showPushToast("⏳ Отправляем решение на AI-узел...");
+    // Direct action tap from OS notification banner
+    if (!isSafeNodeRelativePath(actionUrl)) return;
+    showNodePushToast("⏳ Отправляем действие на узел...");
     try {
       const drv = await waitForAiNodeDrive(12000);
       const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
       const key = (identity && identity.profile && identity.profile.omd_key) || getStoredOmdKey() || "";
-      const bodyPayload = {
-        draft_id: draftId,
-        action,
-        token,
-        omd_key: key
-      };
-      if (includeModalEdits && showPushModModal) {
-        bodyPayload.post_title = pushModTitle;
-        bodyPayload.post_caption = pushModCaption;
-        bodyPayload.tags = pushModTags;
-        if (action === "rework" && pushModReworkHint.trim()) {
-          bodyPayload.hint = pushModReworkHint.trim();
-        }
-      }
-      const res = await fetchFn("/autopilot/push-action", {
+      const res = await fetchFn(actionUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(bodyPayload)
+        body: JSON.stringify({
+          ...extra,
+          item_id: itemId,
+          action,
+          token,
+          omd_key: key
+        })
       });
       const resData = res ? await res.json().catch(() => ({})) : {};
       if (!res || !res.ok) {
         throw new Error(resData.detail || `HTTP ${res ? res.status : "timeout"}`);
       }
-      showPushToast(resData.message || "✅ Готово!");
-      showPushModModal = false;
+      showNodePushToast(resData.message || "✅ Готово!");
     } catch (err) {
-      showPushToast("❌ Ошибка модерации: " + (err?.message || err), 6000);
-    } finally {
-      pushModBusy = false;
+      showNodePushToast("❌ Ошибка: " + (err?.message || err), 6000);
     }
   }
-  
+
   $: if (currentApp === 'filemanager') {
     setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
@@ -6512,124 +6514,35 @@ async function blobToBase64(blob) {
         />
       {/if}
 
-      {#if pushModToast}
-        <div style="position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 12000; background: #182030; color: #f0f4fc; border: 1px solid #6c8cff; border-radius: 12px; padding: 11px 18px; font-size: 13.5px; font-weight: 500; box-shadow: 0 12px 32px rgba(0,0,0,0.45); max-width: 92vw; text-align: center;">
-          {pushModToast}
+      {#if nodePushToast}
+        <div style="position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 2147483646; background: rgba(20, 26, 36, 0.96); color: #f4f7fb; border: 1px solid rgba(74, 163, 223, 0.45); border-radius: 12px; padding: 10px 18px; font-size: 13.5px; box-shadow: 0 12px 32px rgba(0,0,0,0.45); max-width: min(92vw, 440px); text-align: center;">
+          {nodePushToast}
         </div>
       {/if}
 
-      {#if showPushModModal && pushModDraft}
+      {#if showNodeWidgetModal}
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
-          class="confirm-modal-overlay"
-          style="z-index: 11500; padding: 12px;"
-          on:click|self={() => { if (!pushModBusy) showPushModModal = false; }}
+          on:click|self={() => { if (!nodeWidgetBusy) closeNodeWidgetModal(); }}
+          style="position: fixed; inset: 0; z-index: 2147483645; background: rgba(8, 12, 18, 0.72); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: 14px;"
         >
-          <div
-            class="confirm-modal-box"
-            style="max-width: 520px; width: 100%; max-height: 92vh; overflow-y: auto; padding: 18px; border-radius: 16px;"
-          >
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-              <div>
-                <h3 style="margin: 0; font-size: 16px;">📸 {pushModDraft.persona_name || "Пост на модерации"}</h3>
-                {#if pushModDraft.scheduled_for}
-                  <div style="font-size: 12px; opacity: 0.72; margin-top: 2px;">
-                    Слот: {new Date(pushModDraft.scheduled_for * 1000).toLocaleString()}
-                  </div>
-                {/if}
+          <div style="width: min(96vw, 480px); max-height: 90vh; overflow-y: auto; background: #18202c; color: #eef2f7; border: 1px solid rgba(110, 140, 175, 0.28); border-radius: 16px; padding: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.55);">
+            {#if nodeWidgetLoading}
+              <div style="padding: 28px 12px; text-align: center; font-size: 13.5px; opacity: 0.82;">
+                ⏳ Подключаемся к узлу...
               </div>
-              <button
-                type="button"
-                class="confirm-btn cancel"
-                style="padding: 4px 10px; min-width: auto;"
-                disabled={pushModBusy}
-                on:click={() => (showPushModModal = false)}
-              >✕</button>
-            </div>
-
-            {#if pushModPreviewSrc}
-              <div style="width: 100%; border-radius: 12px; overflow: hidden; background: #0b0e14; margin-bottom: 12px; max-height: 440px; display: flex; justify-content: center;">
-                <img
-                  src={pushModPreviewSrc}
-                  alt="Preview"
-                  style="max-width: 100%; max-height: 440px; object-fit: contain; display: block;"
-                  on:error={async () => {
-                    const drv = await waitForAiNodeDrive(5000);
-                    if (drv && pushModDraft?.filename && !pushModPreviewSrc.startsWith("blob:")) {
-                      await loadPushModerationFallbackBlob(drv, pushModDraft.id, pushModToken, pushModDraft.filename);
-                    }
-                  }}
-                />
+            {:else if nodeWidgetError}
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+                <div style="font-size: 13.5px; color: #ff8f8d;">{nodeWidgetError}</div>
+                <button
+                  type="button"
+                  on:click={closeNodeWidgetModal}
+                  style="background: transparent; border: none; color: inherit; font-size: 18px; cursor: pointer; padding: 4px 8px;"
+                >✕</button>
               </div>
             {/if}
-
-            <div style="display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; text-align: left;">
-              <div>
-                <label for="pm-title" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Заголовок поста:</label>
-                <input
-                  id="pm-title"
-                  type="text"
-                  bind:value={pushModTitle}
-                  style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 13.5px;"
-                />
-              </div>
-              <div>
-                <label for="pm-cap" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Текст от лица персоны:</label>
-                <textarea
-                  id="pm-cap"
-                  rows="3"
-                  bind:value={pushModCaption}
-                  style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 13.5px; resize: vertical;"
-                ></textarea>
-              </div>
-              <div>
-                <label for="pm-tags" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Теги:</label>
-                <input
-                  id="pm-tags"
-                  type="text"
-                  bind:value={pushModTags}
-                  style="width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 12.5px;"
-                />
-              </div>
-              <div>
-                <label for="pm-rework" style="display: block; font-size: 12px; opacity: 0.8; margin-bottom: 3px;">Пожелание режиссёру (если нажмёте «Переделать»):</label>
-                <input
-                  id="pm-rework"
-                  type="text"
-                  placeholder="необязательно — без подсказки придумает новую сцену"
-                  bind:value={pushModReworkHint}
-                  style="width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid rgba(128,140,165,0.35); background: rgba(0,0,0,0.18); color: inherit; font-size: 12.5px;"
-                />
-              </div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-              <button
-                type="button"
-                disabled={pushModBusy}
-                on:click={() => submitPushModerationAction("approve")}
-                style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(42,199,105,0.5); background: rgba(42,199,105,0.18); color: #5ce693; font-weight: 600; cursor: pointer;"
-              >✅ В расписание</button>
-              <button
-                type="button"
-                disabled={pushModBusy}
-                on:click={() => submitPushModerationAction("publish_now")}
-                style="padding: 10px 12px; border-radius: 10px; border: 1px solid #6c8cff; background: #6c8cff; color: #fff; font-weight: 600; cursor: pointer;"
-              >🚀 Сразу на CivitAI</button>
-              <button
-                type="button"
-                disabled={pushModBusy}
-                on:click={() => submitPushModerationAction("rework")}
-                style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(245,166,35,0.5); background: rgba(245,166,35,0.16); color: #ffc86b; font-weight: 600; cursor: pointer;"
-              >🔄 Переделать</button>
-              <button
-                type="button"
-                disabled={pushModBusy}
-                on:click={() => submitPushModerationAction("decline")}
-                style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(239,83,80,0.45); background: rgba(239,83,80,0.14); color: #ff8f8d; font-weight: 600; cursor: pointer;"
-              >🗑️ Отклонить</button>
-            </div>
+            <div bind:this={nodeWidgetHostEl} style="display: {nodeWidgetLoading || nodeWidgetError ? 'none' : 'block'};"></div>
           </div>
         </div>
       {/if}
