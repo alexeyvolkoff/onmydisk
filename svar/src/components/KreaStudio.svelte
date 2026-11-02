@@ -284,7 +284,7 @@
         archetype: primaryArchetype,
         archetype_strength: typeof s.archetype_strength === "number" ? s.archetype_strength : 0.4,
         aspect: s.aspect || "896x1152",
-        steps: typeof s.steps === "number" ? s.steps : (s.base_model === "realism" ? 14 : (s.base_model === "semi_realism" ? 16 : 25)),
+        steps: typeof s.steps === "number" ? s.steps : (s.base_model === "anima" ? 25 : 12),
         cfg: typeof s.cfg === "number" ? s.cfg : (s.base_model === "realism" ? 1.5 : (s.base_model === "semi_realism" ? 2.0 : 3.0))
       };
       const jsonStr = JSON.stringify(payload);
@@ -363,7 +363,7 @@
     archetype: initPrimaryArchetype,
     archetype_strength: (initialSavedSliders && typeof initialSavedSliders.archetype_strength === "number") ? initialSavedSliders.archetype_strength : 0.4,
     aspect: (initialSavedSliders && initialSavedSliders.aspect) || "896x1152",
-    steps: (initialSavedSliders && typeof initialSavedSliders.steps === "number") ? initialSavedSliders.steps : (initBaseModel === "realism" ? 14 : (initBaseModel === "semi_realism" ? 16 : 25)),
+    steps: (initialSavedSliders && typeof initialSavedSliders.steps === "number") ? initialSavedSliders.steps : (initBaseModel === "anima" ? 25 : 12),
     cfg: (initialSavedSliders && typeof initialSavedSliders.cfg === "number") ? initialSavedSliders.cfg : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0))
   };
 
@@ -372,10 +372,10 @@
     sliders.base_model = model;
     if (model === "realism") {
       sliders.cfg = 1.5;
-      sliders.steps = 14;
+      sliders.steps = 12;
     } else if (model === "semi_realism") {
       sliders.cfg = 2.0;
-      sliders.steps = 16;
+      sliders.steps = 12;
     } else {
       sliders.cfg = 3.0;
       sliders.steps = 25;
@@ -409,10 +409,10 @@
   function resetAdvancedToModelDefaults() {
     if (sliders.base_model === "realism") {
       sliders.cfg = 1.5;
-      sliders.steps = 14;
+      sliders.steps = 12;
     } else if (sliders.base_model === "semi_realism") {
       sliders.cfg = 2.0;
-      sliders.steps = 16;
+      sliders.steps = 12;
     } else {
       sliders.cfg = 3.0;
       sliders.steps = 25;
@@ -2568,12 +2568,12 @@
         archetype: (sliders.archetypes && sliders.archetypes.length > 0) ? sliders.archetypes[0] : null,
         archetype_weights: sliders.archetype_weights || {},
         archetype_strength: sliders.archetype_strength,
-        steps: sliders.steps || (sliders.base_model === "realism" ? 14 : (sliders.base_model === "semi_realism" ? 16 : 25)),
+        steps: sliders.steps || (sliders.base_model === "anima" ? 25 : 12),
         cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0))
       },
       width,
       height,
-      steps: sliders.steps || (sliders.base_model === "realism" ? 14 : (sliders.base_model === "semi_realism" ? 16 : 25)),
+      steps: sliders.steps || (sliders.base_model === "anima" ? 25 : 12),
       cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0)),
       subfolder: targetSubfolder || null,
       filename_prefix: targetPrefix || null,
