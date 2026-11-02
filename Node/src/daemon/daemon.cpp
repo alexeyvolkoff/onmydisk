@@ -100,9 +100,24 @@ void Daemon::start()
                           QSettings::NativeFormat);
         const QString appFile = QCoreApplication::applicationFilePath();
         const QString runKey = QString("\"%1\"").arg(QDir::toNativeSeparators(appFile));
-        if (autoRun.value("OnMyDiskNode").toString() != runKey) {
+        const QString curVal = autoRun.value("OnMyDiskNode").toString();
+        if (curVal.isEmpty() || (!curVal.contains("wscript", Qt::CaseInsensitive) && curVal != runKey)) {
             autoRun.setValue("OnMyDiskNode", runKey);
             autoRun.sync();
+        }
+        // Remove legacy desktop client Run key if it points to a different binary that would steal IPC pipe
+        const QString legacyVal = autoRun.value("onmydisk").toString();
+        if (!legacyVal.isEmpty() && !legacyVal.contains(QDir::toNativeSeparators(appFile), Qt::CaseInsensitive)) {
+            autoRun.remove("onmydisk");
+            autoRun.sync();
+        }
+    }
+    // Detach console when launched directly by Explorer / Run key without CLI flags
+    // so no black console window stays on screen (closing which would kill the daemon).
+    if (qApp->arguments().size() <= 1) {
+        DWORD procList[2] = {0, 0};
+        if (GetConsoleProcessList(procList, 2) == 1) {
+            FreeConsole();
         }
     }
     // Disable the console QuickEdit selection mode: while text is selected in

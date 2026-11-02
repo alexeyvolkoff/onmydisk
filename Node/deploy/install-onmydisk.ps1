@@ -26,8 +26,11 @@ param(
     [switch]$WithAi,
     [switch]$AiCpu,   # install CPU-only torch (much smaller) instead of the default CUDA build
     [switch]$NoOllama,
+    [switch]$Agentic, # configure OnMyChat in P2P agentic mode (implies -AiCpu -NoOllama)
+    [string]$InferenceNode = "auto",
     [string]$RepoBase = "https://forge.bineon.team/repo/Windows"
 )
+if ($Agentic) { $AiCpu = $true; $NoOllama = $true }
 
 $ErrorActionPreference = "Stop"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -42,18 +45,12 @@ $RunKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $RunValue   = "OnMyDiskNode"
 
 function Stop-Node {
-    if (Get-Process onmydisk -ErrorAction SilentlyContinue) {
-        # ask the running instance to quit via its IPC interface (-q).
-        # NB: PS 5.1 turns native stderr into ErrorRecords under `*>`, and with
-        # $ErrorActionPreference=Stop that kills the script - use Start-Process
-        # which swallows banners, and guard everything.
-        try {
-            Start-Process -FilePath $NodeExe -ArgumentList "-q" -WindowStyle Hidden -Wait -ErrorAction Stop | Out-Null
-        } catch { }
-        Start-Sleep -Seconds 2
-        Get-Process onmydisk -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    }
+    Get-Process onmydisk -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
 }
+
+$StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\On My Disk"
+$DesktopLnk   = Join-Path ([Environment]::GetFolderPath("Desktop")) "On My Disk Node.lnk"
 
 if ($Uninstall) {
     Stop-Node
@@ -63,6 +60,10 @@ if ($Uninstall) {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-ItemProperty -Path $RunKeyPath -Name $RunValue -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path $RunKeyPath -Name "OnMyChatAI" -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName "OnMyDiskNode" -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName "OnMyChatAI" -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item $DesktopLnk -Force -ErrorAction SilentlyContinue
+    Remove-Item $StartMenuDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:LOCALAPPDATA "OnMyChat") -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path $InstallDir) {
         Remove-Item $InstallDir -Recurse -Force
@@ -74,11 +75,17 @@ if ($Uninstall) {
 # --- install ---------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $BinDir, $EtcDir | Out-Null
 
+# Stop any running node (including legacy Program Files desktop client that shares the IPC pipe) BEFORE overwriting binaries
+Stop-Node
+Remove-ItemProperty -Path $RunKeyPath -Name "onmydisk" -ErrorAction SilentlyContinue
+
 $downloads = @(
     @{ Url = "$RepoBase/onmydisk-node-latest-x64.exe"; Out = $NodeExe }
     @{ Url = "$RepoBase/omd-tunnel-x64.exe";           Out = $TunnelExe }
-    @{ Url = "$RepoBase/onmydisk.conf";                Out = $Conf }
 )
+if (-not (Test-Path $Conf)) {
+    $downloads += @{ Url = "$RepoBase/onmydisk.conf"; Out = $Conf }
+}
 
 foreach ($d in $downloads) {
     Write-Host "Downloading $($d.Url) ..."
@@ -89,25 +96,104 @@ foreach ($d in $downloads) {
 Unblock-File $NodeExe -ErrorAction SilentlyContinue
 Unblock-File $TunnelExe -ErrorAction SilentlyContinue
 
-Stop-Node
+# Create silent background launchers (no console window, no PowerShell needed)
+$StartVbs = Join-Path $InstallDir "start-node.vbs"
+$OpenVbs  = Join-Path $InstallDir "open-node.vbs"
+$StopVbs  = Join-Path $InstallDir "stop-node.vbs"
 
-# autostart for the current user (HKCU Run) - the client re-checks this on every start
-Set-ItemProperty -Path $RunKeyPath -Name $RunValue -Value ('"' + $NodeExe + '"')
+$startVbsCode = @"
+Set sh = CreateObject("WScript.Shell")
+Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+Set procs = wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE Name = 'onmydisk.exe'")
+If procs.Count = 0 Then
+    sh.CurrentDirectory = "$BinDir"
+    sh.Run Chr(34) & "$NodeExe" & Chr(34), 0, False
+End If
+"@
+Set-Content -Path $StartVbs -Value $startVbsCode -Encoding ASCII
+
+$openVbsCode = @"
+Set sh = CreateObject("WScript.Shell")
+Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+Set procs = wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE Name = 'onmydisk.exe'")
+If procs.Count = 0 Then
+    sh.CurrentDirectory = "$BinDir"
+    sh.Run Chr(34) & "$NodeExe" & Chr(34), 0, False
+    WScript.Sleep 1800
+End If
+sh.Run "http://localhost:8081", 1, False
+"@
+Set-Content -Path $OpenVbs -Value $openVbsCode -Encoding ASCII
+
+$stopVbsCode = @"
+Set sh = CreateObject("WScript.Shell")
+sh.Run "taskkill.exe /F /IM onmydisk.exe", 0, True
+"@
+Set-Content -Path $StopVbs -Value $stopVbsCode -Encoding ASCII
+
+# 1) Autostart via HKCU Run (using explicit wscript.exe so Windows 11 never prompts for .vbs handler)
+$WscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+Set-ItemProperty -Path $RunKeyPath -Name $RunValue -Value ("`"$WscriptExe`" //B //Nologo `"$StartVbs`"")
+
+# 2) Autostart via Windows Task Scheduler (survives laptop battery mode & auto-restarts on failure)
+try {
+    $taskAction   = New-ScheduledTaskAction -Execute $WscriptExe -Argument "//B //Nologo `"$StartVbs`"" -WorkingDirectory $BinDir
+    $taskTrigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                        -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName "OnMyDiskNode" -Action $taskAction -Trigger $taskTrigger `
+        -Settings $taskSettings -Description "On My Disk P2P Node background daemon" -Force | Out-Null
+} catch {
+    Write-Warning "Could not register Scheduled Task OnMyDiskNode (HKCU Run fallback active): $_"
+}
+
+# 3) Create Desktop & Start Menu shortcuts so the user can start/open the node with a normal click
+try {
+    New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
+    $wsh = New-Object -ComObject WScript.Shell
+
+    foreach ($lnkPath in @($DesktopLnk, (Join-Path $StartMenuDir "On My Disk Node.lnk"))) {
+        $sc = $wsh.CreateShortcut($lnkPath)
+        $sc.TargetPath = $WscriptExe
+        $sc.Arguments = "//B //Nologo `"$OpenVbs`""
+        $sc.WorkingDirectory = $BinDir
+        $sc.IconLocation = "$NodeExe,0"
+        $sc.Description = "Start On My Disk Node and open control panel (http://localhost:8081)"
+        $sc.Save()
+    }
+
+    $stopSc = $wsh.CreateShortcut((Join-Path $StartMenuDir "Stop On My Disk Node.lnk"))
+    $stopSc.TargetPath = $WscriptExe
+    $stopSc.Arguments = "//B //Nologo `"$StopVbs`""
+    $stopSc.WorkingDirectory = $BinDir
+    $stopSc.IconLocation = "$NodeExe,0"
+    $stopSc.Description = "Stop On My Disk Node background service"
+    $stopSc.Save()
+} catch {
+    Write-Warning "Could not create shortcuts: $_"
+}
 
 # allow inbound HTTP on :8081 for the claim page; silent no-op without admin
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($isAdmin) {
+    netsh advfirewall firewall delete rule name="On My Disk node" *> $null
     netsh advfirewall firewall add rule name="On My Disk node" dir=in action=allow `
         program=$NodeExe enable=yes profile=any | Out-Null
+    # Clean up stale 2021 ProgramData Start Menu shortcut if legacy exe is no longer used
+    $legacyStartDir = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\On My Disk"
+    if (Test-Path (Join-Path $legacyStartDir "On My Disk.lnk")) {
+        Remove-Item $legacyStartDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host "Starting the node ..."
-Start-Process -FilePath $NodeExe -WorkingDirectory $BinDir -WindowStyle Hidden
+try { Start-ScheduledTask -TaskName "OnMyDiskNode" -ErrorAction Stop } catch { & $WscriptExe //B //Nologo "$StartVbs" }
 
 Start-Sleep -Seconds 2
 Write-Host ""
 Write-Host "On My Disk node installed at $InstallDir"
+Write-Host "Shortcuts created on Desktop and Start Menu -> On My Disk -> On My Disk Node."
 Write-Host "Open http://localhost:8081 in your browser and claim this device to your account."
 Write-Host "TCP forwarding from outside: omd-tunnel.exe --listen <port> <linkID> <targetPort>"
 
@@ -173,7 +259,13 @@ function Install-Ai {
     if (-not (Test-Path $CfgPath)) {
         $cfg = Get-Content (Join-Path $AiDir "config.example.ini") -Raw
         $cfg = $cfg -replace "APP_ROOT_DIR\s*=\s*/opt/onmychat", ("APP_ROOT_DIR = " + ($AiDir -replace "\\","/"))
-        Set-Content $CfgPath $cfg
+        if ($Agentic) {
+            $cfg = $cfg -replace "(?m)^#?AI_PROVIDER\s*=.*$", "AI_PROVIDER = agentic"
+            $cfg = $cfg -replace "(?m)^#?INFERENCE_NODE\s*=.*$", ("INFERENCE_NODE = " + $InferenceNode)
+            $cfg = $cfg -replace "(?m)^#?INFERENCE_BIND_OLLAMA\s*=.*$", "INFERENCE_BIND_OLLAMA = 21434"
+            $cfg = $cfg -replace "(?m)^#?INFERENCE_BIND_COMFY\s*=.*$", "INFERENCE_BIND_COMFY = 28188"
+        }
+        [IO.File]::WriteAllText($CfgPath, $cfg, (New-Object System.Text.UTF8Encoding $false))
     }
 
     # 3. python dependencies (this step is long - big wheels like torch/chromadb)
@@ -218,13 +310,28 @@ function Install-Ai {
         }
     }
 
-    # 4. launcher (hidden window via wscript) + HKCU Run autostart
+    # 4. launcher (hidden window via wscript + .cmd wrapper) + HKCU Run / ScheduledTask autostart
+    $CmdFile = Join-Path $AiDir "start-onmychat.cmd"
+    $cmd  = "@echo off`r`n"
+    $cmd += 'cd /d "%~dp0"' + "`r`n"
+    $cmd += '"' + $Py + '" -X utf8 -m uvicorn api:app --host 127.0.0.1 --port 4000 >> "%~dp0onmychat.log" 2>&1' + "`r`n"
+    Set-Content $CmdFile $cmd -Encoding ASCII
+
     $Starter = Join-Path $AiDir "start-onmychat.vbs"
     $vbs  = 'Set sh = CreateObject("Wscript.Shell")' + "`r`n"
     $vbs += 'sh.CurrentDirectory = "' + $AiDir + '"' + "`r`n"
-    $vbs += 'sh.Run """' + $Py + '"" -m uvicorn api:app --host 127.0.0.1 --port 4000", 0, False' + "`r`n"
-    Set-Content $Starter $vbs
-    Set-ItemProperty -Path $RunKeyPath -Name "OnMyChatAI" -Value ('"' + $Starter + '"')
+    $vbs += 'sh.Run """' + $CmdFile + '""", 0, False' + "`r`n"
+    Set-Content $Starter $vbs -Encoding ASCII
+    $WscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+    Set-ItemProperty -Path $RunKeyPath -Name "OnMyChatAI" -Value ("`"$WscriptExe`" //B //Nologo `"$Starter`"")
+    try {
+        $aiAction   = New-ScheduledTaskAction -Execute $WscriptExe -Argument "//B //Nologo `"$Starter`"" -WorkingDirectory $AiDir
+        $aiTrigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $aiSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                          -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName "OnMyChatAI" -Action $aiAction -Trigger $aiTrigger `
+            -Settings $aiSettings -Description "OnMyChat local AI backend" -Force | Out-Null
+    } catch {}
 
     # 5. Ollama for Windows (per-user install, it does not need elevation)
     if (-not $NoOllama) {
@@ -239,7 +346,7 @@ function Install-Ai {
     }
 
     Write-Host "Starting OnMyChat ..."
-    & wscript.exe $Starter
+    try { Start-ScheduledTask -TaskName "OnMyChatAI" -ErrorAction Stop } catch { & $WscriptExe //B //Nologo "$Starter" }
 
     Write-Host ""
     Write-Host "OnMyChat installed at $AiDir (http://localhost:4000)"

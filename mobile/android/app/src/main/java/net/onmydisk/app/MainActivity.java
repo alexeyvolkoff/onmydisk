@@ -36,6 +36,7 @@ public class MainActivity extends BridgeActivity {
 
 
     private View customView = null;
+    private android.app.Dialog activeWebSheetDialog = null;
     private WebChromeClient.CustomViewCallback customViewCallback = null;
 
     @Override
@@ -78,6 +79,7 @@ public class MainActivity extends BridgeActivity {
             settings.setAllowFileAccess(true);
             settings.setAllowContentAccess(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
+            webView.addJavascriptInterface(new OmdNativeWebBridge(), "OmdNative");
 
             // Intercept WebView requests to support OMD template parsing and transparent APK fallback for craft WASM modules
             getBridge().setWebViewClient(new com.getcapacitor.BridgeWebViewClient(getBridge()) {
@@ -494,6 +496,279 @@ public class MainActivity extends BridgeActivity {
             } catch (Exception e) {
                 Log.w(TAG, "Failed to create notification channel", e);
             }
+        }
+    }
+
+    public class OmdNativeWebBridge {
+        @android.webkit.JavascriptInterface
+        public void copyToClipboard(String text) {
+            if (text == null) return;
+            runOnUiThread(() -> {
+                try {
+                    android.content.ClipboardManager cb = (android.content.ClipboardManager) getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                    if (cb != null) {
+                        cb.setPrimaryClip(android.content.ClipData.newPlainText("text", text));
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Clipboard copy failed", e);
+                }
+            });
+        }
+
+        @android.webkit.JavascriptInterface
+        public void openWebSheet(String url, String title) {
+            if (url == null || (!url.startsWith("https://") && !url.startsWith("http://"))) {
+                return;
+            }
+            runOnUiThread(() -> showInAppWebSheet(url, title));
+        }
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
+    }
+
+    private void showInAppWebSheet(final String initialUrl, final String sheetTitle) {
+        try {
+            if (activeWebSheetDialog != null && activeWebSheetDialog.isShowing()) {
+                try {
+                    activeWebSheetDialog.dismiss();
+                } catch (Exception ignored) {}
+            }
+
+            final android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar);
+            activeWebSheetDialog = dialog;
+
+            android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setColor(android.graphics.Color.parseColor("#131C24"));
+            float r = dpToPx(18);
+            bg.setCornerRadii(new float[]{r, r, r, r, 0f, 0f, 0f, 0f});
+            root.setBackground(bg);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                root.setClipToOutline(true);
+            }
+
+            // Header bar
+            android.widget.LinearLayout header = new android.widget.LinearLayout(this);
+            header.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            header.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            header.setBackgroundColor(android.graphics.Color.parseColor("#182430"));
+            header.setPadding(dpToPx(14), dpToPx(10), dpToPx(10), dpToPx(10));
+
+            android.widget.LinearLayout titleBox = new android.widget.LinearLayout(this);
+            titleBox.setOrientation(android.widget.LinearLayout.VERTICAL);
+            android.widget.LinearLayout.LayoutParams titleLp = new android.widget.LinearLayout.LayoutParams(
+                0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+            );
+            titleBox.setLayoutParams(titleLp);
+
+            final android.widget.TextView titleTv = new android.widget.TextView(this);
+            titleTv.setText((sheetTitle != null && !sheetTitle.isEmpty()) ? sheetTitle : "Web");
+            titleTv.setTextColor(android.graphics.Color.parseColor("#EEF2F7"));
+            titleTv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
+            titleTv.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            titleTv.setSingleLine(true);
+            titleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+
+            final android.widget.TextView subTv = new android.widget.TextView(this);
+            Uri parsedInit = Uri.parse(initialUrl);
+            subTv.setText(parsedInit.getHost() != null ? parsedInit.getHost() : initialUrl);
+            subTv.setTextColor(android.graphics.Color.parseColor("#7DD3FC"));
+            subTv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11.5f);
+            subTv.setSingleLine(true);
+            subTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+
+            titleBox.addView(titleTv);
+            titleBox.addView(subTv);
+
+            final WebView sheetWebView = new WebView(this);
+
+            android.widget.TextView reloadBtn = new android.widget.TextView(this);
+            reloadBtn.setText("↻");
+            reloadBtn.setTextColor(android.graphics.Color.parseColor("#CBD5E1"));
+            reloadBtn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18);
+            reloadBtn.setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4));
+            reloadBtn.setOnClickListener(v -> sheetWebView.reload());
+
+            android.widget.TextView closeBtn = new android.widget.TextView(this);
+            closeBtn.setText("✕");
+            closeBtn.setTextColor(android.graphics.Color.parseColor("#94A3B8"));
+            closeBtn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18);
+            closeBtn.setPadding(dpToPx(12), dpToPx(4), dpToPx(8), dpToPx(4));
+            closeBtn.setOnClickListener(v -> dialog.dismiss());
+
+            header.addView(titleBox);
+            header.addView(reloadBtn);
+            header.addView(closeBtn);
+
+            final android.widget.ProgressBar progressBar = new android.widget.ProgressBar(
+                this, null, android.R.attr.progressBarStyleHorizontal
+            );
+            progressBar.setMax(100);
+            progressBar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(2)
+            ));
+
+            sheetWebView.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            ));
+            sheetWebView.setBackgroundColor(android.graphics.Color.parseColor("#0F171E"));
+            sheetWebView.setFocusable(true);
+            sheetWebView.setFocusableInTouchMode(true);
+
+            WebSettings ws = sheetWebView.getSettings();
+            ws.setJavaScriptEnabled(true);
+            ws.setDomStorageEnabled(true);
+            ws.setDatabaseEnabled(true);
+            ws.setJavaScriptCanOpenWindowsAutomatically(true);
+            ws.setSupportMultipleWindows(true);
+            ws.setLoadWithOverviewMode(true);
+            ws.setUseWideViewPort(true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                ws.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+            }
+            String ua = ws.getUserAgentString();
+            if (ua != null) {
+                ua = ua.replace("; wv)", ")").replace("Version/4.0 ", "");
+                ws.setUserAgentString(ua);
+            }
+
+            android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
+            cm.setAcceptCookie(true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cm.setAcceptThirdPartyCookies(sheetWebView, true);
+            }
+
+            sheetWebView.setWebViewClient(new android.webkit.WebViewClient() {
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                    Uri u = request != null ? request.getUrl() : null;
+                    if (u == null) return false;
+                    String scheme = u.getScheme() != null ? u.getScheme().toLowerCase() : "";
+                    if ("http".equals(scheme) || "https".equals(scheme)) {
+                        return false; // Keep strictly inside in-app sheet WebView
+                    }
+                    // Block custom app-bounce schemes (twitter://, intent://, x://) so native app cannot hijack and strip in_reply_to
+                    return true;
+                }
+
+                @SuppressWarnings("deprecation")
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, String urlStr) {
+                    if (urlStr == null) return false;
+                    String lower = urlStr.toLowerCase();
+                    if (lower.startsWith("https://") || lower.startsWith("http://")) {
+                        return false;
+                    }
+                    return true;
+                }
+
+                @Override
+                public void onPageStarted(WebView view, String pageUrl, android.graphics.Bitmap favicon) {
+                    super.onPageStarted(view, pageUrl, favicon);
+                    if (pageUrl != null) {
+                        Uri u = Uri.parse(pageUrl);
+                        if (u.getHost() != null) {
+                            subTv.setText(u.getHost());
+                        }
+                    }
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String pageUrl) {
+                    super.onPageFinished(view, pageUrl);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        android.webkit.CookieManager.getInstance().flush();
+                    }
+                }
+            });
+
+            sheetWebView.setWebChromeClient(new WebChromeClient() {
+                @Override
+                public void onProgressChanged(WebView view, int newProgress) {
+                    progressBar.setProgress(newProgress);
+                    progressBar.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
+                }
+
+                @Override
+                public void onCloseWindow(WebView window) {
+                    try {
+                        dialog.dismiss();
+                    } catch (Exception ignored) {}
+                }
+
+                @Override
+                public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+                    WebView tempWv = new WebView(MainActivity.this);
+                    tempWv.setWebViewClient(new android.webkit.WebViewClient() {
+                        @Override
+                        public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                            Uri u = req != null ? req.getUrl() : null;
+                            if (u != null && ("http".equalsIgnoreCase(u.getScheme()) || "https".equalsIgnoreCase(u.getScheme()))) {
+                                sheetWebView.loadUrl(u.toString());
+                            }
+                            v.destroy();
+                            return true;
+                        }
+                    });
+                    WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+                    transport.setWebView(tempWv);
+                    resultMsg.sendToTarget();
+                    return true;
+                }
+            });
+
+            root.addView(header);
+            root.addView(progressBar);
+            root.addView(sheetWebView);
+
+            dialog.setContentView(root);
+            android.view.Window win = dialog.getWindow();
+            if (win != null) {
+                win.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+                int screenH = getResources().getDisplayMetrics().heightPixels;
+                win.setLayout(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    Math.round(screenH * 0.90f)
+                );
+                win.setGravity(android.view.Gravity.BOTTOM);
+                win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+                win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
+
+            dialog.setOnKeyListener((d, keyCode, event) -> {
+                if (keyCode == android.view.KeyEvent.KEYCODE_BACK && event.getAction() == android.view.KeyEvent.ACTION_UP) {
+                    if (sheetWebView.canGoBack()) {
+                        sheetWebView.goBack();
+                        return true;
+                    }
+                    d.dismiss();
+                    return true;
+                }
+                return false;
+            });
+
+            dialog.setOnDismissListener(d -> {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        android.webkit.CookieManager.getInstance().flush();
+                    }
+                    root.removeView(sheetWebView);
+                    sheetWebView.stopLoading();
+                    sheetWebView.destroy();
+                } catch (Exception ignored) {}
+                if (activeWebSheetDialog == d) {
+                    activeWebSheetDialog = null;
+                }
+            });
+
+            dialog.show();
+            sheetWebView.requestFocus();
+            sheetWebView.loadUrl(initialUrl);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to open in-app web sheet", e);
         }
     }
 }
