@@ -158,6 +158,18 @@
       flex-shrink: 0;
     }
 
+    .brand picture {
+      display: none;
+    }
+
+    .brand:not([data-app*="Chat" i]) .logo-files {
+      display: inline-flex;
+    }
+
+    .brand[data-app*="Chat" i] .logo-chat {
+      display: inline-flex;
+    }
+
     .brand img {
       height: 34px;
       width: auto;
@@ -615,10 +627,14 @@
   <!-- ==================== 1. TOP NAVIGATION ==================== -->
   <header class="navbar">
     <div class="navbar-inner">
-      <a href="/about" class="brand" aria-label="On My Chat">
-        <picture>
+      <a href="/about" class="brand" data-app="{APPTITLE}" aria-label="{APPTITLE}">
+        <picture class="logo-chat">
           <source srcset="/customtheme/logo-chat-dark.svg" media="(prefers-color-scheme: light)" />
-          <img src="/customtheme/logo-chat.svg" alt="On My Chat" width="107" height="34" />
+          <img src="/customtheme/logo-chat.svg" alt="{APPTITLE}" height="34" />
+        </picture>
+        <picture class="logo-files">
+          <source srcset="/img/logo-dark.svg" media="(prefers-color-scheme: light)" />
+          <img src="/img/logo.svg" alt="{APPTITLE}" height="34" />
         </picture>
       </a>
 

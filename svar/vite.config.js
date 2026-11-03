@@ -85,8 +85,8 @@ const buildAppMode = String(process.env.VITE_APP_MODE || process.env.APP_MODE ||
  */
 function templateParserPlugin() {
   const defaults = {
-    TITLE:       'On My Disk',
-    APPTITLE:    'On My Disk',
+    TITLE:       buildAppMode === 'chat' ? 'On My Chat' : 'On My Disk',
+    APPTITLE:    buildAppMode === 'chat' ? 'On My Chat' : 'On My Disk',
     COMPANY:     'On My Chat community',
     COMPANYURL:  'https://github.com/alexeyvolkoff/onmydisk',
     SLOGAN:      'Delivering content right from your disk',
