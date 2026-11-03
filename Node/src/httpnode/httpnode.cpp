@@ -69,7 +69,7 @@ OnMyDiskHttpNode::OnMyDiskHttpNode(QString configFile, QObject *parent) : OnMyDi
     m_nonAuthDestinations << "src" << "img"  << "link"  << "apps"   << "fonts" << "theme" << "qwebchannel" << "mimetypes" <<  "jssocial"
                           << "lightgallery" << "node_modules" << "dist" << "rest" << "customtheme" << "reset" << "key" << "signin" << "manifest.json"
                           << "home-back-b.jpg"  << "logo-white.svg" << "favicon.ico" << "login" <<  "signup" << "shared.html" << "assets"
-                          << "claim" << "description.xml" << "api";
+                          << "tos" << "tos.html" << "about" << "about.html" << "about-i18n.js" << "robots.txt" << "claim" << "description.xml" << "api";
 #ifdef P2P_ENABLED
     m_nonAuthDestinations << "shared";
 #endif

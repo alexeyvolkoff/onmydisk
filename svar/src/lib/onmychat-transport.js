@@ -1,3 +1,5 @@
+import { getClientPlatform } from './platform.js';
+
 const TEXT_ID = 'txt';
 const REASONING_ID = 'think';
 
@@ -376,7 +378,7 @@ export class OnmyChatTransport {
                 client: 'svar',
                 image_delivery: 'inline',
                 settings: Object.assign(
-                    {},
+                    { platform: getClientPlatform() },
                     body.content_mode ? { content_mode: body.content_mode } : {},
                     body.settings || {},
                     body.mcp_keys ? { mcp_keys: body.mcp_keys } : {}
@@ -398,6 +400,7 @@ export class OnmyChatTransport {
                     Accept: 'text/event-stream',
                     'Content-Type': 'application/json',
                     'X-Client': 'svar',
+                    'X-OMD-Platform': getClientPlatform(),
                     'X-Image-Delivery': 'inline'
                 },
                 body: JSON.stringify(payload),

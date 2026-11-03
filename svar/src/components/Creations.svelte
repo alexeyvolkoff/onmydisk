@@ -12,6 +12,7 @@
   import { parseStoragePath, formatStoragePath, persistStoragePath, DEFAULT_STORAGE_PATH, getLocalDevice, getDefaultStoragePath } from "../lib/storage-path.js";
   import { issueConsent, getClientDeviceServer } from "../lib/client-device-server.js";
   import { getOrCreateLocalLinkId } from "../lib/local-client.js";
+  import { isIosNative, getClientPlatform, isExternalCheckoutUrl, sanitizeExternalCheckoutText } from "../lib/platform.js";
 
   let innerWidth = typeof window !== "undefined" ? window.innerWidth : 1024;
   $: isMobile = innerWidth < 768;
@@ -121,8 +122,13 @@
   let items = [];
   let generationNotice = "";
   $: rawNoticeUrl = generationNotice ? ((generationNotice.match(/https?:\/\/[^\s)\]]+/i) || [])[0] || "").replace(/[.,;!?]+$/, "") : "";
-  $: noticeUrl = rawNoticeUrl.replace("https://whop.com/checkout/prod_wuSw81wT1wivN", "https://whop.com/onmychat/on-my-chat-creative-studio");
-  $: noticeText = generationNotice ? generationNotice.replace(/https?:\/\/[^\s]+/i, "").trim() : "";
+  $: mappedNoticeUrl = rawNoticeUrl.replace("https://whop.com/checkout/prod_wuSw81wT1wivN", "https://whop.com/onmychat/on-my-chat-creative-studio");
+  $: noticeUrl = (isIosNative() && isExternalCheckoutUrl(mappedNoticeUrl)) ? "" : mappedNoticeUrl;
+  $: noticeText = generationNotice
+    ? (isIosNative()
+        ? sanitizeExternalCheckoutText(generationNotice)
+        : generationNotice.replace(/https?:\/\/[^\s]+/i, "").trim())
+    : "";
   let isLoadingFiles = true;
   let viewMode = typeof localStorage !== "undefined"
     ? localStorage.getItem("omd_creations_view") || "roll"
@@ -1321,6 +1327,7 @@
           {},
           assistantSettingsData || {},
           {
+            platform: getClientPlatform(),
             content_mode: contentMode,
             defaultStorage: baseStorage,
             language: $locale || "en",
@@ -1556,11 +1563,12 @@
         : {};
       const res = await fetchFn("/krea/status", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Client": "svar" },
+        headers: { "Content-Type": "application/json", "X-Client": "svar", "X-OMD-Platform": getClientPlatform() },
         body: JSON.stringify({
           omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
           mcp_keys: mcpPayload,
           settings: Object.assign({}, assistantSettingsData || {}, {
+            platform: getClientPlatform(),
             language: $locale || "en",
             mcp_keys: mcpPayload
           })

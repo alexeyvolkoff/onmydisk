@@ -1,5 +1,6 @@
 import { WebRTCDataChannelDrive } from './webrtc-drive.js';
 import { getStoredOmdKey } from './omd-key.js';
+import { getClientPlatform } from './platform.js';
 
 const CR = 13;
 const LF = 10;
@@ -733,6 +734,9 @@ export class HttpDrive {
         }
         if (this.isPrivateMode !== undefined && !headers.some(([k]) => k.toLowerCase() === 'x-omd-private-mode')) {
             headers.push(['X-OMD-Private-Mode', this.isPrivateMode ? '1' : '0']);
+        }
+        if (!headers.some(([k]) => k.toLowerCase() === 'x-omd-platform')) {
+            headers.push(['X-OMD-Platform', getClientPlatform()]);
         }
         if (this.extraAiHeaders && typeof this.extraAiHeaders === 'object') {
             for (const [k, v] of Object.entries(this.extraAiHeaders)) {

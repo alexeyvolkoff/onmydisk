@@ -10,6 +10,7 @@
   import { cameraSyncManager, syncState, updateSettings } from "../lib/camera-sync.js";
   import { isNativeStorageAvailable } from "../lib/native-drive.js";
   import { appVersion, otaState, performOtaUpdate, checkForOtaUpdate } from "../lib/ota-updater.js";
+  import { isIosNative, isExternalCheckoutUrl } from "../lib/platform.js";
   import FolderPicker from "./FolderPicker.svelte";
   import AssistantAvatarModal from "./AssistantAvatarModal.svelte";
   import { getChatStore } from "../lib/chat-store.js";
@@ -174,7 +175,8 @@
   $: if (identity) {
     setMcpKeysIdentity(identity);
   }
-  let mcpSelectedPreset = "club_pass"; // "club_pass" | "civitai" | "plane" | "custom"
+  const isIosApp = isIosNative();
+  let mcpSelectedPreset = isIosApp ? "civitai" : "club_pass"; // "club_pass" | "civitai" | "plane" | "custom"
   let mcpCustomName = "";
   let mcpCustomUrl = "";
   let mcpKeyInput = "";
@@ -186,7 +188,9 @@
   let mcpMessageType = "info";
 
   $: mcpAppsMap = ($mcpKeysStore && $mcpKeysStore.byApp) || {};
-  $: mcpAppsList = Object.values(mcpAppsMap);
+  $: mcpAppsList = Object.values(mcpAppsMap).filter(
+    (app) => !(isIosApp && (app.appId === "club_pass" || app.appId === "whop" || isExternalCheckoutUrl(app.url)))
+  );
 
   function toggleMcpKeyVisibility(appId) {
     showMcpKeyToggles = { ...showMcpKeyToggles, [appId]: !showMcpKeyToggles[appId] };
@@ -2038,15 +2042,17 @@
                 </div>
                 <div class="row-value-badge" style="display: flex; align-items: center; gap: 8px;">
                   <span class="badge-pill success" style="font-family: monospace;">v{$appVersion}</span>
-                  {#if $otaState.updateAvailable}
-                    <button class="btn-primary-action btn-sm" on:click={() => performOtaUpdate()} style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px;">
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                      <span>{$_("update_now_btn", {}, "Update")}</span>
-                    </button>
-                  {:else}
-                    <button class="btn-secondary-action btn-sm" on:click={() => checkForOtaUpdate(true)} style="padding: 4px 10px; font-size: 12px;">
-                      <span>{$_("check_updates", {}, "Check")}</span>
-                    </button>
+                  {#if $otaState.otaSupported !== false}
+                    {#if $otaState.updateAvailable}
+                      <button class="btn-primary-action btn-sm" on:click={() => performOtaUpdate()} style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px;">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                        <span>{$_("update_now_btn", {}, "Update")}</span>
+                      </button>
+                    {:else}
+                      <button class="btn-secondary-action btn-sm" on:click={() => checkForOtaUpdate(true)} style="padding: 4px 10px; font-size: 12px;">
+                        <span>{$_("check_updates", {}, "Check")}</span>
+                      </button>
+                    {/if}
                   {/if}
                 </div>
               </div>
@@ -3506,11 +3512,13 @@
                 <div class="mcp-header-text">
                   <h4 class="card-title">{$_("mcp_api_keys", {}, "MCP API Keys")}</h4>
                   <p class="omd-key-hint">
-                    {$_("mcp_api_keys_desc", {}, "API keys for integrating external services and applications (Club Pass, CivitAI, Plane, etc.) via Model Context Protocol. Stored encrypted in your DID graph.")}
+                    {isIosApp
+                      ? $_("mcp_api_keys_desc", {}, "API keys for integrating external services and applications (CivitAI, Plane, etc.) via Model Context Protocol. Stored encrypted in your DID graph.").replace(/Club Pass[,،、]\s*/gi, "")
+                      : $_("mcp_api_keys_desc", {}, "API keys for integrating external services and applications (Club Pass, CivitAI, Plane, etc.) via Model Context Protocol. Stored encrypted in your DID graph.")}
                   </p>
                 </div>
                 <div class="mcp-header-actions">
-                  {#if !mcpAppsMap['club_pass'] && !mcpAppsMap['whop']}
+                  {#if !isIosApp && !mcpAppsMap['club_pass'] && !mcpAppsMap['whop']}
                     <button class="btn-preset-chip" type="button" on:click={() => openAddMcpModal('club_pass')}>
                       <span class="preset-dot club-pass-dot"></span>
                       <span>+ Club Pass</span>
@@ -3635,7 +3643,9 @@
                 {#if mcpAppsList.length === 0 && !showMcpAddModal}
                   <div class="mcp-empty-state">
                     <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.5; margin-bottom: 8px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    <p>{$_("no_mcp_keys_yet", {}, "No application keys saved yet. Add Club Pass, CivitAI, Plane or a custom service.")}</p>
+                    <p>{isIosApp
+                      ? $_("no_mcp_keys_yet", {}, "No application keys saved yet. Add CivitAI, Plane or a custom service.").replace(/Club Pass[,،、]\s*/gi, "")
+                      : $_("no_mcp_keys_yet", {}, "No application keys saved yet. Add Club Pass, CivitAI, Plane or a custom service.")}</p>
                   </div>
                 {:else}
                   {#each mcpAppsList as app (app.appId)}

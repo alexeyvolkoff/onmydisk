@@ -168,7 +168,7 @@ HttpServerBackend::HttpServerBackend(QSettings *settings, QObject *parent) : QOb
 
     m_nonAuthDestinations << "src" << "dist" << "img"  << "qwebchannel" << "theme" << "apps" << "node_modules" << "templates" << "mimetypes"
                           << "home-back-b.jpg" << "logo-white.svg" << "customtheme" << "call/" << "manifest.json"
-                          << "favicon.ico"  <<  "signin" <<  "userinfo" <<  "tos" << "service-worker.js" << "assets";
+                          << "favicon.ico"  <<  "signin" <<  "userinfo" <<  "tos" << "tos.html" << "about" << "about.html" << "about-i18n.js" << "robots.txt" << "service-worker.js" << "assets";
 #ifdef P2P_ENABLED
     m_nonAuthDestinations << "shared";
 #endif

@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { CapacitorUpdater } from '@capgo/capacitor-updater';
 import { translate } from './i18n/index.js';
+import { isIosNative } from './platform.js';
 
 const NativeStorage = registerPlugin('NativeStorage');
 
@@ -64,6 +65,7 @@ export const otaState = writable({
   updateAvailable: false,
   isUpdating: false,
   isNative: typeof window !== 'undefined' && Capacitor.isNativePlatform(),
+  otaSupported: !isIosNative(),
   statusText: '',
   dismissed: false,
   downloadPercent: 0,
@@ -154,8 +156,8 @@ let isChecking = false;
  * Check for new OTA web bundle updates and notify user
  */
 export async function checkForOtaUpdate(force = false) {
-  // Never check for OTA updates or show reload banners in Vite dev/debug mode
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) {
+  // Never check for OTA updates or show reload banners in Vite dev/debug mode or on native iOS (App Store handles updates)
+  if ((typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) || isIosNative()) {
     return;
   }
 
@@ -254,6 +256,7 @@ export async function checkForOtaUpdate(force = false) {
  * Always guarantees updating directly to the LATEST server release, skipping intermediate bundles.
  */
 export async function performOtaUpdate(serverVer) {
+  if (isIosNative()) return;
   otaState.update(s => ({
     ...s,
     isUpdating: true,

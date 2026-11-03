@@ -2,6 +2,7 @@ import { writable } from "svelte/store";
 import Gun from "gun/gun";
 import "gun/sea";
 import { omdKeyStore, getStoredOmdKey, deriveEncryptionKey } from "./omd-key.js";
+import { isIosNative } from "./platform.js";
 
 /**
  * MCP Application API Keys Vault.
@@ -20,7 +21,7 @@ const GRAPH_ROOT = "keys";
 const GRAPH_NODE = "mcp_apps";
 const MCP_SALT = "omd-mcp-keys-salt-v1";
 
-export const PRESET_MCP_APPS = [
+const ALL_PRESET_MCP_APPS = [
   {
     id: "club_pass",
     name: "Club Pass",
@@ -46,6 +47,10 @@ export const PRESET_MCP_APPS = [
     badgeColor: "#3F76FF",
   },
 ];
+
+export const PRESET_MCP_APPS = isIosNative()
+  ? ALL_PRESET_MCP_APPS.filter((p) => p.id !== "club_pass")
+  : ALL_PRESET_MCP_APPS;
 
 let identityRef = null;
 let boundPub = "";

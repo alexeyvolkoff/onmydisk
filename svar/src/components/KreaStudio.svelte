@@ -16,6 +16,7 @@
   import { issueConsent, getClientDeviceServer } from "../lib/client-device-server.js";
   import { getOrCreateLocalLinkId } from "../lib/local-client.js";
   import { mcpKeysStore, getMcpPayload, saveMcpAppKey } from "../lib/mcp-keys.js";
+  import { getClientPlatform, sanitizeExternalCheckoutText } from "../lib/platform.js";
   import defaultKreaPresets from "../lib/krea_presets.json";
 
   let civitaiAccounts = [];
@@ -2446,7 +2447,7 @@
             persona_prompt: selectedPersonas.map((p) => p.prompt || p.passport || "").join("; "),
             warmup_gpu: true,
             mcp_keys: mcpPayloadPre,
-            settings: { language: $locale || "ru", mcp_keys: mcpPayloadPre }
+            settings: { platform: getClientPlatform(), language: $locale || "ru", mcp_keys: mcpPayloadPre }
           })
         });
         if (!preRes || !preRes.ok) {
@@ -2457,7 +2458,7 @@
               errMsg = ed.detail || ed.error || errMsg;
             } catch (_) {}
           }
-          generationError = errMsg;
+          generationError = sanitizeExternalCheckoutText(errMsg);
           return null;
         }
         const preData = await preRes.json();
@@ -2472,7 +2473,7 @@
           resizeTextarea();
         }
       } catch (preErr) {
-        generationError = preErr.message || String(preErr);
+        generationError = sanitizeExternalCheckoutText(preErr.message || String(preErr));
         return null;
       } finally {
         isDirectorThinking = false;
@@ -4344,11 +4345,11 @@
       const mcpPayload = getMcpPayload();
       fetchFn("/krea/status", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-OMD-Platform": getClientPlatform() },
         body: JSON.stringify({
           omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
           mcp_keys: mcpPayload,
-          settings: { mcp_keys: mcpPayload }
+          settings: { platform: getClientPlatform(), mcp_keys: mcpPayload }
         })
       }).then(async (res) => {
         if (res && res.ok) {
