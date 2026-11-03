@@ -671,6 +671,7 @@ export class PersistentIdentity {
       const resp = await fetch(AUTH_URL + "/api/auth/gateway-signin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(8000),
         body: JSON.stringify({ username: cleanAlias, password: cleanPassword, devicePub: devicePair.pub }),
       });
 

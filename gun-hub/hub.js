@@ -36,7 +36,7 @@ const RELAY_PORT = Number(process.env.PORT) || 8765;
 const GOOGLE_CLIENT_ID =
   process.env.GOOGLE_CLIENT_ID ||
   '959849209352-vbi0vfimrqj904598felj8ieeb6to8s2.apps.googleusercontent.com';
-const GATEWAY_URL = process.env.GATEWAY_URL || 'https://staging.onmydisk.net';
+const GATEWAY_URL = (process.env.GATEWAY_URL || '').trim();
 const CERT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 // ── SMTP Relay Config (Google Workspace) ────────────────────────
@@ -892,18 +892,16 @@ async function handleGoogleLink(req, res) {
     { '*': 'profile', '+': '*' },
   ]);
 
-  // Proxy to legacy gateway to authenticate Google account and obtain consistent omd_key
+  // Proxy to legacy gateway (if explicitly configured via GATEWAY_URL) to obtain consistent omd_key
   let gatewayResp = null;
-  const gatewaysToTry = [GATEWAY_URL];
-  if (!gatewaysToTry.includes('https://onmydisk.net')) {
-    gatewaysToTry.push('https://onmydisk.net');
-  }
+  const gatewaysToTry = GATEWAY_URL ? [GATEWAY_URL] : [];
 
   for (const gw of gatewaysToTry) {
     try {
       const resp = await fetch(gw + '/rest/signinwithgoogle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(2500),
         body: JSON.stringify({
           action: 'signinwithgoogle',
           id_token: idToken,
@@ -1114,11 +1112,11 @@ async function legacyCredentialFallback(res, usernamesToTry, password, devicePub
 
     const existingGunProfile = await gunOnce('~' + mainPub + '/profile');
     const finalProfile = {
-      user: (existingGunProfile && existingGunProfile.user) ? existingGunProfile.user : normUser,
-      name: (existingGunProfile && existingGunProfile.name) ? existingGunProfile.name : normUser,
-      email: (existingGunProfile && existingGunProfile.email) ? existingGunProfile.email : '',
-      image: (existingGunProfile && existingGunProfile.image) ? existingGunProfile.image : '',
-      omd_key: (existingGunProfile && existingGunProfile.omd_key) ? existingGunProfile.omd_key : '',
+      user: (existingGunProfile && existingGunProfile.user) ? existingGunProfile.user : (mapping.user || normUser),
+      name: (existingGunProfile && existingGunProfile.name) ? existingGunProfile.name : (mapping.name || normUser),
+      email: (existingGunProfile && existingGunProfile.email) ? existingGunProfile.email : (mapping.email || ''),
+      image: (existingGunProfile && existingGunProfile.image) ? existingGunProfile.image : (mapping.image || ''),
+      omd_key: (existingGunProfile && existingGunProfile.omd_key) ? existingGunProfile.omd_key : (mapping.omd_key || ''),
     };
 
     console.log('[auth] legacy gateway unreachable - DID restored from GunDB mapping:', normUser, '→', mainPub);
@@ -1152,13 +1150,11 @@ async function handleGatewaySignin(req, res) {
   const rateError = isRateLimited(ip, username);
   if (rateError) return json(res, 429, { error: rateError });
 
-  // Proxy to legacy gateway (try configured GATEWAY_URL first, fallback to production onmydisk.net)
+  // Proxy to legacy gateway only if GATEWAY_URL is explicitly configured;
+  // otherwise go straight to legacyCredentialFallback (legacy gateway retired).
   let gatewayResp = null;
   let gatewayReachable = false; //distinguish "wrong password" from "legacy gateway retired"
-  const gatewaysToTry = [GATEWAY_URL];
-  if (!gatewaysToTry.includes('https://onmydisk.net')) {
-    gatewaysToTry.push('https://onmydisk.net');
-  }
+  const gatewaysToTry = GATEWAY_URL ? [GATEWAY_URL] : [];
 
   const usernamesToTry = [username];
   if (username.includes('@')) {
@@ -1171,6 +1167,7 @@ async function handleGatewaySignin(req, res) {
         const resp = await fetch(gw + '/rest/signin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(2500),
           body: JSON.stringify({
             action: 'signin',
             username: u,
