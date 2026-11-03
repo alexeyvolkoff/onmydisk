@@ -6,6 +6,7 @@
  */
 import { Capacitor } from "@capacitor/core";
 import { PushNotifications } from "@capacitor/push-notifications";
+import { translate } from "./i18n/index.js";
 
 const NATIVE_SUB_STORAGE_KEY = "omd_native_push_sub";
 const DEFAULT_RELAY_URL = "https://direct.onmydisk.net:8765/api/push/native";
@@ -88,7 +89,7 @@ async function registerNativeDeviceToken(timeoutMs = 14000) {
     perm = await PushNotifications.requestPermissions();
   }
   if (perm.receive !== "granted") {
-    throw new Error("Разрешение на уведомления отключено в настройках телефона.");
+    throw new Error(translate("push_err_perm_phone", {}, "Notification permission is disabled in device settings."));
   }
 
   return new Promise(async (resolve, reject) => {
@@ -112,8 +113,8 @@ async function registerNativeDeviceToken(timeoutMs = 14000) {
       reject(
         new Error(
           Capacitor.getPlatform() === "android"
-            ? "Таймаут получения FCM-токена (убедитесь, что APK собран с google-services.json и доступны Google Play Services)."
-            : "Таймаут получения APNs-токена от iOS."
+            ? translate("push_err_fcm_timeout", {}, "Timed out waiting for FCM token (ensure Google Play Services are available).")
+            : translate("push_err_apns_timeout", {}, "Timed out waiting for iOS APNs token.")
         )
       );
     }, timeoutMs);
@@ -127,7 +128,7 @@ async function registerNativeDeviceToken(timeoutMs = 14000) {
         if (token && token.value) {
           resolve(String(token.value));
         } else {
-          reject(new Error("Получен пустой Push-токен устройства."));
+          reject(new Error(translate("push_err_empty_token", {}, "Received an empty device Push token.")));
         }
       });
 
@@ -136,7 +137,7 @@ async function registerNativeDeviceToken(timeoutMs = 14000) {
         settled = true;
         clearTimeout(timer);
         cleanup();
-        reject(new Error("Ошибка регистрации Push: " + (err?.error || JSON.stringify(err))));
+        reject(new Error(translate("push_err_reg_failed", { error: err?.error || JSON.stringify(err) }, "Push registration error: {error}")));
       });
 
       await PushNotifications.register();
@@ -162,7 +163,7 @@ export async function subscribeToNodeWebPush({
   // ── Path A: Native Android / iOS App (Capacitor) ──
   if (isNativeApp()) {
     if (!isNativePushAvailable()) {
-      throw new Error("Обновите мобильное приложение On My Disk (APK / TestFlight), чтобы включить нативные Push-уведомления.");
+      throw new Error(translate("push_err_update_app", {}, "Update the On My Disk mobile app to enable native Push notifications."));
     }
     const platform = Capacitor.getPlatform(); // 'android' | 'ios'
     const token = await registerNativeDeviceToken();
@@ -189,7 +190,7 @@ export async function subscribeToNodeWebPush({
       })
     });
     if (!saveRes || !saveRes.ok) {
-      throw new Error("Не удалось зарегистрировать Push-токен на AI-узле.");
+      throw new Error(translate("push_err_save_token_node", {}, "Failed to register Push token on AI node."));
     }
     const saveData = await saveRes.json();
     try {
@@ -201,22 +202,22 @@ export async function subscribeToNodeWebPush({
 
   // ── Path B: Browser / Mobile PWA (W3C Web Push + VAPID) ──
   if (!isWebBrowserPushSupported()) {
-    throw new Error("Браузер не поддерживает Web Push уведомления (на iOS добавьте приложение на экран «Домой»).");
+    throw new Error(translate("push_err_browser_unsupported", {}, "Your browser does not support Web Push notifications (on iOS, add the app to your Home Screen)."));
   }
 
   const perm = await Notification.requestPermission();
   if (perm !== "granted") {
-    throw new Error("Разрешение на показ уведомлений отклонено в настройках браузера.");
+    throw new Error(translate("push_err_perm_browser", {}, "Notification permission was denied in browser settings."));
   }
 
   const keyRes = await effectiveFetch("/push/vapid-key");
   if (!keyRes || !keyRes.ok) {
-    throw new Error("Не удалось получить VAPID-ключ с AI-узла (проверьте подключение к узлу).");
+    throw new Error(translate("push_err_vapid_fetch", {}, "Failed to fetch VAPID key from AI node (check node connection)."));
   }
   const keyData = await keyRes.json();
   const publicKey = keyData && keyData.publicKey;
   if (!publicKey) {
-    throw new Error("AI-узел вернул пустой VAPID-ключ.");
+    throw new Error(translate("push_err_vapid_empty", {}, "AI node returned an empty VAPID key."));
   }
 
   const reg = await navigator.serviceWorker.ready;
@@ -266,7 +267,7 @@ export async function subscribeToNodeWebPush({
     })
   });
   if (!saveRes || !saveRes.ok) {
-    throw new Error("Не удалось зарегистрировать Push-подписку на AI-узле.");
+    throw new Error(translate("push_err_save_sub_node", {}, "Failed to register Push subscription on AI node."));
   }
   const saveData = await saveRes.json();
   try {
@@ -396,7 +397,7 @@ export async function sendTestNodeWebPush({ fetchFn, omdKey = "", defaultStorage
   });
   if (!res || !res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Не удалось отправить тестовый Push.");
+    throw new Error(err.detail || translate("push_err_test_failed", {}, "Failed to send test Push notification."));
   }
   return await res.json();
 }

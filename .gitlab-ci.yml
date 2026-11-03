@@ -663,6 +663,9 @@ build-ios:
             echo "Downloaded IPA to build_ios/OnMyDisk.ipa"
             ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/iOS" || true
             scp -o StrictHostKeyChecking=no build_ios/OnMyDisk.ipa repo@forge.bineon.team:/opt/repo/OnMyDisk/iOS/OnMyDisk.ipa || true
+          else
+            echo "ERROR: Codemagic finished without producing an IPA artifact! Check logs: https://codemagic.io/app/6abe4c845eb3cd34fe4cc074/build/$BUILD_ID"
+            exit 1
           fi
           break
         elif [ "$STATUS" = "failed" ] || [ "$STATUS" = "canceled" ]; then

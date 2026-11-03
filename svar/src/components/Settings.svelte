@@ -1640,6 +1640,7 @@
   let webPushSubscribed = false;
   let webPushBusy = false;
   let webPushMsg = "";
+  let webPushMsgKey = "";
   let webPushMsgType = "info";
 
   async function refreshWebPushState() {
@@ -1669,6 +1670,7 @@
   async function handleToggleWebPush() {
     webPushBusy = true;
     webPushMsg = "";
+    webPushMsgKey = "";
     try {
       const drv = getActiveDrive() || getPrimaryAiDrive();
       const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
@@ -1676,7 +1678,8 @@
       if (webPushSubscribed) {
         await unsubscribeFromNodeWebPush({ fetchFn, omdKey: key });
         webPushSubscribed = false;
-        webPushMsg = "Push-уведомления на этом устройстве отключены.";
+        webPushMsgKey = "push_msg_disabled";
+        webPushMsg = translate("push_msg_disabled", {}, "Push notifications on this device have been disabled.");
         webPushMsgType = "info";
       } else {
         await subscribeToNodeWebPush({
@@ -1685,7 +1688,8 @@
           defaultStorage: resolveEffectiveStorageForPush()
         });
         webPushSubscribed = true;
-        webPushMsg = "Push-уведомления включены! Превью и кнопки действий активны.";
+        webPushMsgKey = "push_msg_enabled";
+        webPushMsg = translate("push_msg_enabled", {}, "Push notifications enabled! Image previews and action buttons are active.");
         webPushMsgType = "success";
       }
     } catch (err) {
@@ -1699,6 +1703,7 @@
   async function handleTestWebPush() {
     webPushBusy = true;
     webPushMsg = "";
+    webPushMsgKey = "";
     try {
       const drv = getActiveDrive() || getPrimaryAiDrive();
       const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
@@ -1709,10 +1714,12 @@
         defaultStorage: resolveEffectiveStorageForPush()
       });
       if (res && res.sent > 0) {
-        webPushMsg = "Тестовое Push-уведомление отправлено!";
+        webPushMsgKey = "push_msg_test_sent";
+        webPushMsg = translate("push_msg_test_sent", {}, "Test push notification sent!");
         webPushMsgType = "success";
       } else {
-        webPushMsg = "Подписка не найдена на узле — переключите тумблер Push ещё раз.";
+        webPushMsgKey = "push_msg_sub_missing";
+        webPushMsg = translate("push_msg_sub_missing", {}, "Subscription not found on node — toggle Push off and on again.");
         webPushMsgType = "error";
       }
     } catch (err) {
@@ -2932,19 +2939,19 @@
             </div>
 
             <div class="card">
-              <h4 class="card-title">{$_("web_push_title", {}, "Push-уведомления")}</h4>
-              <p class="card-subtitle">{$_("web_push_desc", {}, "Мгновенные уведомления от вашего AI-узла прямо на это устройство (с превью изображений и модерацией в 1 тап).")}</p>
+              <h4 class="card-title">{$_("web_push_title", {}, "Push Notifications")}</h4>
+              <p class="card-subtitle">{$_("web_push_desc", {}, "Instant notifications from your AI node directly to this device (with image previews and 1-tap moderation).")}</p>
               {#if !webPushSupported}
                 <p class="row-sub" style="margin-top: 8px;">
                   {isNativeApp()
-                    ? "Обновите мобильное приложение (APK / TestFlight) до последней сборки с нативным модулем PushNotifications."
-                    : "Браузер не поддерживает Web Push (на iOS добавьте веб-приложение на экран «Домой» или используйте нативное приложение)."}
+                    ? $_("push_unsupported_native", {}, "Update the On My Disk mobile app to the latest version to enable native Push notifications.")
+                    : $_("push_unsupported_web", {}, "Your browser does not support Web Push (on iOS, add the web app to your Home Screen or use the native app).")}
                 </p>
               {:else}
                 <div class="setting-row">
                   <div class="row-text">
-                    <span class="row-label">{$_("push_receive_label", {}, "Получать Push на это устройство")}</span>
-                    <span class="row-sub">{isNativeApp() ? "Нативные системные Push-уведомления (Android FCM / iOS APNs)" : "Прямая VAPID-подписка через P2P без сторонних мессенджеров"}</span>
+                    <span class="row-label">{$_("push_receive_label", {}, "Receive Push on this device")}</span>
+                    <span class="row-sub">{isNativeApp() ? $_("push_sub_native", {}, "Native system Push notifications (Android FCM / iOS APNs)") : $_("push_sub_web", {}, "Direct VAPID subscription over P2P without third-party messengers")}</span>
                   </div>
                   <label class="switch" style={webPushBusy ? "opacity: 0.6; pointer-events: none;" : ""}>
                     <input
@@ -2963,8 +2970,8 @@
                 {#if webPushSubscribed}
                   <div class="setting-row">
                     <div class="row-text">
-                      <span class="row-label">{$_("push_test_label", {}, "Проверка уведомлений")}</span>
-                      <span class="row-sub">{$_("push_test_sub", {}, "Отправить тестовый пуш на это устройство")}</span>
+                      <span class="row-label">{$_("push_test_label", {}, "Test notifications")}</span>
+                      <span class="row-sub">{$_("push_test_sub", {}, "Send a test push notification to this device")}</span>
                     </div>
                     <div class="row-value-badge">
                       <button
@@ -2974,14 +2981,14 @@
                         on:click={handleTestWebPush}
                         style="padding: 4px 12px; font-size: 12px;"
                       >
-                        <span>{webPushBusy ? "..." : $_("push_test_btn", {}, "Проверить")}</span>
+                        <span>{webPushBusy ? "..." : $_("push_test_btn", {}, "Test")}</span>
                       </button>
                     </div>
                   </div>
                 {/if}
-                {#if webPushMsg}
+                {#if webPushMsgKey || webPushMsg}
                   <div style="margin-top: 8px; font-size: 12.5px; color: {webPushMsgType === 'error' ? '#ef5350' : (webPushMsgType === 'success' ? '#2ac769' : 'inherit')};">
-                    {webPushMsg}
+                    {webPushMsgKey ? $_(webPushMsgKey, {}, webPushMsg) : webPushMsg}
                   </div>
                 {/if}
               {/if}

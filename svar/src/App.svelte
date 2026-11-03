@@ -4026,14 +4026,14 @@
         }
       } catch (err) {
         nodeWidgetLoading = false;
-        nodeWidgetError = "Не удалось загрузить виджет узла: " + (err?.message || err);
+        nodeWidgetError = translate("push_widget_load_failed", { error: err?.message || err }, "Failed to load node widget: {error}");
       }
       return;
     }
 
     // Direct action tap from OS notification banner
     if (!isSafeNodeRelativePath(actionUrl)) return;
-    showNodePushToast("⏳ Отправляем действие на узел...");
+    showNodePushToast(translate("push_sending_action", {}, "⏳ Sending action to node..."));
     try {
       const drv = await waitForAiNodeDrive(12000);
       const fetchFn = drv ? (p, opts) => drv.fetch(p, opts) : (p, opts) => window.fetch(p, opts);
@@ -4053,9 +4053,9 @@
       if (!res || !res.ok) {
         throw new Error(resData.detail || `HTTP ${res ? res.status : "timeout"}`);
       }
-      showNodePushToast(resData.message || "✅ Готово!");
+      showNodePushToast(resData.message || translate("push_action_done", {}, "✅ Done!"));
     } catch (err) {
-      showNodePushToast("❌ Ошибка: " + (err?.message || err), 6000);
+      showNodePushToast(translate("push_action_error", { error: err?.message || err }, "❌ Error: {error}"), 6000);
     }
   }
 
@@ -6530,7 +6530,7 @@ async function blobToBase64(blob) {
           <div style="width: min(96vw, 480px); max-height: 90vh; overflow-y: auto; background: #18202c; color: #eef2f7; border: 1px solid rgba(110, 140, 175, 0.28); border-radius: 16px; padding: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.55);">
             {#if nodeWidgetLoading}
               <div style="padding: 28px 12px; text-align: center; font-size: 13.5px; opacity: 0.82;">
-                ⏳ Подключаемся к узлу...
+                {$_("push_connecting_node", {}, "⏳ Connecting to node...")}
               </div>
             {:else if nodeWidgetError}
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
