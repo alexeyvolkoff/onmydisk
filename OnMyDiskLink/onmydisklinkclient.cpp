@@ -1,10 +1,14 @@
 #include "onmydisklinkclient.h"
+#include <openssl/opensslv.h>
 #include <openssl/evp.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
 #include <openssl/bn.h>
+#include <openssl/obj_mac.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/core_names.h>
 #include <openssl/params.h>
+#endif
 #include "version.h"
 #include <QNetworkProxy>
 #include <QJsonDocument>
@@ -15,9 +19,12 @@
 #include <QHostInfo>
 #include <QRandomGenerator>
 #include <QDateTime>
+#include <QStandardPaths>
 #include <memory>
 #include "simplecrypt.h"
 #include "localfilebackend.h"
+#include "webdavbackend.h"
+#include "remoteresource.h"
 #include "ipcclient.h"
 #include "userevents.h"
 #include "tunnelcrypto.h"
@@ -27,9 +34,11 @@
 #ifdef EMBEDDED
 #include "omdupdater.h"
 #endif
+#ifdef Q_OS_UNIX
+#include <sys/time.h>
+#endif
 #ifdef Q_OS_LINUX
 #include <sys/types.h>
-#include <sys/time.h>
 #include <pwd.h>
 #include <grp.h>
 #include <shadow.h>
@@ -100,6 +109,20 @@ static bool authenticateWindowsUser(const QString &username, const QString &pass
 }
 #endif
 
+#ifdef Q_OS_MAC
+static bool authenticateMacUser(const QString &username, const QString &password) {
+    if (username.isEmpty() || password.isEmpty())
+        return false;
+    QProcess proc;
+    proc.start("/usr/bin/dscl", QStringList() << "." << "-authonly" << username << password);
+    if (!proc.waitForFinished(3000)) {
+        proc.kill();
+        return false;
+    }
+    return (proc.exitCode() == 0);
+}
+#endif
+
 #ifdef P2P_ENABLED
 static bool authenticateNodeCredentials(QSettings *settings, const QString &username, const QString &password) {
     if (username.isEmpty() || password.isEmpty())
@@ -115,6 +138,8 @@ static bool authenticateNodeCredentials(QSettings *settings, const QString &user
     return authenticateLinuxUser(username, password);
 #elif defined(Q_OS_WIN)
     return authenticateWindowsUser(username, password);
+#elif defined(Q_OS_MAC)
+    return authenticateMacUser(username, password);
 #else
     return false;
 #endif
@@ -1269,6 +1294,8 @@ static bool seaVerifySignature(const QString &sigStr, const QString &msg, const 
     QByteArray point = QByteArray(1, char(4)) + x + y; //uncompressed X9.63 point
 
     bool ok = false;
+    EVP_PKEY *pkey = NULL;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
     //OpenSSL 3: raw EC point import via OSSL_PARAM (X9.63 uncompressed point
     //plus the explicit curve name; EVP_PKEY_new_raw_public_key does not take
     //a bare EC point).
@@ -1278,13 +1305,27 @@ static bool seaVerifySignature(const QString &sigStr, const QString &msg, const 
     ecParams[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
                         const_cast<void*>((const void*)point.constData()), point.size());
     ecParams[2] = OSSL_PARAM_construct_end();
-    EVP_PKEY *pkey = NULL;
     EVP_PKEY_CTX *fromCtx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
     if (fromCtx) {
         EVP_PKEY_fromdata_init(fromCtx);
         EVP_PKEY_fromdata(fromCtx, &pkey, EVP_PKEY_PUBLIC_KEY, ecParams);
         EVP_PKEY_CTX_free(fromCtx);
     }
+#else
+    EC_KEY *ecKey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (ecKey) {
+        if (EC_KEY_oct2key(ecKey, (const unsigned char*)point.constData(), point.size(), NULL) == 1) {
+            pkey = EVP_PKEY_new();
+            if (pkey && EVP_PKEY_assign_EC_KEY(pkey, ecKey) == 1) {
+                ecKey = NULL; // ownership transferred to pkey
+            } else {
+                EVP_PKEY_free(pkey);
+                pkey = NULL;
+            }
+        }
+        if (ecKey) EC_KEY_free(ecKey);
+    }
+#endif
 
     ECDSA_SIG *sigStruct = ECDSA_SIG_new();
     if (sigStruct && pkey) {
@@ -2776,6 +2817,49 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
             return;
         }
         QJsonObject settingsJson = static_cast<QJsonObject>(m_omdSettings);
+        settingsJson["rcloneInstalled"] = !QStandardPaths::findExecutable("rclone").isEmpty();
+        // Mask any stored rclone share passwords before sending over P2P
+        if (settingsJson.contains("rcloneShares") && settingsJson.value("rcloneShares").isArray()) {
+            QJsonArray sharesArr = settingsJson.value("rcloneShares").toArray();
+            QJsonArray maskedArr;
+            for (const QJsonValue &v : sharesArr) {
+                QJsonObject obj = v.toObject();
+                if (!obj.value("password").toString().isEmpty())
+                    obj["password"] = QStringLiteral("******");
+                maskedArr.append(obj);
+            }
+            settingsJson["rcloneShares"] = maskedArr;
+        }
+        // Discover configured remote names from rclone.conf (names only, no secrets)
+        {
+            QString rcloneConf;
+#ifdef Q_OS_LINUX
+            if (::geteuid() == 0 && m_settings) {
+                QString sysUser = m_settings->value("FileNode/User", "").toString();
+                if (!sysUser.isEmpty()) {
+                    struct passwd *pw = getpwnam(sysUser.toUtf8().constData());
+                    if (pw && pw->pw_dir)
+                        rcloneConf = QString::fromUtf8(pw->pw_dir) + "/.config/rclone/rclone.conf";
+                }
+            }
+#endif
+#ifdef Q_OS_WIN
+            if (rcloneConf.isEmpty()) {
+                QString appData = qEnvironmentVariable("APPDATA");
+                if (!appData.isEmpty())
+                    rcloneConf = QDir::fromNativeSeparators(appData) + "/rclone/rclone.conf";
+            }
+#endif
+            if (rcloneConf.isEmpty())
+                rcloneConf = QDir::homePath() + "/.config/rclone/rclone.conf";
+            QJsonArray remotesArr;
+            if (QFileInfo::exists(rcloneConf)) {
+                QSettings rc(rcloneConf, QSettings::IniFormat);
+                for (const QString &grp : rc.childGroups())
+                    remotesArr.append(grp);
+            }
+            settingsJson["rcloneRemotes"] = remotesArr;
+        }
 #ifdef EMBEDDED
         settingsJson["appVersion"] = OMDUpdater::instance().currentVersion();
         settingsJson["newVersion"] = OMDUpdater::instance().newVersion();
@@ -2851,15 +2935,9 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
         }
         QJsonObject settingsJson = req.value("settings").toObject();
         OnMyDiskSettings newSettings(settingsJson);
-        updateSettings(newSettings);
-        if (m_settings) {
-            m_settings->beginGroup("Settings");
-            newSettings.writeSettings(m_settings);
-            m_settings->endGroup();
-            m_settings->sync();
-        }
         resp["status"] = "ok";
         p2p->sendText(QJsonDocument(resp).toJson(QJsonDocument::Compact));
+        emit settingsChanged(newSettings);
         return;
     }
 
@@ -3044,7 +3122,7 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
         qint64 size = req.value("size").toVariant().toLongLong();
         if (size <= 0) size = 262144;
 
-        if (res->openResource(QIODevice::ReadOnly) > 0) {
+        if (res->openResource(QIODevice::ReadOnly) != FILEHANDLE_ERROR) {
             QByteArray chunk = res->read(offset, size);
             res->close();
             resp["status"] = "ok";
@@ -3073,12 +3151,23 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
         QIODevice::OpenMode mode = QIODevice::ReadWrite;
         if (truncate && offset == 0) mode |= QIODevice::Truncate;
 
+        RemoteResource *remRes = dynamic_cast<RemoteResource*>(res);
+        WebDAVBackend *webdavBackend = remRes ? dynamic_cast<WebDAVBackend*>(remRes->backend()) : nullptr;
+        if (webdavBackend) {
+            webdavBackend->setWriteEof(eof);
+        }
+
         if (res->openResource(mode) != FILEHANDLE_ERROR) {
             res->seek(offset);
             qint64 written = res->write(chunk);
             res->close();
-            resp["status"] = "ok";
-            resp["written"] = written;
+            if (webdavBackend && eof && !webdavBackend->lastWriteOk()) {
+                resp["status"] = "error";
+                resp["error"] = "Failed to upload file to WebDAV share";
+            } else {
+                resp["status"] = "ok";
+                resp["written"] = written;
+            }
 
             QString localPath = m_hostRoot ? m_hostRoot->getLocalPath(pathList) : QString();
             if (localPath.isEmpty()) {
@@ -3126,6 +3215,8 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
         if (targetList.isEmpty() || targetList.last() != res->fileName())
             targetList.append(res->fileName());
         QString destResourcePath = m_hostRoot->getLocalPath(targetList);
+        if (destResourcePath.isEmpty())
+            destResourcePath = QStringLiteral("/") + targetList.join(QStringLiteral("/"));
 
         if (res->copy(destResourcePath)) {
             resp["status"] = "ok";
@@ -3140,6 +3231,8 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
         if (targetList.isEmpty() || targetList.last() != res->fileName())
             targetList.append(res->fileName());
         QString destResourcePath = m_hostRoot->getLocalPath(targetList);
+        if (destResourcePath.isEmpty())
+            destResourcePath = QStringLiteral("/") + targetList.join(QStringLiteral("/"));
 
         if (res->move(destResourcePath)) {
             resp["status"] = "ok";

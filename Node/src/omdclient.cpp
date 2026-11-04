@@ -30,6 +30,9 @@
 #include <QNetworkInterface>
 #include <QNetworkAddressEntry>
 #include <QHostAddress>
+#include <QTcpServer>
+#include <QStandardPaths>
+#include <QRegularExpression>
 #include <QCoreApplication>
 #ifdef Q_OS_LINUX
 #include <unistd.h>
@@ -643,8 +646,12 @@ void OnMyDiskClient::applySettings(const OnMyDiskSettings &settings)
    m_omdSettings = newSettings;
 
 #if ((EMBEDDED || SERVICE || defined(DESKTOP) || defined(SERVER)) && !defined(ROUTER))
-   updateRcloneConfig(m_omdSettings.rcloneShares());
-   updateRcloneProcesses(m_omdSettings.rcloneShares());
+   {
+       QVariantList rcloneShares = m_omdSettings.rcloneShares();
+       updateRcloneConfig(rcloneShares);
+       updateRcloneProcesses(rcloneShares);
+       m_omdSettings.setRcloneShares(rcloneShares);
+   }
 #endif
 
    //save settings
@@ -1105,6 +1112,16 @@ QString OnMyDiskClient::rcloneConfigPath() const
         }
     }
 #endif
+#ifdef Q_OS_WIN
+    QString appData = qEnvironmentVariable("APPDATA");
+    if (!appData.isEmpty()) {
+        QString winConf = QDir::fromNativeSeparators(appData) + "/rclone/rclone.conf";
+        QString dotConf = QDir::homePath() + "/.config/rclone/rclone.conf";
+        if (!QFileInfo::exists(winConf) && QFileInfo::exists(dotConf))
+            return dotConf;
+        return winConf;
+    }
+#endif
     return QDir::homePath() + "/.config/rclone/rclone.conf";
 }
 
@@ -1151,23 +1168,58 @@ QString OnMyDiskClient::obscurePassword(const QString &password)
     return QString();
 }
 
-void OnMyDiskClient::updateRcloneConfig(const QVariantList &shares)
+void OnMyDiskClient::updateRcloneConfig(QVariantList &shares)
 {
     QString configPath = rcloneConfigPath();
     qInfo() << "DBG updateRcloneConfig: shares:" << shares.size() << "configPath:" << configPath;
     QDir().mkpath(QFileInfo(configPath).absolutePath());
     QSettings rcloneSettings(configPath, QSettings::IniFormat);
+    const QStringList existingGroups = rcloneSettings.childGroups();
 
+    QHash<QString, int> typeCounts;
     for (const QVariant &shareVar : shares) {
-        QVariantMap share = shareVar.toMap();
-        QString type = share["type"].toString();
-        QString username = share["username"].toString();
+        const QString t = shareVar.toMap().value("type").toString();
+        if (!t.isEmpty())
+            typeCounts[t] = typeCounts.value(t, 0) + 1;
+    }
+
+    for (int i = 0; i < shares.size(); ++i) {
+        QVariantMap share = shares[i].toMap();
+        QString name = share["name"].toString().trimmed();
+        QString type = share["type"].toString().trimmed();
+        QString remote = share["remote"].toString().trimmed();
+        QString username = share["username"].toString().trimmed();
         QString password = share["password"].toString();
-        QString url = share["url"].toString();
+        QString url = share["url"].toString().trimmed();
+        QString host = share["host"].toString().trimmed();
+        int sftpPort = share["sftpPort"].toInt();
 
         if (type.isEmpty()) continue;
 
-        rcloneSettings.beginGroup(type);
+        if (type == "rclone") {
+            QString sectionName = !remote.isEmpty() ? remote : name;
+            if (sectionName.endsWith(":"))
+                sectionName.chop(1);
+            share["remote"] = sectionName;
+            shares[i] = share;
+            continue;
+        }
+
+        QString sectionName = remote;
+        if (sectionName.isEmpty()) {
+            if ((type == "protondrive" || type == "webdav") &&
+                typeCounts.value(type) == 1 &&
+                (existingGroups.contains(type) || type == "protondrive")) {
+                sectionName = type;
+            } else {
+                QString sanitized = name;
+                sanitized.replace(QRegularExpression("[^A-Za-z0-9_-]"), "_");
+                sectionName = QStringLiteral("omd_") + (sanitized.isEmpty() ? type : sanitized);
+            }
+        }
+        share["remote"] = sectionName;
+
+        rcloneSettings.beginGroup(sectionName);
         rcloneSettings.setValue("type", type);
         if (type == "protondrive") {
             if (!username.isEmpty()) rcloneSettings.setValue("username", username);
@@ -1176,8 +1228,20 @@ void OnMyDiskClient::updateRcloneConfig(const QVariantList &shares)
                 if (!obscured.isEmpty()) rcloneSettings.setValue("password", obscured);
             }
         } else if (type == "webdav") {
-            rcloneSettings.setValue("vendor", "other");
+            if (rcloneSettings.value("vendor").toString().isEmpty())
+                rcloneSettings.setValue("vendor", "other");
             if (!url.isEmpty()) rcloneSettings.setValue("url", url);
+            if (!username.isEmpty()) rcloneSettings.setValue("user", username);
+            if (!password.isEmpty() && password != "******") {
+                QString obscured = obscurePassword(password);
+                if (!obscured.isEmpty()) rcloneSettings.setValue("pass", obscured);
+            }
+        } else if (type == "sftp") {
+            QString effectiveHost = !host.isEmpty() ? host : url;
+            if (effectiveHost.startsWith("sftp://", Qt::CaseInsensitive))
+                effectiveHost = effectiveHost.mid(7);
+            if (!effectiveHost.isEmpty()) rcloneSettings.setValue("host", effectiveHost);
+            if (sftpPort > 0) rcloneSettings.setValue("port", sftpPort);
             if (!username.isEmpty()) rcloneSettings.setValue("user", username);
             if (!password.isEmpty() && password != "******") {
                 QString obscured = obscurePassword(password);
@@ -1185,6 +1249,10 @@ void OnMyDiskClient::updateRcloneConfig(const QVariantList &shares)
             }
         }
         rcloneSettings.endGroup();
+
+        if (!password.isEmpty())
+            share["password"] = QStringLiteral("******");
+        shares[i] = share;
     }
     rcloneSettings.sync();
 #ifdef Q_OS_LINUX
@@ -1204,36 +1272,91 @@ void OnMyDiskClient::updateRcloneConfig(const QVariantList &shares)
 #endif
 }
 
-void OnMyDiskClient::updateRcloneProcesses(const QVariantList &shares)
+static bool isLocalTcpPortFree(int port)
 {
-    QSet<QString> activeNames;
-    for (const QVariant &shareVar : shares) {
-        QVariantMap share = shareVar.toMap();
-        QString name = share["name"].toString();
-        QString type = share["type"].toString();
-        int port = share["port"].toInt();
+    if (port <= 0 || port > 65535)
+        return false;
+    QTcpServer probe;
+    if (probe.listen(QHostAddress::LocalHost, static_cast<quint16>(port))) {
+        probe.close();
+        return true;
+    }
+    return false;
+}
 
-        if (name.isEmpty() || type.isEmpty() || port <= 0) continue;
+void OnMyDiskClient::updateRcloneProcesses(QVariantList &shares)
+{
+    const QString rcloneBin = QStandardPaths::findExecutable("rclone");
+    if (rcloneBin.isEmpty() && !shares.isEmpty()) {
+        qWarning() << "rclone binary not found in PATH; cannot start external cloud shares";
+        return;
+    }
+
+    const QString configPath = rcloneConfigPath();
+    QSet<QString> activeNames;
+    QSet<int> assignedPorts;
+
+    for (int i = 0; i < shares.size(); ++i) {
+        QVariantMap share = shares[i].toMap();
+        QString name = share["name"].toString().trimmed();
+        QString type = share["type"].toString().trimmed();
+        QString remote = share["remote"].toString().trimmed();
+        QString remotePath = share["remotePath"].toString().trimmed();
+        if (remote.isEmpty())
+            remote = type;
+        if (remote.endsWith(":"))
+            remote.chop(1);
+        while (remotePath.startsWith("/"))
+            remotePath.remove(0, 1);
+
+        int port = share["port"].toInt();
+        if (port <= 0)
+            port = 19088;
+
+        if (name.isEmpty() || remote.isEmpty()) continue;
         activeNames.insert(name);
 
-        // If already running, check if parameters changed
+        // If already running, check if parameters changed or process exited
         if (m_rcloneProcesses.contains(name)) {
             QProcess *proc = m_rcloneProcesses[name];
             QVariantMap runningMeta = proc->property("meta").toMap();
-            if (runningMeta["type"].toString() != type || runningMeta["port"].toInt() != port) {
-                proc->kill();
-                proc->waitForFinished(2000);
+            bool dead = (proc->state() == QProcess::NotRunning);
+            bool changed = (runningMeta["type"].toString() != type ||
+                            runningMeta["remote"].toString() != remote ||
+                            runningMeta["remotePath"].toString() != remotePath ||
+                            runningMeta["port"].toInt() != port);
+            if (dead || changed) {
+                if (!dead) {
+                    proc->kill();
+                    proc->waitForFinished(2000);
+                }
                 delete proc;
                 m_rcloneProcesses.remove(name);
+            } else {
+                assignedPorts.insert(port);
             }
         }
 
         // Start if not running
         if (!m_rcloneProcesses.contains(name)) {
+            // Ensure chosen port is not colliding with another local process (e.g. dual-node host)
+            if (assignedPorts.contains(port) || !isLocalTcpPortFree(port)) {
+                int candidate = 19088;
+                while (candidate < 19999 && (assignedPorts.contains(candidate) || !isLocalTcpPortFree(candidate))) {
+                    ++candidate;
+                }
+                qInfo() << "rclone port" << port << "for" << name << "is busy; reassigned to" << candidate;
+                port = candidate;
+                share["port"] = port;
+                shares[i] = share;
+            }
+            assignedPorts.insert(port);
+
             QProcess *proc = new QProcess(this);
-            proc->setProgram("rclone");
+            proc->setProgram(rcloneBin);
             QStringList args;
-            args << "serve" << "webdav" << QString("%1:").arg(type)
+            args << "--config" << configPath
+                 << "serve" << "webdav" << QString("%1:%2").arg(remote, remotePath)
                  << "--addr" << QString("127.0.0.1:%1").arg(port)
                  << "--vfs-cache-mode" << "writes";
             proc->setArguments(args);
@@ -1246,14 +1369,17 @@ void OnMyDiskClient::updateRcloneProcesses(const QVariantList &shares)
             QVariantMap meta;
             meta["name"] = name;
             meta["type"] = type;
+            meta["remote"] = remote;
+            meta["remotePath"] = remotePath;
             meta["port"] = port;
             proc->setProperty("meta", meta);
 
-            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, name](int exitCode, QProcess::ExitStatus exitStatus) {
-                qWarning() << "rclone process for" << name << "finished with code" << exitCode << "status" << exitStatus;
+            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [name, proc](int exitCode, QProcess::ExitStatus exitStatus) {
+                qWarning() << "rclone process for" << name << "finished with code" << exitCode << "status" << exitStatus
+                           << "stderr:" << QString::fromUtf8(proc->readAllStandardError()).trimmed();
             });
 
-            qInfo() << "Starting rclone for" << name << "on port" << port;
+            qInfo() << "Starting rclone for" << name << "(" << remote << ") on port" << port;
 #ifdef Q_OS_LINUX
             //rclone inherits the fs credentials of the spawning thread, so temporarily
             //switch to the system user (same approach as OnMyDiskFileWorker)

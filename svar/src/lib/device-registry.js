@@ -8,11 +8,19 @@ export class DeviceRegistry {
   }
 
   get(deviceId) {
-    return this.devices.get(deviceId);
+    if (!deviceId) return undefined;
+    const direct = this.devices.get(deviceId);
+    if (direct) return direct;
+    for (const dev of this.devices.values()) {
+      if (dev && (dev.peerId === deviceId || dev.shortId === deviceId || dev.deviceId === deviceId)) {
+        return dev;
+      }
+    }
+    return undefined;
   }
 
   has(deviceId) {
-    return this.devices.has(deviceId);
+    return Boolean(this.get(deviceId));
   }
 
   getByName(name) {
@@ -47,10 +55,12 @@ export class DeviceRegistry {
       if (!device) continue;
       const devPrefix = device.prefix ? String(device.prefix).replace(/^\//, "").toLowerCase() : "";
       const devLinkId = device.linkId ? String(device.linkId).toLowerCase() : "";
+      const devPeerId = device.peerId ? String(device.peerId).toLowerCase() : "";
+      const devShortId = device.shortId ? String(device.shortId).toLowerCase() : "";
       const devName = device.name ? String(device.name).toLowerCase() : "";
       const isOnline = device.status === "connected" || device.drive?.isConnected;
 
-      if (devPrefix === norm || devLinkId === norm) {
+      if (devPrefix === norm || devLinkId === norm || devPeerId === norm || devShortId === norm) {
         if (device.local) return device;
         if (!exactConnected && isOnline) exactConnected = device;
         if (!exactFallback) exactFallback = device;

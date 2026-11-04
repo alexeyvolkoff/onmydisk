@@ -1598,9 +1598,10 @@ QList<QJsonObject> OnMyDiskLinkServer::getNearbyNodes(const QString &clientIp)
             QString shortId = !link->user().isEmpty() ? link->user() : link->linkID();
             QJsonObject obj;
             obj["linkId"] = shortId;
+            obj["peerId"] = it.key();
             obj["name"] = link->shareName().isEmpty() ? shortId : link->shareName();
             obj["version"] = link->linkVersion();
-            obj["online"] = (link->state() == OnMyDiskLink::Connected);
+            obj["online"] = (link->state() != OnMyDiskLink::Disconnected);
             result.append(obj);
         }
     }

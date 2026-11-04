@@ -36,6 +36,8 @@ ServiceNode::ServiceNode(QString configFile, QObject *parent): OnMyDiskNode(conf
     connect(&m_client, &OnMyDiskClient::disconnectCloud, &m_linkClient, &OnMyDiskLinkClient::disconnectFromCloud, Qt::QueuedConnection);
     connect(&m_client, &OnMyDiskClient::shareAdded, &m_linkClient, &OnMyDiskLinkClient::addLocalShare, Qt::QueuedConnection);
     connect(&m_client, &OnMyDiskClient::shareRemoved, &m_linkClient, &OnMyDiskLinkClient::removeLocalShare, Qt::QueuedConnection);
+    connect(&m_client, &OnMyDiskClient::settingsLoaded, &m_linkClient, &OnMyDiskLinkClient::updateSettings);
+    connect(&m_linkClient, &OnMyDiskLinkClient::settingsChanged, &m_client, &OnMyDiskClient::applySettings, Qt::QueuedConnection);
 
     //link backend
     connect(&LocalDB::instance(), &LocalDB::error, &m_client, &OnMyDiskClient::linkError);

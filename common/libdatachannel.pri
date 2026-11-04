@@ -33,7 +33,7 @@ exists($$LDATACHANNEL_ROOT/include/rtc/rtc.hpp) {
     SOURCES += $$PWD/../OnMyDiskLink/p2ptunnel.cpp
     HEADERS += $$PWD/../OnMyDiskLink/p2ptunnel.h
 
-    unix:!macx {
+    unix {
         LIBS += -L$$LDATACHANNEL_BUILD
         LIBS += -ldatachannel
         exists($$LDATACHANNEL_BUILD/deps/libjuice/libjuice.a) {
@@ -47,6 +47,10 @@ exists($$LDATACHANNEL_ROOT/include/rtc/rtc.hpp) {
         }
         # static libdatachannel needs OpenSSL symbols resolved after its own
         # objects, so repeat -lssl -lcrypto here (link order matters)
+        macx {
+            OPENSSL_ROOT_ENV = $$(OPENSSL_ROOT_DIR)
+            !isEmpty(OPENSSL_ROOT_ENV): LIBS += -L$$OPENSSL_ROOT_ENV/lib
+        }
         LIBS += -lssl -lcrypto
         LIBS += -ldl -lpthread
     }

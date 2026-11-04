@@ -8,6 +8,7 @@
 #-------------------------------------------------
 QT += core network
 CONFIG   += rtti console
+macx: CONFIG -= app_bundle
 
 greaterThan(QT_MAJOR_VERSION, 4): {
     DEFINES += QT5

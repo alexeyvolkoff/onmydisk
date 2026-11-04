@@ -40,6 +40,7 @@ OnMyDiskDesktopNode::OnMyDiskDesktopNode(QString configFile, QObject *parent) : 
     connect(&m_client, &OnMyDiskClient::showCloud, &m_clientBackend, &DesktopBackend::showCloud);
     connect(&m_client, &OnMyDiskClient::showStorage, &m_clientBackend, &DesktopBackend::showStorage);
     connect(&m_client, &OnMyDiskClient::settingsLoaded, &m_linkClient, &OnMyDiskLinkClient::updateSettings);
+    connect(&m_linkClient, &OnMyDiskLinkClient::settingsChanged, &m_client, &OnMyDiskClient::applySettings, Qt::QueuedConnection);
     connect(&m_client, &OnMyDiskClient::settingsLoaded, &m_clientBackend, &DesktopBackend::settingsLoaded);
     connect(&m_client, &OnMyDiskClient::settingsSaved, &m_clientBackend, &DesktopBackend::writeSettings);
 

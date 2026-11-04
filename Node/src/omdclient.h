@@ -111,8 +111,8 @@ private:
 	PlainLinkCreator *m_plainLinkCreator = nullptr;
     QMap<QString, QProcess*> m_rcloneProcesses;
     QString obscurePassword(const QString &password);
-    void updateRcloneConfig(const QVariantList &shares);
-    void updateRcloneProcesses(const QVariantList &shares);
+    void updateRcloneConfig(QVariantList &shares);
+    void updateRcloneProcesses(QVariantList &shares);
     bool applyRcloneUserPrivileges(QProcess *proc, long &uid, long &gid);
     QString rcloneConfigPath() const;
 

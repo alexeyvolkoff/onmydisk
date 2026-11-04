@@ -232,16 +232,26 @@ int main(int argc, char *argv[])
     QString server = settings.value("Network/host", QString()).toString();
     if (server.isEmpty())
         server = qgetenv("OMD_TUNNEL_SERVER");
-    if (server.isEmpty())
+    if (server.isEmpty()) {
+#ifdef P2P_ENABLED
+        server = QStringLiteral("direct.onmydisk.net");
+#else
         server = QStringLiteral("onmydisk.net");
+#endif
+    }
     if (parser.isSet("server"))
         server = parser.value("server");
 
     int serverPort = settings.value("Network/port", 0).toInt();
     if (serverPort == 0)
         serverPort = qgetenv("OMD_TUNNEL_PORT").toInt();
-    if (serverPort == 0)
+    if (serverPort == 0) {
+#ifdef P2P_ENABLED
+        serverPort = (server == QLatin1String("onmydisk.net")) ? 9000 : 9010;
+#else
         serverPort = 9000;
+#endif
+    }
     if (parser.isSet("port"))
         serverPort = parser.value("port").toInt();
 

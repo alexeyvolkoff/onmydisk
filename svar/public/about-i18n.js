@@ -167,7 +167,7 @@
     "qs1_title": "1. Try right in your browser",
     "qs1_desc": "Launch the web app immediately — mount a local folder right from your browser, test the public P2P AI node, or open the standalone file manager at <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Launch Web App →",
-    "qs2_tag": "Linux • Windows • macOS (soon) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Run your own AI & storage node",
     "qs2_desc": "Install <strong>On My Disk Direct</strong> &amp; <strong>On My Chat</strong> on your desktop PC, home server, or Rockchip NPU alongside Ollama and pair it with your browser or mobile app in minutes.",
     "qs2_footer": "Repositories on GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Platform)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (AI Node)</a>",
@@ -182,6 +182,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Terms & Privacy",
     "qs2_btn": "Setup Guides & Downloads →",
+    "qs2_gpu_label": "Local GPU",
+    "qs2_copy": "Copy",
+    "qs2_copied": "Copied!",
+    "qs2_adv_btn": "Advanced Configuration →",
     "foot_github_node": "GitHub (AI Node)"
   },
   "ru": {
@@ -226,7 +230,7 @@
     "qs1_title": "1. Попробуйте прямо в браузере",
     "qs1_desc": "Запустите веб-приложение мгновенно — подключите локальную папку из браузера, протестируйте публичную P2P ИИ-ноду или откройте файловый менеджер на <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Запустить веб-приложение →",
-    "qs2_tag": "Linux • Windows • macOS (скоро) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Запустите собственный ИИ и файловый узел",
     "qs2_desc": "Установите <strong>On My Disk Direct</strong> и <strong>On My Chat</strong> на домашний ПК, сервер или плату с Rockchip NPU рядом с Ollama и свяжите узел с браузером или мобильным приложением за пару минут.",
     "qs2_footer": "Репозитории на GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (платформа)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (ИИ-нода)</a>",
@@ -241,6 +245,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Условия и приватность",
     "qs2_btn": "Инструкции и загрузки →",
+    "qs2_gpu_label": "Есть GPU",
+    "qs2_copy": "Копировать",
+    "qs2_copied": "Скопировано!",
+    "qs2_adv_btn": "Расширенная настройка →",
     "foot_github_node": "GitHub (ИИ-нода)"
   },
   "sl": {
@@ -285,7 +293,7 @@
     "qs1_title": "1. Preizkusite naravnost v brskalniku",
     "qs1_desc": "Zaženite spletno aplikacijo takoj — priklopite lokalno mapo iz brskalnika, preizkusite javno P2P AI vozlišče ali odprite upravitelj datotek na <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Zaženi spletno aplikacijo →",
-    "qs2_tag": "Linux • Windows • macOS (kmalu) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Zaženite lastno AI in datotečno vozlišče",
     "qs2_desc": "Namestite <strong>On My Disk Direct</strong> in <strong>On My Chat</strong> na osebni računalnik, domači strežnik ali Rockchip NPU skupaj z Ollamo ter v nekaj minutah povežite vozlišče z brskalnikom ali mobilno aplikacijo.",
     "qs2_footer": "GitHub repozitorija: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (platforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (AI vozlišče)</a>",
@@ -300,6 +308,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Pogoji in zasebnost",
     "qs2_btn": "Navodila za namestitev in prenosi →",
+    "qs2_gpu_label": "Lokalni GPU",
+    "qs2_copy": "Kopiraj",
+    "qs2_copied": "Skopirano!",
+    "qs2_adv_btn": "Napredna nastavitev →",
     "foot_github_node": "GitHub (AI vozlišče)"
   },
   "de": {
@@ -344,7 +356,7 @@
     "qs1_title": "1. Direkt im Browser ausprobieren",
     "qs1_desc": "Starte sofort die Web-App — binde einen lokalen Ordner im Browser ein, teste den öffentlichen P2P-KI-Node oder öffne den Dateimanager unter <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Web-App starten →",
-    "qs2_tag": "Linux • Windows • macOS (bald) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Eigenen KI- & Speicher-Node betreiben",
     "qs2_desc": "Installiere <strong>On My Disk Direct</strong> &amp; <strong>On My Chat</strong> auf deinem Desktop-PC, Heimserver oder Rockchip-NPU zusammen mit Ollama und kopple den Node in wenigen Minuten mit Browser oder Mobile-App.",
     "qs2_footer": "GitHub-Repositories: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Plattform)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (KI-Node)</a>",
@@ -359,6 +371,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "AGB & Datenschutz",
     "qs2_btn": "Installationsanleitungen & Downloads →",
+    "qs2_gpu_label": "Lokale GPU",
+    "qs2_copy": "Kopieren",
+    "qs2_copied": "Kopiert!",
+    "qs2_adv_btn": "Erweiterte Konfiguration →",
     "foot_github_node": "GitHub (KI-Node)"
   },
   "es": {
@@ -403,7 +419,7 @@
     "qs1_title": "1. Pruébalo directo en el navegador",
     "qs1_desc": "Inicia la aplicación web al instante: monta una carpeta local desde el navegador, prueba el nodo público de IA P2P o abre el gestor de archivos en <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Iniciar aplicación web →",
-    "qs2_tag": "Linux • Windows • macOS (pronto) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Ejecuta tu propio nodo de IA y archivos",
     "qs2_desc": "Instala <strong>On My Disk Direct</strong> y <strong>On My Chat</strong> en tu PC de escritorio, servidor doméstico o NPU Rockchip junto a Ollama y vincúlalo con tu navegador o app móvil en minutos.",
     "qs2_footer": "Repositorios en GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Plataforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (Nodo IA)</a>",
@@ -418,6 +434,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Términos y privacidad",
     "qs2_btn": "Guías de instalación y descargas →",
+    "qs2_gpu_label": "GPU local",
+    "qs2_copy": "Copiar",
+    "qs2_copied": "¡Copiado!",
+    "qs2_adv_btn": "Configuración avanzada →",
     "foot_github_node": "GitHub (Nodo IA)"
   },
   "fr": {
@@ -462,7 +482,7 @@
     "qs1_title": "1. Essayez directement dans le navigateur",
     "qs1_desc": "Lancez l'application web tout de suite — montez un dossier local depuis le navigateur, testez le nœud IA P2P public ou ouvrez le gestionnaire de fichiers sur <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Lancer l'application web →",
-    "qs2_tag": "Linux • Windows • macOS (bientôt) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Hébergez votre propre nœud IA & stockage",
     "qs2_desc": "Installez <strong>On My Disk Direct</strong> et <strong>On My Chat</strong> sur votre PC de bureau, serveur domestique ou NPU Rockchip aux côtés d’Ollama et jumelez-le à votre navigateur ou application mobile en quelques minutes.",
     "qs2_footer": "Dépôts GitHub : <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Plateforme)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (Nœud IA)</a>",
@@ -477,6 +497,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Conditions et confidentialité",
     "qs2_btn": "Guides d’installation et téléchargements →",
+    "qs2_gpu_label": "GPU local",
+    "qs2_copy": "Copier",
+    "qs2_copied": "Copié !",
+    "qs2_adv_btn": "Configuration avancée →",
     "foot_github_node": "GitHub (Nœud IA)"
   },
   "it": {
@@ -521,7 +545,7 @@
     "qs1_title": "1. Prova subito nel browser",
     "qs1_desc": "Avvia subito la web app: monta una cartella locale dal browser, prova il nodo IA P2P pubblico o apri il file manager su <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Avvia Web App →",
-    "qs2_tag": "Linux • Windows • macOS (presto) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Avvia il tuo nodo IA e archiviazione",
     "qs2_desc": "Installa <strong>On My Disk Direct</strong> e <strong>On My Chat</strong> sul tuo PC desktop, server domestico o NPU Rockchip insieme a Ollama e abbinalo al browser o all’app mobile in pochi minuti.",
     "qs2_footer": "Repository su GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Piattaforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (Nodo IA)</a>",
@@ -536,6 +560,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Termini e privacy",
     "qs2_btn": "Guide di installazione e download →",
+    "qs2_gpu_label": "GPU locale",
+    "qs2_copy": "Copia",
+    "qs2_copied": "Copiato!",
+    "qs2_adv_btn": "Configurazione avanzata →",
     "foot_github_node": "GitHub (Nodo IA)"
   },
   "nl": {
@@ -580,7 +608,7 @@
     "qs1_title": "1. Probeer direct in je browser",
     "qs1_desc": "Start de webapp meteen — koppel een lokale map vanuit je browser, test de openbare P2P AI-node of open het bestandsbeheer op <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Start Web App →",
-    "qs2_tag": "Linux • Windows • macOS (binnenkort) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Draai je eigen AI- & opslagnode",
     "qs2_desc": "Installeer <strong>On My Disk Direct</strong> en <strong>On My Chat</strong> op je desktop-pc, thuisserver of Rockchip-NPU naast Ollama en koppel de node in enkele minuten met je browser of mobiele app.",
     "qs2_footer": "GitHub-repositories: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Platform)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (AI-node)</a>",
@@ -595,6 +623,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Voorwaarden & privacy",
     "qs2_btn": "Installatiegidsen & downloads →",
+    "qs2_gpu_label": "Lokale GPU",
+    "qs2_copy": "Kopiëren",
+    "qs2_copied": "Gekopieerd!",
+    "qs2_adv_btn": "Geavanceerde configuratie →",
     "foot_github_node": "GitHub (AI-node)"
   },
   "pl": {
@@ -639,7 +671,7 @@
     "qs1_title": "1. Wypróbuj prosto w przeglądarce",
     "qs1_desc": "Uruchom aplikację webową natychmiast — podłącz lokalny folder z przeglądarki, przetestuj publiczny węzeł AI P2P lub otwórz menedżer plików na <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Uruchom aplikację webową →",
-    "qs2_tag": "Linux • Windows • macOS (wkrótce) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Uruchom własny węzeł AI i plików",
     "qs2_desc": "Zainstaluj <strong>On My Disk Direct</strong> i <strong>On My Chat</strong> na komputerze stacjonarnym, serwerze domowym lub NPU Rockchip obok Ollamy i sparuj węzeł z przeglądarką lub aplikacją mobilną w kilka minut.",
     "qs2_footer": "Repozytoria na GitHubie: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Platforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (Węzeł AI)</a>",
@@ -654,6 +686,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Regulamin i prywatność",
     "qs2_btn": "Instrukcje instalacji i pobieranie →",
+    "qs2_gpu_label": "Lokalne GPU",
+    "qs2_copy": "Kopiuj",
+    "qs2_copied": "Skopiowano!",
+    "qs2_adv_btn": "Zaawansowana konfiguracja →",
     "foot_github_node": "GitHub (Węzeł AI)"
   },
   "pt": {
@@ -698,7 +734,7 @@
     "qs1_title": "1. Experimente direto no navegador",
     "qs1_desc": "Inicie a aplicação web de imediato — monte uma pasta local no navegador, teste o nó público de IA P2P ou abra o gestor de ficheiros em <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Iniciar Aplicação Web →",
-    "qs2_tag": "Linux • Windows • macOS (em breve) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Execute o seu próprio nó de IA e armazenamento",
     "qs2_desc": "Instale o <strong>On My Disk Direct</strong> e o <strong>On My Chat</strong> no seu PC desktop, servidor doméstico ou NPU Rockchip junto ao Ollama e emparelhe com o navegador ou app móvel em minutos.",
     "qs2_footer": "Repositórios no GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Plataforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (Nó IA)</a>",
@@ -713,6 +749,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Termos e privacidade",
     "qs2_btn": "Guias de instalação e downloads →",
+    "qs2_gpu_label": "GPU local",
+    "qs2_copy": "Copiar",
+    "qs2_copied": "Copiado!",
+    "qs2_adv_btn": "Configuração avançada →",
     "foot_github_node": "GitHub (Nó IA)"
   },
   "uk": {
@@ -757,7 +797,7 @@
     "qs1_title": "1. Спробуйте просто в браузері",
     "qs1_desc": "Запустіть вебдодаток миттєво — підключіть локальну теку з браузера, протестуйте публічний P2P ШІ-вузол або відкрийте файловий менеджер на <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Запустити вебдодаток →",
-    "qs2_tag": "Linux • Windows • macOS (незабаром) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Запустіть власний ШІ та файловий вузол",
     "qs2_desc": "Встановіть <strong>On My Disk Direct</strong> та <strong>On My Chat</strong> на домашній ПК, сервер або плату з Rockchip NPU поруч з Ollama та підключіть вузол до браузера чи мобільного застосунку за лічені хвилини.",
     "qs2_footer": "Репозиторії на GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (платформа)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (ШІ-вузол)</a>",
@@ -772,6 +812,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Умови та приватність",
     "qs2_btn": "Інструкції зі встановлення та завантаження →",
+    "qs2_gpu_label": "Є свій GPU",
+    "qs2_copy": "Копіювати",
+    "qs2_copied": "Скопійовано!",
+    "qs2_adv_btn": "Розширене налаштування →",
     "foot_github_node": "GitHub (ШІ-вузол)"
   },
   "tr": {
@@ -816,7 +860,7 @@
     "qs1_title": "1. Doğrudan tarayıcıda deneyin",
     "qs1_desc": "Web uygulamasını hemen başlatın — tarayıcıdan yerel bir klasör bağlayın, genel P2P yapay zeka düğümünü deneyin veya <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a> adresinden dosya yöneticisini açın.",
     "qs1_btn": "Web Uygulamasını Başlat →",
-    "qs2_tag": "Linux • Windows • macOS (yakında) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Kendi yapay zeka ve depolama düğümünüzü çalıştırın",
     "qs2_desc": "Masaüstü bilgisayarınıza, ev sunucunuza veya Rockchip NPU’ya Ollama ile birlikte <strong>On My Disk Direct</strong> ve <strong>On My Chat</strong> kurun; dakikalar içinde tarayıcınız veya mobil uygulamanızla eşleştirin.",
     "qs2_footer": "GitHub depoları: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Platform)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (YZ Düğümü)</a>",
@@ -831,6 +875,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Koşullar ve Gizlilik",
     "qs2_btn": "Kurulum Rehberleri ve İndirmeler →",
+    "qs2_gpu_label": "Yerel GPU",
+    "qs2_copy": "Kopyala",
+    "qs2_copied": "Kopyalandı!",
+    "qs2_adv_btn": "Gelişmiş Yapılandırma →",
     "foot_github_node": "GitHub (YZ Düğümü)"
   },
   "hr": {
@@ -875,7 +923,7 @@
     "qs1_title": "1. Isprobajte izravno u pregledniku",
     "qs1_desc": "Pokrenite web aplikaciju odmah — povežite lokalnu mapu iz preglednika, isprobajte javni P2P AI čvor ili otvorite upravitelj datoteka na <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Pokreni web aplikaciju →",
-    "qs2_tag": "Linux • Windows • macOS (uskoro) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Pokrenite vlastiti AI i podatkovni čvor",
     "qs2_desc": "Instalirajte <strong>On My Disk Direct</strong> i <strong>On My Chat</strong> na stolno računalo, kućni poslužitelj ili Rockchip NPU uz Ollamu te u par minuta povežite čvor s preglednikom ili mobilnom aplikacijom.",
     "qs2_footer": "GitHub repozitoriji: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Platforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (AI čvor)</a>",
@@ -890,6 +938,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Uvjeti i privatnost",
     "qs2_btn": "Upute za instalaciju i preuzimanja →",
+    "qs2_gpu_label": "Lokalni GPU",
+    "qs2_copy": "Kopiraj",
+    "qs2_copied": "Kopirano!",
+    "qs2_adv_btn": "Napredna konfiguracija →",
     "foot_github_node": "GitHub (AI čvor)"
   },
   "sr": {
@@ -934,7 +986,7 @@
     "qs1_title": "1. Испробајте директно у прегледачу",
     "qs1_desc": "Покрените веб апликацију одмах — повежите локалну фасциклу из прегледача, испробајте јавни P2P AI чвор или отворите менаџер датотека на <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Покрени веб апликацију →",
-    "qs2_tag": "Linux • Windows • macOS (ускоро) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Покрените сопствени AI и фајл чвор",
     "qs2_desc": "Инсталирајте <strong>On My Disk Direct</strong> и <strong>On My Chat</strong> на десктоп рачунар, кућни сервер или Rockchip NPU уз Ollama и за пар минута повежите чвор са прегледачем или мобилном апликацијом.",
     "qs2_footer": "GitHub репозиторијуми: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Платформа)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (AI чвор)</a>",
@@ -949,6 +1001,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Услови и приватност",
     "qs2_btn": "Упутства за инсталацију и преузимања →",
+    "qs2_gpu_label": "Локални GPU",
+    "qs2_copy": "Копирај",
+    "qs2_copied": "Копирано!",
+    "qs2_adv_btn": "Напредна конфигурација →",
     "foot_github_node": "GitHub (AI чвор)"
   },
   "sk": {
@@ -993,7 +1049,7 @@
     "qs1_title": "1. Vyskúšajte priamo v prehliadači",
     "qs1_desc": "Spustite webovú aplikáciu okamžite — pripojte lokálny priečinok z prehliadača, vyskúšajte verejný P2P AI uzol alebo otvorte správcu súborov na <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "Spustiť webovú aplikáciu →",
-    "qs2_tag": "Linux • Windows • macOS (čoskoro) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. Spustite vlastný AI a súborový uzol",
     "qs2_desc": "Nainštalujte <strong>On My Disk Direct</strong> a <strong>On My Chat</strong> na stolný počítač, domáci server alebo Rockchip NPU spolu s Ollamou a spárujte uzol s prehliadačom alebo mobilnou aplikáciou v priebehu pár minút.",
     "qs2_footer": "GitHub repozitáre: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (Platforma)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (AI uzol)</a>",
@@ -1008,6 +1064,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "Podmienky a súkromie",
     "qs2_btn": "Návody na inštaláciu a stiahnutie →",
+    "qs2_gpu_label": "Lokálne GPU",
+    "qs2_copy": "Kopírovať",
+    "qs2_copied": "Skopírované!",
+    "qs2_adv_btn": "Pokročilá konfigurácia →",
     "foot_github_node": "GitHub (AI uzol)"
   },
   "zh_cn": {
@@ -1052,7 +1112,7 @@
     "qs1_title": "1. 在浏览器中直接试用",
     "qs1_desc": "立即启动网页应用 —— 直接挂载浏览器本地文件夹、体验公共 P2P AI 节点，或前往 <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a> 使用独立文件管理器。",
     "qs1_btn": "启动网页应用 →",
-    "qs2_tag": "Linux • Windows • macOS（即将推出）• SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. 部署您自己的 AI 与存储节点",
     "qs2_desc": "在桌面电脑、家庭服务器或 Rockchip NPU 上搭配 Ollama 安装 <strong>On My Disk Direct</strong> 与 <strong>On My Chat</strong>，几分钟即可与浏览器或移动应用完成配对。",
     "qs2_footer": "GitHub 开源仓库：<a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct（主平台）</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat（AI 节点）</a>",
@@ -1067,6 +1127,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "服务条款与隐私",
     "qs2_btn": "安装指南与下载 →",
+    "qs2_gpu_label": "本地 GPU",
+    "qs2_copy": "复制",
+    "qs2_copied": "已复制！",
+    "qs2_adv_btn": "高级配置 →",
     "foot_github_node": "GitHub (AI 节点)"
   },
   "zh_tw": {
@@ -1111,7 +1175,7 @@
     "qs1_title": "1. 直接在瀏覽器中試用",
     "qs1_desc": "立即啟動網頁應用 —— 直接掛載本地資料夾、測試公開 P2P AI 節點，或前往 <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a> 開啟獨立檔案管理員。",
     "qs1_btn": "啟動網頁應用 →",
-    "qs2_tag": "Linux • Windows • macOS（即將推出）• SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. 架設您自己的 AI 與儲存節點",
     "qs2_desc": "在桌上型電腦、家用伺服器或 Rockchip NPU 上搭配 Ollama 安裝 <strong>On My Disk Direct</strong> 與 <strong>On My Chat</strong>，幾分鐘即可與瀏覽器或行動應用完成配對。",
     "qs2_footer": "GitHub 開源專案庫：<a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct（主平台）</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat（AI 節點）</a>",
@@ -1126,6 +1190,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "條款與隱私權",
     "qs2_btn": "安裝指南與下載 →",
+    "qs2_gpu_label": "本機 GPU",
+    "qs2_copy": "複製",
+    "qs2_copied": "已複製！",
+    "qs2_adv_btn": "進階設定 →",
     "foot_github_node": "GitHub (AI 節點)"
   },
   "he": {
@@ -1170,7 +1238,7 @@
     "qs1_title": "1. התנסות מיידית בדפדפן",
     "qs1_desc": "הפעל את אפליקציית הווב מיד — חבר תיקייה מקומית מהדפדפן, בדוק את צומת ה-AI הציבורי או פתח את מנהל הקבצים ב-<a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a>.",
     "qs1_btn": "הפעלת אפליקציית הווב ←",
-    "qs2_tag": "Linux • Windows • macOS (בקרוב) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "2. הפעל צומת AI ואחסון משלך",
     "qs2_desc": "התקינו את <strong>On My Disk Direct</strong> ו-<strong>On My Chat</strong> על המחשב האישי, שרת ביתי או Rockchip NPU לצד Ollama וצמדו לדפדפן או לאפליקציית המובייל תוך דקות.",
     "qs2_footer": "מאגרי GitHub: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (פלטפורמה)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (צומת AI)</a>",
@@ -1185,6 +1253,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "תנאים ופרטיות",
     "qs2_btn": "מדריכי התקנה והורדות ←",
+    "qs2_gpu_label": "GPU מקומי",
+    "qs2_copy": "העתק",
+    "qs2_copied": "הועתק!",
+    "qs2_adv_btn": "הגדרות מתקדמות ←",
     "foot_github_node": "GitHub (צומת AI)"
   },
   "fa": {
@@ -1229,7 +1301,7 @@
     "qs1_title": "۱. همین حالا در مرورگر امتحان کنید",
     "qs1_desc": "برنامه وب را بلافاصله اجرا کنید — یک پوشه محلی از مرورگر متصل کنید، گره عمومی هوش مصنوعی P2P را بیازمایید یا مدیر فایل را در <a href=\"https://direct.onmydisk.net\" target=\"_blank\" rel=\"noopener noreferrer\">direct.onmydisk.net</a> باز کنید.",
     "qs1_btn": "اجرای برنامه وب ←",
-    "qs2_tag": "Linux • Windows • macOS (به‌زودی) • SBC • Docker",
+    "qs2_tag": "Linux • Windows • macOS • SBC • OpenWrt",
     "qs2_title": "۲. گره هوش مصنوعی و ذخیره‌سازی خودتان را راه‌اندازی کنید",
     "qs2_desc": "<strong>On My Disk Direct</strong> و <strong>On My Chat</strong> را روی رایانه شخصی، سرور خانگی یا Rockchip NPU در کنار Ollama نصب کنید و در چند دقیقه با مرورگر یا اپلیکیشن موبایل جفت کنید.",
     "qs2_footer": "مخازن گیت‌هاب: <a href=\"https://github.com/alexeyvolkoff/onmydisk\" target=\"_blank\" rel=\"noopener noreferrer\">On My Disk Direct (پلتفرم)</a> • <a href=\"https://github.com/alexeyvolkoff/onmychat\" target=\"_blank\" rel=\"noopener noreferrer\">On My Chat (گره هوش مصنوعی)</a>",
@@ -1244,6 +1316,10 @@
     "foot_github": "GitHub (On My Disk Direct)",
     "foot_tos": "قوانین و حریم خصوصی",
     "qs2_btn": "راهنمای نصب و دانلودها ←",
+    "qs2_gpu_label": "GPU محلی",
+    "qs2_copy": "کپی",
+    "qs2_copied": "کپی شد!",
+    "qs2_adv_btn": "تنظیمات پیشرفته ←",
     "foot_github_node": "GitHub (گره AI)"
   }
 };

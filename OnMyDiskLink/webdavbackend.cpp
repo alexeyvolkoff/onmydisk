@@ -5,6 +5,14 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QXmlStreamReader>
+#include <QMimeDatabase>
+#include <QMutex>
+#include <QMutexLocker>
+
+namespace {
+QMutex s_webdavUploadMutex;
+QHash<QString, QByteArray> s_webdavUploadBuffers;
+}
 
 WebDAVBackend::WebDAVBackend(const QString &baseUrl, QObject *parent)
     : IResourceBackend(parent)
@@ -321,7 +329,13 @@ QHash<QString, QVariant> WebDAVBackend::entryToResourceData(const WebDAVEntry &e
     data["isDir"] = entry.isDir;
     data["isFile"] = !entry.isDir;
     data["size"] = entry.size;
-    data["contentType"] = entry.isDir ? "folder" : "application/octet-stream";
+    QString mime = "folder";
+    if (!entry.isDir) {
+        mime = QMimeDatabase().mimeTypeForFile(entry.name, QMimeDatabase::MatchExtension).name();
+        if (mime.isEmpty())
+            mime = "application/octet-stream";
+    }
+    data["contentType"] = mime;
     data["createdDate"] = entry.lastModified;
     data["lastModDate"] = entry.lastModified;
     data["lastModified"] = entry.lastModified.toString(Qt::ISODate);
@@ -418,10 +432,17 @@ bool WebDAVBackend::RefreshAllInfo(CloudResource *resource)
 
 QByteArray WebDAVBackend::readFromPosition(qint64 from, qint64 maxlen)
 {
-    Q_UNUSED(from);
-    Q_UNUSED(maxlen);
+    if (maxlen <= 0 || from < 0)
+        return QByteArray();
+
+    QHash<QString, QString> headers;
+    headers["Range"] = QString("bytes=%1-%2").arg(from).arg(from + maxlen - 1);
+
     int status = -1;
-    QByteArray data = httpGet(m_remotePath, &status);
+    QByteArray data = makeRequest("GET", m_remotePath, QByteArray(), headers, &status);
+    if (status == 206) {
+        return data.size() > maxlen ? data.left(maxlen) : data;
+    }
     if (status < 200 || status >= 300)
         return QByteArray();
 
@@ -481,20 +502,40 @@ bool WebDAVBackend::open(OpenMode mode)
     if (m_isOpen)
         return false;
 
+    if ((mode & QIODevice::WriteOnly) && (mode & QIODevice::Truncate)) {
+        QMutexLocker locker(&s_webdavUploadMutex);
+        s_webdavUploadBuffers.remove(buildUrl(m_remotePath));
+        m_bytesToCache.clear();
+    }
+
     m_isOpen = true;
     m_pos = 0;
     m_atEnd = false;
+    m_lastWriteOk = true;
     return IResourceBackend::open(mode);
 }
 
 void WebDAVBackend::close()
 {
     if (m_isOpen && (openMode() & QIODevice::WriteOnly)) {
-        bool ok = httpPut(m_remotePath, m_bytesToCache);
-        if (!ok)
-            qWarning() << "WebDAV: PUT failed on close for" << m_remotePath;
+        const QString urlKey = buildUrl(m_remotePath);
+        if (m_writeEof) {
+            QByteArray payload;
+            {
+                QMutexLocker locker(&s_webdavUploadMutex);
+                if (s_webdavUploadBuffers.contains(urlKey)) {
+                    payload = s_webdavUploadBuffers.take(urlKey);
+                } else {
+                    payload = m_bytesToCache;
+                }
+            }
+            m_lastWriteOk = httpPut(m_remotePath, payload);
+            if (!m_lastWriteOk)
+                qWarning() << "WebDAV: PUT failed on close for" << m_remotePath;
+        }
     }
     m_bytesToCache.clear();
+    m_writeEof = true;
     m_isOpen = false;
     m_pos = 0;
     m_atEnd = false;
@@ -543,9 +584,20 @@ qint64 WebDAVBackend::readData(char *data, qint64 maxlen)
 
 qint64 WebDAVBackend::writeData(const char *data, qint64 len)
 {
-    // Accumulate writes, flush on close
-    m_bytesToCache.append(data, len);
-    m_size = m_bytesToCache.size();
+    const QString urlKey = buildUrl(m_remotePath);
+    {
+        QMutexLocker locker(&s_webdavUploadMutex);
+        QByteArray &buf = s_webdavUploadBuffers[urlKey];
+        if (m_pos == buf.size()) {
+            buf.append(data, static_cast<int>(len));
+        } else {
+            if (m_pos + len > buf.size())
+                buf.resize(static_cast<int>(m_pos + len));
+            if (len > 0)
+                memcpy(buf.data() + m_pos, data, static_cast<size_t>(len));
+        }
+        m_size = buf.size();
+    }
     m_pos += len;
     return len;
 }

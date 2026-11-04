@@ -168,9 +168,9 @@ void ClientNotifier::socketDisconnected()
    m_disconnected = true;
 
 #ifdef SERVER
-   // Channel gone - unregister the web device so the gateway stops routing
-   // TunnelOpen to a dead client.
-   if (!m_linkID.isEmpty())
+   // Channel gone - unregister the web device ONLY if no other open browser tab
+   // still holds a live WebSocket channel for the same linkID.
+   if (!m_linkID.isEmpty() && !NotificationManager::instance().hasActiveNotifierForLink(m_linkID, this))
        OnMyDiskLinkServer::instance().unregisterWebDevice(m_linkID);
 #endif
 

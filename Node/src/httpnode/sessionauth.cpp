@@ -86,6 +86,21 @@ static bool authenticateWindowsUser(const QString &username, const QString &pass
 #endif
 
 
+#ifdef Q_OS_MAC
+#include <QProcess>
+static bool authenticateMacUser(const QString &username, const QString &password) {
+    if (username.isEmpty() || password.isEmpty())
+        return false;
+    QProcess proc;
+    proc.start("/usr/bin/dscl", QStringList() << "." << "-authonly" << username << password);
+    if (!proc.waitForFinished(3000)) {
+        proc.kill();
+        return false;
+    }
+    return (proc.exitCode() == 0);
+}
+#endif
+
 SessionAuth::SessionAuth(QString realm, QString crawlerToken)
 {
     m_Realm = realm;
@@ -986,6 +1001,8 @@ bool SessionAuth::checkUserPass(QString userName, QString password)
     return authenticateLinuxUser(userName, password);
 #elif defined(Q_OS_WIN)
     return authenticateWindowsUser(userName, password);
+#elif defined(Q_OS_MAC)
+    return authenticateMacUser(userName, password);
 #else
     return emit authRequest(userName, password);
 #endif

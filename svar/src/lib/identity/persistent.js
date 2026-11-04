@@ -985,14 +985,25 @@ export class PersistentIdentity {
   }
 
   /** Publish this device's linkId into the user's GunDB devices list. */
-  async publishDevice(linkId, name, type = "node", capabilities = ["files", "terminal"]) {
+  async publishDevice(linkId, name, type = "node", capabilities = ["files", "terminal"], options = {}) {
     if (!linkId) return;
+
+    const existing = this.devices.get(linkId);
+    const myPub = (this.devicePair && this.devicePair.pub) || "";
+    const isLocal = Boolean(options && options.isLocal);
+    const originDevicePub = isLocal
+      ? myPub
+      : (options?.originDevicePub ?? existing?.originDevicePub ?? "");
+    const devicePub = isLocal
+      ? (myPub || linkId)
+      : (existing?.devicePub || myPub || linkId);
 
     const deviceEntry = {
       linkId,
       name: name || linkId,
       type,
-      devicePub: (this.devicePair && this.devicePair.pub) || linkId,
+      devicePub,
+      originDevicePub,
       online: true,
       lastSeen: Date.now(),
       capabilities,
@@ -1026,7 +1037,8 @@ export class PersistentIdentity {
         linkId,
         name: name || linkId,
         type,
-        devicePub: (this.devicePair && this.devicePair.pub) || linkId,
+        devicePub,
+        originDevicePub,
         online: true,
         last_seen: Date.now(),
         capabilities: Array.isArray(capabilities) ? capabilities.join(",") : (capabilities || ""),
@@ -1297,8 +1309,10 @@ export class PersistentIdentity {
         let updated = false;
         for (const dev of json.devices) {
           if (dev && dev.linkId) {
+            const prev = this.devices.get(dev.linkId);
             this.devices.set(dev.linkId, {
               devicePub: dev.devicePub || dev.linkId,
+              originDevicePub: dev.originDevicePub || prev?.originDevicePub || "",
               linkId: dev.linkId,
               name: dev.name || dev.linkId,
               type: dev.type || "node",
@@ -1322,7 +1336,7 @@ export class PersistentIdentity {
 
     const handleDeviceData = (data, key) => {
       if (key === "_") return;
-      if (!data || data === null || (typeof data === "object" && Object.keys(data).length <= 1 && data._)) {
+      if (data === null) {
         if (key && this.devices.has(key)) {
           this.devices.delete(key);
           this._saveLocalDevices();
@@ -1330,22 +1344,25 @@ export class PersistentIdentity {
         }
         return;
       }
-      if (!data.linkId) {
-        if (key && this.devices.has(key)) {
-          this.devices.delete(key);
-          this._saveLocalDevices();
-          this._notify();
-        }
+      // Ignore intermediate GunDB soul-pointer stubs ({ _: { '#': '...' } })
+      if (!data || typeof data !== "object" || !data.linkId) {
         return;
       }
+      const prev = this.devices.get(data.linkId);
+      const parsedCaps = Array.isArray(data.capabilities)
+        ? data.capabilities
+        : (typeof data.capabilities === "string" && data.capabilities
+            ? data.capabilities.split(",").map(s => s.trim()).filter(Boolean)
+            : ["files"]);
       this.devices.set(data.linkId, {
         devicePub: data.devicePub || data.linkId,
+        originDevicePub: data.originDevicePub || prev?.originDevicePub || "",
         linkId: data.linkId,
         name: data.name || data.linkId,
         type: data.type || "node",
         online: data.online !== false,
         lastSeen: data.last_seen || data.lastSeen || Date.now(),
-        capabilities: data.capabilities || ["files"],
+        capabilities: parsedCaps,
       });
       this._saveLocalDevices();
       this._notify();

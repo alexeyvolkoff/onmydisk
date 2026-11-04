@@ -9,8 +9,8 @@ SUBDIRS += OnMyDisk
 
 OnMyDisk.file = $$PWD/Node/embedded.pro
 
-# No LibQDrive for the router flavour (no DBus/qdrive there)
-unix:!contains(DEFINES, ROUTER) {
+# No LibQDrive for the router flavour or macOS (no DBus/qdrive there)
+unix:!macx:!contains(DEFINES, ROUTER) {
     SUBDIRS += LibQDrive
     INCLUDEPATH += $$PWD/Node/libqdrive/include
     DEPENDPATH  += $$PWD/Node/libqdrive

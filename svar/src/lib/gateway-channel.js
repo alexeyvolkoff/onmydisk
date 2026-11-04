@@ -48,6 +48,7 @@ export class GatewayChannel {
     this._ws = null;
     this._closing = false;
     this._retryTimer = null;
+    this._keepaliveTimer = null;
     this._retryAttempt = 0;
     this._linkId = typeof window !== "undefined" ? getOrCreateLocalLinkId() : null;
     this._tunnelOpenHandlers = [];
@@ -57,17 +58,36 @@ export class GatewayChannel {
     this._stateChangeHandlers = [];
     this._connectPromise = null;
 
+    const triggerImmediateReconnect = (reason) => {
+      if (this._closing) return;
+      const wsDead = !this._ws || (this._ws.readyState !== WebSocket.OPEN && this._ws.readyState !== WebSocket.CONNECTING);
+      if (!this.connected || wsDead) {
+        console.log(`[GatewayChannel] ${reason}: reconnecting WebSocket immediately`);
+        if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
+        this._retryAttempt = 0;
+        this.connected = false;
+        this.backend = null;
+        this.connect();
+      } else if (this._linkId) {
+        this.registerDevice(this._linkId);
+      }
+    };
+
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && !this.connected && !this._closing) {
-          console.log("[GatewayChannel] Foreground wakeup: reconnecting WebSocket immediately");
-          if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
-          this._retryAttempt = 0;
-          this.connect();
+        if (document.visibilityState === "visible") {
+          triggerImmediateReconnect("Foreground wakeup");
         }
       });
     }
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", () => {
+        triggerImmediateReconnect("Network online");
+      });
+    }
   }
+
+  get isConnected() { return this.connected; }
 
   onStateChange(cb) { this._stateChangeHandlers.push(cb); }
   onTunnelOpen(cb) { this._tunnelOpenHandlers.push(cb); }
@@ -133,8 +153,42 @@ export class GatewayChannel {
     }
   }
 
+  _startKeepalive() {
+    this._stopKeepalive();
+    this._keepaliveTimer = setInterval(() => {
+      if (this._closing) {
+        this._stopKeepalive();
+        return;
+      }
+      if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
+        this._stopKeepalive();
+        this._setState(false);
+        this.backend = null;
+        this._scheduleReconnect();
+        return;
+      }
+      if (this._linkId) {
+        this.registerDevice(this._linkId);
+      }
+    }, 25000);
+  }
+
+  _stopKeepalive() {
+    if (this._keepaliveTimer) {
+      clearInterval(this._keepaliveTimer);
+      this._keepaliveTimer = null;
+    }
+  }
+
   async connect(urlOverride = null) {
-    if (this.connected && this.backend) return true;
+    this._closing = false;
+    if (this.connected && this.backend && this._ws && this._ws.readyState === WebSocket.OPEN) {
+      return true;
+    }
+    if (this._ws && this._ws.readyState !== WebSocket.OPEN && this._ws.readyState !== WebSocket.CONNECTING) {
+      this.connected = false;
+      this.backend = null;
+    }
     if (this._connectPromise) return this._connectPromise;
 
     this._connectPromise = (async () => {
@@ -243,12 +297,14 @@ export class GatewayChannel {
           // Expose backend and mark connected ONLY AFTER subscription is 100% complete
           this.backend = backend;
           this._setState(true);
+          this._startKeepalive();
           finish(true);
         });
       };
 
       this._ws.onclose = () => {
         const wasConnected = this.connected;
+        this._stopKeepalive();
         this._setState(false);
         this.backend = null;
         if (!this._closing) {
@@ -291,6 +347,7 @@ export class GatewayChannel {
 
   close() {
     this._closing = true;
+    this._stopKeepalive();
     if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
     try { if (this._ws) this._ws.close(); } catch (_) {}
     this._ws = null;

@@ -18,6 +18,179 @@
   // reveal state for password fields
   let revealed = {};
   let copiedKey = "";
+  let initialRcloneSnapshot = "[]";
+
+  // External cloud shares (rclone) inline form state
+  let showShareForm = false;
+  let editingShareIndex = -1;
+  let shareFormError = "";
+  let newShare = {
+    name: "",
+    type: "protondrive",
+    url: "",
+    host: "",
+    sftpPort: 22,
+    remote: "",
+    remotePath: "",
+    username: "",
+    password: "",
+    port: 19088,
+  };
+
+  function getFreeRclonePort(excludeIdx = -1) {
+    let port = 19088;
+    const shares = Array.isArray(settings?.rcloneShares) ? settings.rcloneShares : [];
+    while (shares.some((s, idx) => idx !== excludeIdx && Number(s?.port) === port)) {
+      port++;
+    }
+    return port;
+  }
+
+  function formatShareTypeLabel(share) {
+    const t = (share?.type || "").toLowerCase();
+    if (t === "protondrive") return "Proton Drive";
+    if (t === "webdav") return "WebDAV";
+    if (t === "sftp") return "SFTP";
+    if (t === "rclone") return share?.remote ? `rclone (${share.remote})` : "rclone";
+    return share?.type || "Cloud";
+  }
+
+  function openAddShareForm() {
+    shareFormError = "";
+    editingShareIndex = -1;
+    const existingShares = Array.isArray(settings?.rcloneShares) ? settings.rcloneShares : [];
+    const hasProtonMounted = existingShares.some(s => (s?.type || "") === "protondrive" || (s?.name || "").toLowerCase() === "protondrive");
+    newShare = {
+      name: hasProtonMounted ? "" : "ProtonDrive",
+      type: hasProtonMounted ? "webdav" : "protondrive",
+      url: "",
+      host: "",
+      sftpPort: 22,
+      remote: Array.isArray(settings?.rcloneRemotes) && settings.rcloneRemotes.length > 0 ? settings.rcloneRemotes[0] : "",
+      remotePath: "",
+      username: "",
+      password: "",
+      port: getFreeRclonePort(-1),
+    };
+    revealed["rclone_share_pw"] = false;
+    showShareForm = true;
+  }
+
+  function openEditShareForm(idx) {
+    const s = settings?.rcloneShares?.[idx];
+    if (!s) return;
+    shareFormError = "";
+    editingShareIndex = idx;
+    newShare = {
+      name: s.name || "",
+      type: s.type || "webdav",
+      url: s.url || "",
+      host: s.host || "",
+      sftpPort: Number(s.sftpPort) || 22,
+      remote: s.remote || "",
+      remotePath: s.remotePath || "",
+      username: s.username || "",
+      password: s.password || "",
+      port: Number(s.port) || getFreeRclonePort(idx),
+    };
+    revealed["rclone_share_pw"] = false;
+    showShareForm = true;
+  }
+
+  function cancelShareForm() {
+    showShareForm = false;
+    editingShareIndex = -1;
+    shareFormError = "";
+  }
+
+  function handleShareTypeChange() {
+    shareFormError = "";
+    if (newShare.type === "protondrive" && !newShare.name.trim()) {
+      newShare.name = "ProtonDrive";
+    } else if (newShare.type === "rclone") {
+      if (!newShare.remote && Array.isArray(settings?.rcloneRemotes) && settings.rcloneRemotes.length > 0) {
+        newShare.remote = settings.rcloneRemotes[0];
+      }
+      if ((!newShare.name.trim() || newShare.name === "ProtonDrive") && newShare.remote) {
+        newShare.name = newShare.remote;
+      }
+    } else if (newShare.type !== "protondrive" && newShare.name === "ProtonDrive" && editingShareIndex < 0) {
+      newShare.name = "";
+    }
+  }
+
+  function commitShareForm() {
+    shareFormError = "";
+    const cleanName = (newShare.name || "").trim().replace(/[\\/]+/g, "-");
+    if (!cleanName) {
+      shareFormError = translate("share_name_required", {}, "Please enter a disk name.");
+      return false;
+    }
+    const shares = Array.isArray(settings.rcloneShares) ? [...settings.rcloneShares] : [];
+    const duplicate = shares.some((s, idx) => idx !== editingShareIndex && (s?.name || "").trim().toLowerCase() === cleanName.toLowerCase());
+    if (duplicate) {
+      shareFormError = translate("share_name_exists", {}, "A share with this name already exists.");
+      return false;
+    }
+    if (newShare.type === "webdav" && !(newShare.url || "").trim()) {
+      shareFormError = translate("share_url_required", {}, "Please enter the WebDAV server URL.");
+      return false;
+    }
+    if (newShare.type === "sftp" && !(newShare.host || "").trim()) {
+      shareFormError = translate("share_host_required", {}, "Please enter the SFTP host.");
+      return false;
+    }
+    if (newShare.type === "rclone" && !(newShare.remote || "").trim()) {
+      shareFormError = translate("share_remote_required", {}, "Please enter or select the rclone remote name.");
+      return false;
+    }
+
+    let portNum = Number(newShare.port) || getFreeRclonePort(editingShareIndex);
+    if (portNum < 1024 || portNum > 65535) portNum = getFreeRclonePort(editingShareIndex);
+
+    const entry = {
+      name: cleanName,
+      type: newShare.type,
+      port: portNum,
+    };
+    if (newShare.type === "webdav") {
+      entry.url = (newShare.url || "").trim();
+      entry.username = (newShare.username || "").trim();
+      if (newShare.password) entry.password = newShare.password;
+      if (editingShareIndex >= 0 && shares[editingShareIndex]?.remote) entry.remote = shares[editingShareIndex].remote;
+    } else if (newShare.type === "protondrive") {
+      if ((newShare.username || "").trim()) entry.username = newShare.username.trim();
+      if (newShare.password) entry.password = newShare.password;
+      if (editingShareIndex >= 0 && shares[editingShareIndex]?.remote) entry.remote = shares[editingShareIndex].remote;
+    } else if (newShare.type === "sftp") {
+      entry.host = (newShare.host || "").trim();
+      entry.sftpPort = Number(newShare.sftpPort) || 22;
+      entry.username = (newShare.username || "").trim();
+      if (newShare.password) entry.password = newShare.password;
+      if (editingShareIndex >= 0 && shares[editingShareIndex]?.remote) entry.remote = shares[editingShareIndex].remote;
+    } else if (newShare.type === "rclone") {
+      entry.remote = (newShare.remote || "").trim().replace(/:$/, "");
+      if ((newShare.remotePath || "").trim()) entry.remotePath = newShare.remotePath.trim();
+    }
+
+    if (editingShareIndex >= 0 && editingShareIndex < shares.length) {
+      shares[editingShareIndex] = entry;
+    } else {
+      shares.push(entry);
+    }
+    settings.rcloneShares = shares;
+    settings = settings;
+    showShareForm = false;
+    editingShareIndex = -1;
+    return true;
+  }
+
+  function removeRcloneShare(idx) {
+    if (!Array.isArray(settings?.rcloneShares)) return;
+    settings.rcloneShares = settings.rcloneShares.filter((_, i) => i !== idx);
+    if (editingShareIndex === idx) cancelShareForm();
+    settings = settings;
+  }
 
   const nasFields = [
     { key: "automount", label: "Automount Drives", i18nKey: "automount_label" },
@@ -41,6 +214,10 @@
     if (!drive) { loading = false; return; }
     try {
       settings = await drive.getSettings();
+      if (settings && typeof settings.rcloneShares !== "undefined" && !Array.isArray(settings.rcloneShares)) {
+        settings.rcloneShares = [];
+      }
+      initialRcloneSnapshot = JSON.stringify(settings?.rcloneShares || []);
     } catch (err) {
       errorMsg = "Failed to load settings: " + err.message;
     } finally {
@@ -74,11 +251,18 @@
 
   async function apply() {
     if (!drive || !settings) return;
+    if (showShareForm && (newShare.name || newShare.url || newShare.host || newShare.username)) {
+      if (!commitShareForm()) return;
+    }
     saving = true;
     errorMsg = "";
     try {
-      await drive.setSettings(settings);
-      dispatch("saved", settings);
+      const rcloneChanged = JSON.stringify(settings.rcloneShares || []) !== initialRcloneSnapshot;
+      const payload = { ...settings };
+      delete payload.rcloneInstalled;
+      delete payload.rcloneRemotes;
+      await drive.setSettings(payload);
+      dispatch("saved", { ...settings, _rcloneChanged: rcloneChanged });
       dispatch("close");
     } catch (err) {
       errorMsg = "Failed to save: " + err.message;
@@ -222,6 +406,196 @@
                     {/if}
                   {/each}
                 </div>
+              </div>
+            {/if}
+
+            <!-- External Cloud Shares (rclone) Section -->
+            {#if hasField("rcloneShares")}
+              <div class="panel-card">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                    <span>{$_("external_cloud_shares", {}, "External Cloud Shares")}</span>
+                  </div>
+                  {#if settings.rcloneInstalled !== false && !showShareForm}
+                    <button class="check-update-btn add-share-btn" type="button" on:click={openAddShareForm}>
+                      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                      <span>{$_("add_external_disk", {}, "Add Disk")}</span>
+                    </button>
+                  {/if}
+                </div>
+
+                {#if settings.rcloneInstalled === false}
+                  <div class="service-disabled-notice">
+                    {$_("rclone_not_installed_hint", {}, "Install rclone on this device to mount external cloud drives (Proton Drive, WebDAV, SFTP, S3, Google Drive).")}
+                  </div>
+                {:else}
+                  {#if Array.isArray(settings.rcloneShares) && settings.rcloneShares.length > 0}
+                    <div class="rclone-shares-list">
+                      {#each settings.rcloneShares as share, idx}
+                        <div class="rclone-share-row" class:editing={showShareForm && editingShareIndex === idx}>
+                          <div class="rclone-share-main">
+                            <div class="rclone-share-icon">
+                              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                            </div>
+                            <div class="rclone-share-info">
+                              <span class="rclone-share-name">{share.name}</span>
+                              <span class="rclone-share-meta">{formatShareTypeLabel(share)} · :{share.port || 19088}</span>
+                            </div>
+                          </div>
+                          <div class="rclone-share-actions">
+                            <button
+                              class="share-action-btn"
+                              type="button"
+                              title={$_("edit", {}, "Edit")}
+                              on:click={() => openEditShareForm(idx)}
+                            >
+                              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                            <button
+                              class="share-action-btn danger"
+                              type="button"
+                              title={$_("remove", {}, "Remove")}
+                              on:click={() => removeRcloneShare(idx)}
+                            >
+                              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                            </button>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  {:else if !showShareForm}
+                    <div class="service-disabled-notice">
+                      {$_("no_external_shares_hint", {}, "No external cloud drives mounted.")}
+                    </div>
+                  {/if}
+
+                  {#if showShareForm}
+                    <div class="rclone-form-box">
+                      <div class="rclone-form-header">
+                        <span>{editingShareIndex >= 0 ? $_("edit_external_disk", {}, "Edit External Disk") : $_("add_external_disk", {}, "Add External Disk")}</span>
+                        <button class="share-action-btn" type="button" on:click={cancelShareForm} title={$_("close", {}, "Close")}>
+                          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+
+                      <div class="rclone-form-grid">
+                        <div class="field-input">
+                          <label class="field-label-sm">{$_("share_type", {}, "Type")}</label>
+                          <select bind:value={newShare.type} on:change={handleShareTypeChange} class="text-input select-input">
+                            <option value="protondrive">Proton Drive</option>
+                            <option value="webdav">WebDAV / Nextcloud</option>
+                            <option value="sftp">SFTP / SSH</option>
+                            <option value="rclone">{$_("rclone_existing_remote", {}, "rclone Remote (GDrive, S3...)")}</option>
+                          </select>
+                        </div>
+
+                        <div class="field-input">
+                          <label class="field-label-sm">{$_("share_name", {}, "Disk Name")}</label>
+                          <input type="text" bind:value={newShare.name} class="text-input" placeholder="ProtonDrive" />
+                        </div>
+                      </div>
+
+                      {#if newShare.type === "webdav"}
+                        <div class="field-input">
+                          <label class="field-label-sm">URL</label>
+                          <input type="url" bind:value={newShare.url} class="text-input" placeholder="https://cloud.example.com/remote.php/dav/files/user/" />
+                        </div>
+                      {/if}
+
+                      {#if newShare.type === "sftp"}
+                        <div class="rclone-form-grid sftp-grid">
+                          <div class="field-input">
+                            <label class="field-label-sm">{$_("sftp_host", {}, "Host")}</label>
+                            <input type="text" bind:value={newShare.host} class="text-input" placeholder="sftp.example.com" />
+                          </div>
+                          <div class="field-input">
+                            <label class="field-label-sm">SSH Port</label>
+                            <input type="number" bind:value={newShare.sftpPort} min="1" max="65535" class="text-input" />
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if newShare.type === "rclone"}
+                        <div class="rclone-form-grid">
+                          <div class="field-input">
+                            <label class="field-label-sm">{$_("rclone_remote_name", {}, "Remote Name")}</label>
+                            {#if Array.isArray(settings.rcloneRemotes) && settings.rcloneRemotes.length > 0}
+                              <input
+                                type="text"
+                                list="omd-rclone-remotes-list"
+                                bind:value={newShare.remote}
+                                class="text-input"
+                                placeholder="gdrive"
+                              />
+                              <datalist id="omd-rclone-remotes-list">
+                                {#each settings.rcloneRemotes as rem}
+                                  <option value={rem}>{rem}</option>
+                                {/each}
+                              </datalist>
+                            {:else}
+                              <input type="text" bind:value={newShare.remote} class="text-input" placeholder="gdrive" />
+                            {/if}
+                          </div>
+                          <div class="field-input">
+                            <label class="field-label-sm">{$_("rclone_remote_subpath", {}, "Bucket / Path (optional)")}</label>
+                            <input type="text" bind:value={newShare.remotePath} class="text-input" placeholder="bucket/folder" />
+                          </div>
+                        </div>
+                        <div class="rclone-form-hint">
+                          {$_("rclone_config_hint", {}, "Run 'rclone config' on the node first to authorize OAuth clouds (Google Drive, OneDrive, Dropbox, S3).")}
+                        </div>
+                      {:else}
+                        <div class="rclone-form-grid">
+                          <div class="field-input">
+                            <label class="field-label-sm">{$_("username", {}, "Username")}</label>
+                            <input type="text" bind:value={newShare.username} class="text-input" autocomplete="off" placeholder={newShare.type === "protondrive" ? "user@proton.me" : $_("username", {}, "Username")} />
+                          </div>
+                          <div class="field-input">
+                            <label class="field-label-sm">{$_("password", {}, "Password")}</label>
+                            <div class="token-input-wrap">
+                              <input
+                                type={revealed["rclone_share_pw"] ? "text" : "password"}
+                                bind:value={newShare.password}
+                                class="text-input token-input"
+                                autocomplete="new-password"
+                                placeholder={editingShareIndex >= 0 ? "******" : $_("password", {}, "Password")}
+                              />
+                              <button class="icon-btn" type="button" title={revealed["rclone_share_pw"] ? $_("hide_key", {}, "Hide") : $_("show_key", {}, "Show")} on:click={() => toggleReveal("rclone_share_pw")}>
+                                {#if revealed["rclone_share_pw"]}
+                                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                                {:else}
+                                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                {/if}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        {#if newShare.type === "protondrive" && Array.isArray(settings.rcloneRemotes) && settings.rcloneRemotes.includes("protondrive")}
+                          <div class="rclone-form-hint">
+                            {$_("proton_existing_token_hint", {}, "Existing [protondrive] config detected — leave username/password blank to reuse its saved session.")}
+                          </div>
+                        {/if}
+                      {/if}
+
+                      <div class="field-input">
+                        <label class="field-label-sm">{$_("local_webdav_port", {}, "Local Bridge Port")}</label>
+                        <input type="number" bind:value={newShare.port} min="1024" max="65535" class="text-input" />
+                      </div>
+
+                      {#if shareFormError}
+                        <div class="rclone-form-error">{shareFormError}</div>
+                      {/if}
+
+                      <div class="rclone-form-actions">
+                        <button class="btn-xs btn-xs-secondary" type="button" on:click={cancelShareForm}>{$_("cancel", {}, "Cancel")}</button>
+                        <button class="btn-xs btn-xs-primary" type="button" on:click={commitShareForm}>
+                          {editingShareIndex >= 0 ? $_("save", {}, "Save") : $_("add_external_disk", {}, "Add Disk")}
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
+                {/if}
               </div>
             {/if}
 
@@ -855,6 +1229,162 @@
   .btn-secondary:hover:not(:disabled) { background: rgba(148, 163, 184, 0.25); }
   .btn-primary { background: #3b82f6; color: white; }
   .btn-primary:hover:not(:disabled) { background: #2563eb; }
+
+  /* External Cloud Shares (rclone) */
+  .add-share-btn {
+    color: #3b82f6;
+    border-color: rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.08);
+  }
+  .add-share-btn:hover:not(:disabled) {
+    background: rgba(59, 130, 246, 0.16);
+  }
+  .rclone-shares-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .rclone-share-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(148, 163, 184, 0.05);
+  }
+  .rclone-share-row.editing {
+    border-color: rgba(59, 130, 246, 0.45);
+    background: rgba(59, 130, 246, 0.06);
+  }
+  .rclone-share-main {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+  .rclone-share-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: rgba(59, 130, 246, 0.12);
+    color: #3b82f6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .rclone-share-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .rclone-share-name {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rclone-share-meta {
+    font-size: 11px;
+    color: #94a3b8;
+    font-family: monospace;
+  }
+  .rclone-share-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .share-action-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: 0.15s;
+  }
+  .share-action-btn:hover {
+    background: rgba(148, 163, 184, 0.15);
+    color: inherit;
+  }
+  .share-action-btn.danger:hover {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+  }
+  .rclone-form-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    background: rgba(59, 130, 246, 0.04);
+  }
+  .rclone-form-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    font-weight: 600;
+    color: #3b82f6;
+  }
+  .rclone-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .rclone-form-grid.sftp-grid {
+    grid-template-columns: 2fr 1fr;
+  }
+  .rclone-form-hint {
+    font-size: 11px;
+    line-height: 1.4;
+    color: #94a3b8;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: rgba(148, 163, 184, 0.08);
+  }
+  .rclone-form-error {
+    font-size: 12px;
+    color: #ef4444;
+  }
+  .rclone-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 2px;
+  }
+  .btn-xs {
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: 0.15s;
+  }
+  .btn-xs-secondary {
+    background: rgba(148, 163, 184, 0.16);
+    color: inherit;
+  }
+  .btn-xs-secondary:hover {
+    background: rgba(148, 163, 184, 0.25);
+  }
+  .btn-xs-primary {
+    background: #3b82f6;
+    color: #ffffff;
+  }
+  .btn-xs-primary:hover {
+    background: #2563eb;
+  }
 
   /* Mobile responsiveness */
   @media (max-width: 768px) {

@@ -42,6 +42,7 @@ public:
     void fileRemovedForGuests(const QString& user, const QString& filePath);
     QSharedPointer<ClientNotifier> getLinkNotifier(const QString& linkID);
     bool isWebSocketLink(const QString& linkID);
+    bool hasActiveNotifierForLink(const QString& linkID, const ClientNotifier *exclude = nullptr);
     bool hasConnections(const QString &userId, const QString &sessionId);
 public slots:
     void webSocketConnected(WebSocketTransport *client);

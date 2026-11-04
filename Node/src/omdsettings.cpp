@@ -12,7 +12,8 @@ OnMyDiskSettings::OnMyDiskSettings(const QJsonObject &json, QObject *parent): QO
 {
     for(int i = staticMetaObject.propertyOffset(); i < metaObject()->propertyCount(); i++) {
             auto key = OnMyDiskSettings::staticMetaObject.property(i).name();
-            setProperty(key, json[key]);
+            if (json.contains(key))
+                setProperty(key, json.value(key).toVariant());
     }
 }
 
@@ -37,7 +38,8 @@ OnMyDiskSettings &OnMyDiskSettings::operator =(const QJsonObject &json)
 {
     for(int i = staticMetaObject.propertyOffset(); i < metaObject()->propertyCount(); i++) {
             auto key = OnMyDiskSettings::staticMetaObject.property(i).name();
-            setProperty(key, json[key]);
+            if (json.contains(key))
+                setProperty(key, json.value(key).toVariant());
     }
     return *this;
 }
@@ -77,6 +79,8 @@ void OnMyDiskSettings::readSettings(QSettings* settings)
     #ifdef P2P_ENABLED
     if (m_server == "localhost" || m_server.isEmpty() || m_server == "staging.onmydisk.net")
         m_server = QString("direct.onmydisk.net");
+    if (m_server == "direct.onmydisk.net" && (m_port == 0 || m_port == 9000))
+        m_port = DEFAULT_PORT;
     #elif defined(STAGING)
     if (m_server == "localhost" || m_server.isEmpty())
         m_server = QString("staging.onmydisk.net");

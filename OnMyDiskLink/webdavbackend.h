@@ -52,6 +52,8 @@ public:
     QString prefix() const { return m_prefix; }
     QString baseUrl() const { return m_baseUrl; }
     bool isReachable();
+    void setWriteEof(bool eof) { m_writeEof = eof; }
+    bool lastWriteOk() const { return m_lastWriteOk; }
 
 protected:
     qint64 readData(char *data, qint64 maxlen);
@@ -103,6 +105,8 @@ private:
     qint64 m_pos;
     bool m_atEnd;
     bool m_isOpen;
+    bool m_writeEof = true;
+    bool m_lastWriteOk = true;
 
     // Network
     QNetworkAccessManager *m_net;

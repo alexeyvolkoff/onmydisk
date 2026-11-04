@@ -57,7 +57,7 @@
       return false;
     }
   </script>
-  <script src="/about-i18n.js?v=20261103a" defer></script>
+  <script src="/about-i18n.js?v=20261104a" defer></script>
 
   <style>
     /* ==================== DESIGN TOKENS (Easy to customize) ==================== */
@@ -75,7 +75,12 @@
       --primary-glow: rgba(56, 189, 248, 0.16);
       --accent-purple: #a855f7;
       --accent-emerald: #10b981;
-      --code-bg: #060911;
+      --code-bg: #0c1322;
+      --code-border: rgba(148, 163, 184, 0.2);
+      --code-text: #e2e8f0;
+      --copy-bg: rgba(255, 255, 255, 0.06);
+      --copy-border: rgba(148, 163, 184, 0.24);
+      --copy-text: #f8fafc;
       --radius-sm: 10px;
       --radius-md: 14px;
       --radius-lg: 20px;
@@ -95,7 +100,12 @@
         --primary: #0284c7;
         --primary-strong: #0369a1;
         --primary-glow: rgba(2, 132, 199, 0.1);
-        --code-bg: #0f172a;
+        --code-bg: #f1f5f9;
+        --code-border: #cbd5e1;
+        --code-text: #0f172a;
+        --copy-bg: #ffffff;
+        --copy-border: #cbd5e1;
+        --copy-text: #0f172a;
       }
     }
 
@@ -484,7 +494,7 @@
     /* ==================== TWO WAYS / QUICKSTART ==================== */
     .modes-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 20px;
     }
 
@@ -497,6 +507,7 @@
       flex-direction: column;
       justify-content: space-between;
       gap: 20px;
+      min-width: 0;
     }
 
     .mode-tag {
@@ -521,6 +532,169 @@
     .mode-card p {
       font-size: 14.5px;
       color: var(--text-sub);
+    }
+
+    .qs-installer {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+      margin-top: 2px;
+    }
+
+    .qs-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .qs-os-pills {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px;
+      border-radius: 999px;
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      gap: 2px;
+    }
+
+    .qs-os-pill {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-sub);
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 600;
+      padding: 5px 13px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+      line-height: 1.3;
+    }
+
+    .qs-os-pill:hover {
+      color: var(--text-main);
+    }
+
+    .qs-os-pill.active {
+      background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.28);
+    }
+
+    .qs-gpu-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--card-border);
+      background: var(--bg);
+      transition: border-color 0.15s ease;
+    }
+
+    .qs-gpu-toggle:hover {
+      border-color: var(--card-border-hover);
+    }
+
+    .qs-gpu-toggle input {
+      width: 15px;
+      height: 15px;
+      accent-color: #0284c7;
+      cursor: pointer;
+      margin: 0;
+    }
+
+    .qs-cmd-box {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: var(--radius-sm);
+      padding: 7px 7px 7px 13px;
+      width: 100%;
+      min-width: 0;
+      transition: border-color 0.15s ease;
+    }
+
+    .qs-cmd-box:hover {
+      border-color: var(--card-border-hover);
+    }
+
+    .qs-cmd-prompt {
+      display: inline-flex;
+      align-items: center;
+      color: var(--primary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12.5px;
+      line-height: 20px;
+      font-weight: 700;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .qs-cmd-code {
+      flex: 1;
+      min-width: 0;
+      display: block;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      color: var(--code-text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12.5px;
+      line-height: 20px;
+      padding-right: 12px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+      mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+    }
+
+    .qs-cmd-code::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+
+    .qs-copy-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      padding: 6px 11px;
+      border-radius: 7px;
+      border: 1px solid var(--copy-border);
+      background: var(--copy-bg);
+      color: var(--copy-text);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.2;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+
+    .qs-copy-btn:hover {
+      background: var(--primary-glow);
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .qs-copy-btn.copied {
+      background: rgba(16, 185, 129, 0.14);
+      border-color: rgba(16, 185, 129, 0.55);
+      color: #059669;
     }
 
     /* ==================== COMMUNITY BANNER ==================== */
@@ -810,21 +984,42 @@
 
         <div class="mode-card">
           <div>
-            <span class="mode-tag" data-i18n="qs2_tag">Linux &bull; Windows &bull; macOS (soon) &bull; SBC &bull; Docker</span>
+            <span class="mode-tag" data-i18n="qs2_tag">Linux &bull; Windows &bull; macOS &bull; SBC &bull; OpenWrt</span>
             <h3 data-i18n="qs2_title">2. Run your own AI &amp; storage node</h3>
             <p data-i18n-html="qs2_desc">
               Install <strong>On My Disk Direct</strong> &amp; <strong>On My Chat</strong> on your desktop PC, home server, or Rockchip NPU alongside Ollama and pair it with your browser or mobile app in minutes.
             </p>
           </div>
-          <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 14px;">
-            <a class="btn btn-outline" href="https://onmydisk.org/advanced/" target="_blank" rel="noopener noreferrer">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span data-i18n="qs2_btn">Setup Guides &amp; Downloads &rarr;</span>
-            </a>
-            <div style="font-size: 13px; color: var(--text-sub);" data-i18n-html="qs2_footer">
-              Repositories on GitHub:
-              <a href="https://github.com/alexeyvolkoff/onmydisk" target="_blank" rel="noopener noreferrer">On My Disk Direct (Platform)</a> &bull;
-              <a href="https://github.com/alexeyvolkoff/onmychat" target="_blank" rel="noopener noreferrer">On My Chat (AI Node)</a>
+          <div class="qs-installer">
+            <div class="qs-controls">
+              <div class="qs-os-pills" role="tablist" aria-label="Operating system">
+                <button type="button" class="qs-os-pill active" data-os="linux" role="tab" aria-selected="true">Linux</button>
+                <button type="button" class="qs-os-pill" data-os="windows" role="tab" aria-selected="false">Windows</button>
+                <button type="button" class="qs-os-pill" data-os="macos" role="tab" aria-selected="false">macOS</button>
+              </div>
+              <label class="qs-gpu-toggle">
+                <input type="checkbox" id="qs-gpu-check" />
+                <span data-i18n="qs2_gpu_label">Local GPU</span>
+              </label>
+            </div>
+            <div class="qs-cmd-box">
+              <span class="qs-cmd-prompt" id="qs-cmd-prompt">$</span>
+              <code class="qs-cmd-code" id="qs-cmd-code" onclick="window.__selectQsCmd && window.__selectQsCmd(this)">curl -fsSL https://forge.bineon.team/repo/Linux/install-onmydisk.sh | bash -s -- --agentic</code>
+              <button type="button" class="qs-copy-btn" id="qs-copy-btn">
+                <svg id="qs-copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <span id="qs-copy-label" data-i18n="qs2_copy">Copy</span>
+              </button>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 2px;">
+              <a class="btn btn-outline" href="https://onmydisk.org/advanced/" target="_blank" rel="noopener noreferrer">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <span data-i18n="qs2_adv_btn">Advanced Configuration &rarr;</span>
+              </a>
+              <div style="font-size: 13px; color: var(--text-sub);" data-i18n-html="qs2_footer">
+                Repositories on GitHub:
+                <a href="https://github.com/alexeyvolkoff/onmydisk" target="_blank" rel="noopener noreferrer">On My Disk Direct (Platform)</a> &bull;
+                <a href="https://github.com/alexeyvolkoff/onmychat" target="_blank" rel="noopener noreferrer">On My Chat (AI Node)</a>
+              </div>
             </div>
           </div>
         </div>
@@ -885,6 +1080,106 @@
     </div>
   </footer>
 
+  <script>
+    (function () {
+      var osState = "linux";
+      try {
+        var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
+        if (/Win/i.test(ua)) osState = "windows";
+        else if (/Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) osState = "macos";
+      } catch (e) {}
+
+      var pills = document.querySelectorAll(".qs-os-pill");
+      var gpuCheck = document.getElementById("qs-gpu-check");
+      var promptEl = document.getElementById("qs-cmd-prompt");
+      var codeEl = document.getElementById("qs-cmd-code");
+      var copyBtn = document.getElementById("qs-copy-btn");
+      var copyLabel = document.getElementById("qs-copy-label");
+      var copyIcon = document.getElementById("qs-copy-icon");
+      var copyTimer = null;
+
+      var ICON_COPY = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>';
+      var ICON_CHECK = '<polyline points="20 6 9 17 4 12"/>';
+
+      function buildCmd(os, gpu) {
+        if (os === "windows") {
+          var wFlag = gpu ? "-Gpu" : "-Agentic";
+          return "& ([scriptblock]::Create((irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1))) " + wFlag;
+        }
+        var uFlag = gpu ? "--gpu" : "--agentic";
+        var dir = os === "macos" ? "macOS" : "Linux";
+        return "curl -fsSL https://forge.bineon.team/repo/" + dir + "/install-onmydisk.sh | bash -s -- " + uFlag;
+      }
+
+      function renderInstaller() {
+        var hasGpu = !!(gpuCheck && gpuCheck.checked);
+        for (var i = 0; i < pills.length; i++) {
+          var isAct = pills[i].getAttribute("data-os") === osState;
+          pills[i].classList.toggle("active", isAct);
+          pills[i].setAttribute("aria-selected", isAct ? "true" : "false");
+        }
+        if (promptEl) promptEl.textContent = osState === "windows" ? "PS>" : "$";
+        if (codeEl) codeEl.textContent = buildCmd(osState, hasGpu);
+      }
+
+      for (var i = 0; i < pills.length; i++) {
+        pills[i].addEventListener("click", function (ev) {
+          osState = ev.currentTarget.getAttribute("data-os") || "linux";
+          renderInstaller();
+        });
+      }
+      if (gpuCheck) {
+        gpuCheck.addEventListener("change", renderInstaller);
+      }
+
+      window.__selectQsCmd = function (el) {
+        try {
+          var range = document.createRange();
+          range.selectNodeContents(el);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch (e) {}
+      };
+
+      if (copyBtn) {
+        copyBtn.addEventListener("click", function () {
+          var cmd = codeEl ? codeEl.textContent : "";
+          if (!cmd) return;
+          var done = function () {
+            if (copyTimer) clearTimeout(copyTimer);
+            copyBtn.classList.add("copied");
+            if (copyIcon) copyIcon.innerHTML = ICON_CHECK;
+            if (copyLabel) {
+              var copiedStr = window.getAboutString ? window.getAboutString("qs2_copied", "Copied!") : "Copied!";
+              copyLabel.textContent = copiedStr;
+            }
+            copyTimer = setTimeout(function () {
+              copyBtn.classList.remove("copied");
+              if (copyIcon) copyIcon.innerHTML = ICON_COPY;
+              if (copyLabel) {
+                var copyStr = window.getAboutString ? window.getAboutString("qs2_copy", "Copy") : "Copy";
+                copyLabel.textContent = copyStr;
+              }
+            }, 1800);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(cmd).then(done).catch(function () {
+              window.__selectQsCmd(codeEl);
+              try { document.execCommand("copy"); } catch (e) {}
+              done();
+            });
+          } else {
+            window.__selectQsCmd(codeEl);
+            try { document.execCommand("copy"); } catch (e) {}
+            done();
+          }
+        });
+      }
+
+      renderInstaller();
+    })();
+  </script>
 </body>
 </html>
 

@@ -19,6 +19,8 @@ import { isIosNative } from "./platform.js";
 const LS_PREFIX = "omd_mcp_keys";
 const GRAPH_ROOT = "keys";
 const GRAPH_NODE = "mcp_apps";
+const SHARED_GRAPH_PREFIX = "mcp_keys:";
+const HUB_URL = "https://direct.onmydisk.net:8765";
 const MCP_SALT = "omd-mcp-keys-salt-v1";
 
 const ALL_PRESET_MCP_APPS = [
@@ -59,6 +61,10 @@ let unsubOmdKey = null;
 
 /** appId -> { appId, name, url, key, updatedAt } */
 const cache = new Map();
+/** appId -> raw encrypted entry { ciphertext, iv, enc, updatedAt } for deferred decryption when omd_key arrives */
+const rawEntries = new Map();
+/** appId -> tombstone updatedAt */
+const deletedTombstones = new Map();
 
 /** AES-GCM CryptoKey derived from omd_key */
 let vaultCrypto = null;
@@ -248,10 +254,154 @@ async function decryptEntry(entry, appId) {
   return null;
 }
 
-async function syncToGraph() {
-  if (!identityRef || !identityRef.gun) return;
+function cleanAppId(appId) {
+  return String(appId || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+}
+
+async function pushEntriesToHub(mainPub, entriesObj) {
+  if (!mainPub || !entriesObj || Object.keys(entriesObj).length === 0) return;
+  try {
+    await fetch(`${HUB_URL}/api/mcp-keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mainPub, entries: entriesObj }),
+    });
+  } catch (e) {
+    console.warn("[mcp-keys] hub POST /api/mcp-keys failed:", e);
+  }
+}
+
+async function fetchFromHub(mainPub) {
+  if (!mainPub) return;
+  try {
+    const resp = await fetch(`${HUB_URL}/api/mcp-keys?mainPub=${encodeURIComponent(mainPub)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const keys = data && data.keys && typeof data.keys === "object" ? data.keys : {};
+    for (const [appId, entry] of Object.entries(keys)) {
+      if (identityRef?.mainPub !== mainPub) return;
+      await handleIncomingEntry(entry, appId, { isLegacy: false });
+    }
+  } catch (e) {
+    console.warn("[mcp-keys] hub GET /api/mcp-keys failed:", e);
+  }
+}
+
+async function handleIncomingEntry(entry, rawAppId, { isLegacy = false } = {}) {
+  if (!rawAppId || rawAppId === "_") return;
+  const appId = cleanAppId(rawAppId);
+  if (!appId) return;
+
+  // Explicit deletion (null in shared DID node, or { deleted: true })
+  if (entry === null || (entry && typeof entry === "object" && entry.deleted === true)) {
+    if (isLegacy) return; // Never let an empty per-device node wipe shared DID keys
+    const delTs = Number(entry?.updatedAt || 0);
+    const existing = cache.get(appId);
+    if (existing && delTs > 0 && Number(existing.updatedAt || 0) > delTs) {
+      return;
+    }
+    deletedTombstones.set(appId, delTs || Date.now());
+    rawEntries.delete(appId);
+    if (cache.delete(appId)) {
+      publish();
+      persistMirror();
+    }
+    return;
+  }
+
+  // GunDB frequently emits intermediate soul-pointer stubs ({ _: { '#': '...' } })
+  // before child fields arrive. Ignore stubs rather than deleting cached keys!
+  if (!entry || typeof entry !== "object" || (!entry.ciphertext && !entry.enc)) {
+    return;
+  }
+
+  const incomingTs = Number(entry.updatedAt || 0);
+  const tombTs = deletedTombstones.get(appId) || 0;
+  if (tombTs && incomingTs && incomingTs <= tombTs) {
+    return;
+  }
+
+  const prevRaw = rawEntries.get(appId);
+  if (!prevRaw || incomingTs >= Number(prevRaw.updatedAt || 0)) {
+    rawEntries.set(appId, {
+      ciphertext: entry.ciphertext || "",
+      iv: entry.iv || "",
+      enc: entry.enc || "",
+      updatedAt: incomingTs || Date.now(),
+    });
+  }
+
+  const rec = await decryptEntry(entry, appId);
+  if (rec && rec.key) {
+    const existing = cache.get(appId);
+    if (!existing || Number(rec.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+      cache.set(appId, rec);
+      publish();
+      persistMirror();
+    }
+    // Auto-migrate legacy per-device keys into the shared DID vault
+    if (isLegacy && identityRef?.mainPub) {
+      syncSingleAppToVault(appId, cache.get(appId) || rec).catch(() => {});
+    }
+  }
+}
+
+async function redecryptPendingEntries() {
+  if (rawEntries.size === 0) return;
   await refreshVaultCrypto();
-  const userNode = identityRef.gun.user().get(GRAPH_ROOT).get(GRAPH_NODE);
+  if (!vaultCrypto) return;
+  let updated = false;
+  for (const [appId, raw] of rawEntries.entries()) {
+    const rec = await decryptEntry(raw, appId);
+    if (rec && rec.key) {
+      const existing = cache.get(appId);
+      if (!existing || Number(rec.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+        cache.set(appId, rec);
+        updated = true;
+      }
+    }
+  }
+  if (updated) {
+    publish();
+    persistMirror();
+  }
+}
+
+async function syncSingleAppToVault(appId, rec) {
+  if (!identityRef || !identityRef.mainPub || !rec) return;
+  await refreshVaultCrypto();
+  let payload = await aesEncrypt(rec);
+  if (!payload && identityRef.devicePair) {
+    try {
+      const enc = await Gun.SEA.encrypt(JSON.stringify(rec), identityRef.devicePair);
+      if (enc) payload = { enc, updatedAt: rec.updatedAt || Date.now() };
+    } catch (_) {}
+  }
+  if (!payload) return;
+
+  const mainPub = identityRef.mainPub;
+  rawEntries.set(appId, payload);
+  deletedTombstones.delete(appId);
+
+  if (identityRef.gun) {
+    try {
+      identityRef.gun.get(SHARED_GRAPH_PREFIX + mainPub).get(appId).put(payload);
+    } catch (e) {
+      console.warn("[mcp-keys] shared graph put failed for", appId, e);
+    }
+  }
+  await pushEntriesToHub(mainPub, { [appId]: payload });
+}
+
+async function syncToGraph() {
+  if (!identityRef || !identityRef.mainPub) return;
+  await refreshVaultCrypto();
+  await redecryptPendingEntries();
+  if (cache.size === 0) return;
+
+  const mainPub = identityRef.mainPub;
+  const sharedNode = identityRef.gun ? identityRef.gun.get(SHARED_GRAPH_PREFIX + mainPub) : null;
+  const hubBatch = {};
 
   for (const [appId, rec] of cache) {
     let payload = await aesEncrypt(rec);
@@ -262,39 +412,47 @@ async function syncToGraph() {
       } catch (_) {}
     }
     if (payload) {
-      try {
-        userNode.get(String(appId)).put(payload);
-      } catch (e) {
-        console.warn("[mcp-keys] graph put failed for", appId, e);
+      hubBatch[String(appId)] = payload;
+      if (sharedNode) {
+        try {
+          sharedNode.get(String(appId)).put(payload);
+        } catch (e) {
+          console.warn("[mcp-keys] graph put failed for", appId, e);
+        }
       }
     }
+  }
+
+  if (Object.keys(hubBatch).length > 0) {
+    await pushEntriesToHub(mainPub, hubBatch);
   }
 }
 
 function subscribeGraph() {
   const gun = identityRef && identityRef.gun;
-  if (!gun) return;
+  const mainPub = identityRef && identityRef.mainPub;
+  if (!gun || !mainPub) return;
 
+  const handles = [];
   try {
-    const handle = gun.user().get(GRAPH_ROOT).get(GRAPH_NODE).map().on(async (entry, appId) => {
-      if (!appId) return;
-      if (!entry || (typeof entry === "object" && !entry.ciphertext && !entry.enc)) {
-        if (cache.delete(String(appId))) {
-          publish();
-          persistMirror();
-        }
-        return;
-      }
-      const rec = await decryptEntry(entry, appId);
-      if (rec && rec.key) {
-        cache.set(String(appId), rec);
-        publish();
-        persistMirror();
-      }
+    // 1. Primary DID-scoped E2EE vault shared across all browsers & mobile
+    const sharedHandle = gun.get(SHARED_GRAPH_PREFIX + mainPub).map().on((entry, appId) => {
+      handleIncomingEntry(entry, appId, { isLegacy: false });
     });
+    handles.push(sharedHandle);
+
+    // 2. Read-only legacy migration from per-device ~<devicePub>/keys/mcp_apps
+    if (gun.user && gun.user().is) {
+      const legacyHandle = gun.user().get(GRAPH_ROOT).get(GRAPH_NODE).map().on((entry, appId) => {
+        handleIncomingEntry(entry, appId, { isLegacy: true });
+      });
+      handles.push(legacyHandle);
+    }
 
     unsubGraph = () => {
-      try { handle.off(); } catch (e) { /* ignore */ }
+      for (const h of handles) {
+        try { if (h && typeof h.off === "function") h.off(); } catch (_) {}
+      }
     };
   } catch (e) {
     console.warn("[mcp-keys] graph subscription failed:", e);
@@ -313,17 +471,23 @@ function detach() {
 }
 
 export function setMcpKeysIdentity(identity) {
-  if (!identity || identity.type !== "persistent" || !identity.devicePair) return;
-  const pub = identity.devicePair.pub || "";
+  if (!identity || identity.type !== "persistent" || (!identity.mainPub && !identity.devicePair)) return;
+  const pub = identity.mainPub || identity.devicePair?.pub || "";
   if (identityRef === identity && pub === boundPub) return;
 
   detach();
   identityRef = identity;
   boundPub = pub;
   cache.clear();
+  rawEntries.clear();
+  deletedTombstones.clear();
   loadLocalMirror();
   publish();
   subscribeGraph();
+
+  if (identity.mainPub) {
+    fetchFromHub(identity.mainPub);
+  }
 
   refreshVaultCrypto().then(() => syncToGraph());
   unsubOmdKey = omdKeyStore.subscribe(() => {
@@ -335,16 +499,20 @@ export function clearMcpKeysIdentity() {
   detach();
   identityRef = null;
   boundPub = "";
+  vaultCrypto = null;
+  vaultKeySource = "";
   cache.clear();
+  rawEntries.clear();
+  deletedTombstones.clear();
   loadLocalMirror();
   publish();
 }
 
 /**
- * Save or update an MCP application key in DID graph + local mirror.
+ * Save or update an MCP application key in DID graph + Hub vault + local mirror.
  */
 export async function saveMcpAppKey(appId, meta = {}) {
-  const cleanId = String(appId).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+  const cleanId = cleanAppId(appId);
   if (!cleanId) throw new Error("Invalid application ID");
 
   const keyVal = String(meta.key || "").trim();
@@ -358,46 +526,57 @@ export async function saveMcpAppKey(appId, meta = {}) {
     updatedAt: Date.now(),
   };
 
+  deletedTombstones.delete(cleanId);
   cache.set(cleanId, rec);
   publish();
   persistMirror();
 
-  // Graph persistence
-  if (identityRef && identityRef.gun) {
-    await refreshVaultCrypto();
-    let payload = await aesEncrypt(rec);
-    if (!payload && identityRef.devicePair) {
-      const enc = await Gun.SEA.encrypt(JSON.stringify(rec), identityRef.devicePair);
-      if (enc) payload = { enc, updatedAt: rec.updatedAt };
-    }
-    if (payload) {
-      try {
-        identityRef.gun.user().get(GRAPH_ROOT).get(GRAPH_NODE).get(cleanId).put(payload);
-      } catch (e) {
-        console.warn("[mcp-keys] graph put failed:", e);
-      }
-    }
+  if (identityRef && identityRef.mainPub) {
+    await syncSingleAppToVault(cleanId, rec);
   }
 
   return rec;
 }
 
 /**
- * Remove an MCP application key from DID graph + local mirror.
+ * Remove an MCP application key from DID graph + Hub vault + local mirror.
  */
 export async function removeMcpAppKey(appId) {
-  const cleanId = String(appId).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+  const cleanId = cleanAppId(appId);
   if (!cleanId) return;
 
+  const tombTs = Date.now();
+  deletedTombstones.set(cleanId, tombTs);
+  rawEntries.delete(cleanId);
   cache.delete(cleanId);
   publish();
   persistMirror();
 
-  if (identityRef && identityRef.gun) {
+  const mainPub = identityRef && identityRef.mainPub;
+  if (identityRef && identityRef.gun && mainPub) {
     try {
-      identityRef.gun.user().get(GRAPH_ROOT).get(GRAPH_NODE).get(cleanId).put(null);
+      identityRef.gun.get(SHARED_GRAPH_PREFIX + mainPub).get(cleanId).put({
+        deleted: true,
+        ciphertext: "",
+        iv: "",
+        updatedAt: tombTs,
+      });
+      if (identityRef.gun.user && identityRef.gun.user().is) {
+        identityRef.gun.user().get(GRAPH_ROOT).get(GRAPH_NODE).get(cleanId).put(null);
+      }
     } catch (e) {
       console.warn("[mcp-keys] graph remove failed:", e);
+    }
+  }
+  if (mainPub) {
+    try {
+      await fetch(`${HUB_URL}/api/mcp-keys`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mainPub, appId: cleanId, deleted: true, updatedAt: tombTs }),
+      });
+    } catch (e) {
+      console.warn("[mcp-keys] hub remove failed:", e);
     }
   }
 }

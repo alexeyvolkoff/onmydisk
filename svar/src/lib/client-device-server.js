@@ -222,7 +222,28 @@ export class ClientDeviceServer {
     this._running = false;
     this._token = null;
     this.gateway = null; // GatewayChannel - push delivery of signaling
+    this._pushedSignalHandler = (sig) => this._handlePushedSignal(sig);
     this.onStatusChange = null;
+  }
+
+  async ensureRegistered() {
+    try {
+      this._token = await ensureChannelToken();
+      await this._registerDevice(this._token);
+    } catch (e) {
+      console.warn("[ClientDeviceServer] ensureRegistered warning:", e);
+    }
+    try {
+      if (!this.gateway) {
+        this.gateway = getSharedGatewayChannel();
+        this.gateway.offTunnelOpen(this._pushedSignalHandler);
+        this.gateway.onTunnelOpen(this._pushedSignalHandler);
+      }
+      this.gateway.setDeviceId(this.linkId);
+      await this.gateway.connect();
+    } catch (e) {
+      console.warn("[ClientDeviceServer] Gateway channel reconnect warning:", e);
+    }
   }
 
   async _registerDevice(token) {
@@ -263,7 +284,8 @@ export class ClientDeviceServer {
 
     try {
       this.gateway = getSharedGatewayChannel();
-      this.gateway.onTunnelOpen((sig) => this._handlePushedSignal(sig));
+      this.gateway.offTunnelOpen(this._pushedSignalHandler);
+      this.gateway.onTunnelOpen(this._pushedSignalHandler);
       this.gateway.setDeviceId(this.linkId);
       await this.gateway.connect();
     } catch (e) {
@@ -310,7 +332,9 @@ export class ClientDeviceServer {
       this._pollTimer = null;
     }
     if (this.gateway) {
-      this.gateway.close();
+      // Do NOT close getSharedGatewayChannel() — it is shared app-wide and closing
+      // it unregisters our web device on the gateway and disables WS push!
+      this.gateway.offTunnelOpen(this._pushedSignalHandler);
       this.gateway = null;
     }
     for (const [tunnelId, conn] of this._activeConnections) {
@@ -343,8 +367,9 @@ export class ClientDeviceServer {
   async _pollOnce() {
     if (!this._token) {
       this._token = await ensureChannelToken();
-      await this._registerDevice(this._token);
     }
+    // Keep m_webDevices registered on the gateway even while WS is reconnecting
+    await this._registerDevice(this._token);
     const base = getGatewayBase();
     const url = new URL(this.signalingUrl + (this._token ? `?token=${encodeURIComponent(this._token)}` : ""), base);
 
@@ -1276,6 +1301,12 @@ export class ClientDeviceServer {
 let _serverInstance = null;
 
 export function startClientDeviceServer(linkId, signalingUrl, deviceName) {
+  if (_serverInstance && _serverInstance._running && _serverInstance.linkId === linkId) {
+    if (deviceName) _serverInstance.deviceName = deviceName;
+    if (signalingUrl) _serverInstance.signalingUrl = signalingUrl;
+    _serverInstance.ensureRegistered();
+    return _serverInstance;
+  }
   if (_serverInstance) _serverInstance.stop();
   _serverInstance = new ClientDeviceServer(linkId, signalingUrl, deviceName);
   _serverInstance.start();

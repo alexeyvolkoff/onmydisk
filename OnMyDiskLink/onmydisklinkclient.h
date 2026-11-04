@@ -26,7 +26,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QTcpSocket>
-#ifndef Q_OS_MAC
+#if !defined(Q_OS_MAC) || defined(P2P_ENABLED)
 #include <openssl/pem.h>
 #include <openssl/conf.h>
 #include <openssl/x509.h>
@@ -96,6 +96,7 @@ signals:
     void accountCreated(QString commonName, QString givenName);
     void deviceIdUpdated(QString cdeviceId);
     void restartSites(const QString& action, const QString& site = "");
+    void settingsChanged(const OnMyDiskSettings& settings);
 
 public slots:
     void connectToCloud();

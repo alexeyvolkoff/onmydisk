@@ -173,6 +173,35 @@ function persistDeletedDids(next) {
 
 let deletedDids = loadDeletedDids();
 
+// ── Durable E2EE MCP API Keys Vault (per DID) ──────────────────
+// Stores ONLY client-side AES-GCM ciphertexts ({ ciphertext, iv, updatedAt, deleted }).
+// Plaintext API keys never touch the hub. Persisting here alongside GunDB graph
+// guarantees keys survive browser re-logins, SEA cert changes, and radata restarts.
+const MCP_KEYS_FILE = path.join(repoPath, 'mcp-keys.json');
+
+function loadMcpKeysStore() {
+  try {
+    if (!fs.existsSync(MCP_KEYS_FILE)) return {};
+    const parsed = JSON.parse(fs.readFileSync(MCP_KEYS_FILE, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch (err) {
+    console.warn('[hub] Could not read mcp-keys file:', err?.message || err);
+  }
+  return {};
+}
+
+function persistMcpKeysStore(next) {
+  try {
+    const tmpFile = MCP_KEYS_FILE + '.tmp';
+    fs.writeFileSync(tmpFile, JSON.stringify(next, null, 2), { mode: 0o600 });
+    fs.renameSync(tmpFile, MCP_KEYS_FILE);
+  } catch (err) {
+    console.warn('[hub] Could not persist mcp-keys file:', err?.message || err);
+  }
+}
+
+let mcpKeysByDid = loadMcpKeysStore();
+
 function makeDeleteToken(mainPub, provider, subject) {
   const payload = Buffer.from(JSON.stringify({
     m: mainPub,
@@ -616,6 +645,7 @@ async function handlePublishDevice(req, res) {
     name: device.name || device.linkId,
     type: device.type || 'desktop',
     devicePub: device.devicePub || device.linkId,
+    originDevicePub: device.originDevicePub || '',
     online: device.online !== false,
     last_seen: Date.now(),
     capabilities: Array.isArray(device.capabilities) ? device.capabilities.join(',') : (device.capabilities || 'files'),
@@ -679,6 +709,7 @@ async function handleGetDevices(req, res) {
           name: v.name || v.linkId,
           type: v.type || 'desktop',
           devicePub: v.devicePub || v.linkId,
+          originDevicePub: v.originDevicePub || '',
           online: v.online !== false,
           lastSeen: v.last_seen || v.lastSeen || Date.now(),
           capabilities: v.capabilities || 'files',
@@ -691,6 +722,128 @@ async function handleGetDevices(req, res) {
       clearTimeout(timeout);
       json(res, 500, { error: err.message, devices: [] });
     }
+  }
+}
+
+// ── E2EE MCP API Keys Vault Endpoints ──────────────────────────
+
+function sanitizeEncryptedMcpEntry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const updatedAt = Number(raw.updatedAt) || Date.now();
+  if (raw.deleted === true) {
+    return { deleted: true, ciphertext: '', iv: '', updatedAt };
+  }
+  const ciphertext = typeof raw.ciphertext === 'string' ? raw.ciphertext.trim() : '';
+  const iv = typeof raw.iv === 'string' ? raw.iv.trim() : '';
+  const enc = typeof raw.enc === 'string' ? raw.enc.trim() : '';
+  if (ciphertext && iv) {
+    return { ciphertext, iv, updatedAt, deleted: false };
+  }
+  if (enc) {
+    return { enc, updatedAt, deleted: false };
+  }
+  return null;
+}
+
+async function handleSaveMcpKeys(req, res) {
+  let body;
+  try { body = await readBody(req); }
+  catch { return json(res, 400, { error: 'Invalid JSON' }); }
+
+  const mainPub = typeof body?.mainPub === 'string' ? body.mainPub.trim() : '';
+  if (!mainPub || mainPub.length < 10) {
+    return json(res, 400, { error: 'Missing or invalid mainPub' });
+  }
+  if (await isDidDeleted(mainPub)) {
+    return json(res, 410, { error: 'Account has been deleted', code: 'account_deleted' });
+  }
+
+  const incoming = {};
+  if (body.entries && typeof body.entries === 'object' && !Array.isArray(body.entries)) {
+    for (const [k, v] of Object.entries(body.entries)) {
+      const cleanId = String(k).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+      const sanitized = sanitizeEncryptedMcpEntry(v);
+      if (cleanId && sanitized) incoming[cleanId] = sanitized;
+    }
+  } else if (body.appId) {
+    const cleanId = String(body.appId).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const sanitized = sanitizeEncryptedMcpEntry(
+      body.deleted === true ? { deleted: true, updatedAt: body.updatedAt } : body.entry
+    );
+    if (cleanId && sanitized) incoming[cleanId] = sanitized;
+  }
+
+  if (Object.keys(incoming).length === 0) {
+    return json(res, 400, { error: 'No valid E2EE entries provided' });
+  }
+
+  const didVault = { ...(mcpKeysByDid[mainPub] || {}) };
+  let changed = false;
+
+  for (const [appId, nextEntry] of Object.entries(incoming)) {
+    const prev = didVault[appId];
+    const prevTs = Number(prev?.updatedAt || 0);
+    if (!prev || nextEntry.updatedAt >= prevTs) {
+      didVault[appId] = nextEntry;
+      changed = true;
+      try {
+        gun.get('mcp_keys:' + mainPub).get(appId).put(nextEntry);
+      } catch (e) {
+        console.warn('[hub] Gun put mcp_keys warning:', e?.message || e);
+      }
+    }
+  }
+
+  if (changed) {
+    mcpKeysByDid = { ...mcpKeysByDid, [mainPub]: didVault };
+    persistMcpKeysStore(mcpKeysByDid);
+  }
+
+  return json(res, 200, { ok: true, count: Object.keys(incoming).length });
+}
+
+async function handleGetMcpKeys(req, res) {
+  const urlObj = new URL(req.url, 'http://localhost');
+  const mainPub = (urlObj.searchParams.get('mainPub') || '').trim();
+  if (!mainPub) {
+    return json(res, 400, { error: 'Missing mainPub' });
+  }
+
+  const merged = {};
+  const fromDisk = mcpKeysByDid[mainPub] || {};
+  for (const [appId, entry] of Object.entries(fromDisk)) {
+    const sanitized = sanitizeEncryptedMcpEntry(entry);
+    if (sanitized) merged[appId] = sanitized;
+  }
+
+  let answered = false;
+  const finish = () => {
+    if (answered) return;
+    answered = true;
+    const activeKeys = {};
+    for (const [appId, entry] of Object.entries(merged)) {
+      if (entry && !entry.deleted && ((entry.ciphertext && entry.iv) || entry.enc)) {
+        activeKeys[appId] = entry;
+      }
+    }
+    json(res, 200, { ok: true, keys: activeKeys });
+  };
+
+  const timeout = setTimeout(finish, 400);
+
+  try {
+    gun.get('mcp_keys:' + mainPub).map().once((v, k) => {
+      if (!k || k === '_') return;
+      const sanitized = sanitizeEncryptedMcpEntry(v);
+      if (!sanitized) return;
+      const prev = merged[k];
+      if (!prev || sanitized.updatedAt > Number(prev.updatedAt || 0)) {
+        merged[k] = sanitized;
+      }
+    });
+  } catch (_) {
+    clearTimeout(timeout);
+    finish();
   }
 }
 
@@ -1774,6 +1927,14 @@ async function purgeDidGraph(mainPub) {
   }
   await clearFlatNode('devices:' + mainPub);
   await clearFlatNode('sharing:' + mainPub);
+  await clearFlatNode('mcp_keys:' + mainPub);
+  await clearFlatNode('ssh_creds:' + mainPub);
+  if (Object.prototype.hasOwnProperty.call(mcpKeysByDid, mainPub)) {
+    const nextMcp = { ...mcpKeysByDid };
+    delete nextMcp[mainPub];
+    mcpKeysByDid = nextMcp;
+    persistMcpKeysStore(mcpKeysByDid);
+  }
 }
 
 async function verifyDeleteProof(body) {
@@ -1953,7 +2114,15 @@ async function handleAdminPurgeDeleted(req, res) {
     try {
       await clearFlatNode('devices:' + mainPub);
       await clearFlatNode('sharing:' + mainPub);
-      item.purged.push('devices', 'sharing');
+      await clearFlatNode('mcp_keys:' + mainPub);
+      await clearFlatNode('ssh_creds:' + mainPub);
+      if (Object.prototype.hasOwnProperty.call(mcpKeysByDid, mainPub)) {
+        const nextMcp = { ...mcpKeysByDid };
+        delete nextMcp[mainPub];
+        mcpKeysByDid = nextMcp;
+        persistMcpKeysStore(mcpKeysByDid);
+      }
+      item.purged.push('devices', 'sharing', 'mcp_keys');
 
       if (record.username) {
         await deleteAliasMapping(record.username, mainPub);
@@ -2457,6 +2626,10 @@ async function handler(req, res) {
     return handleRemoveDevice(req, res);
   if (req.method === 'GET' && req.url.startsWith('/api/devices'))
     return handleGetDevices(req, res);
+  if (req.method === 'POST' && req.url === '/api/mcp-keys')
+    return handleSaveMcpKeys(req, res);
+  if (req.method === 'GET' && req.url.startsWith('/api/mcp-keys'))
+    return handleGetMcpKeys(req, res);
 
   // Knowledge endpoints for node-side RAG
   if (req.method === 'GET' && req.url.startsWith('/api/chunks'))

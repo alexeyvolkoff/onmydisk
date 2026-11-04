@@ -25,7 +25,14 @@ linux-g++-64:QMAKE_TARGET.arch = x86_64
 linux-buildroot-g++:QMAKE_TARGET.arch = armv7
 mac:QMAKE_TARGET.arch = mac
 
-mac:LIBS +=  -lc++ -framework COCOA -framework System -framework Security -framework SystemConfiguration
+mac {
+    LIBS += -lc++ -framework Cocoa -framework Foundation -framework Security -framework SystemConfiguration
+    OPENSSL_ROOT_ENV = $$(OPENSSL_ROOT_DIR)
+    !isEmpty(OPENSSL_ROOT_ENV) {
+        INCLUDEPATH += $$OPENSSL_ROOT_ENV/include
+        LIBS += -L$$OPENSSL_ROOT_ENV/lib
+    }
+}
 
 win32 {
     DEFINES        += _WINDOWS WIN32_LEAN_AND_MEAN NOMINMAX

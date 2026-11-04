@@ -841,17 +841,24 @@
     gatewayChan.onDevicesFetched((devices) => {
       console.log("[App] WebSocket event - active devices on gateway:", devices);
       if (Array.isArray(devices)) {
+        const localId = getOrCreateLocalLinkId();
         for (const dev of devices) {
-          const linkId = typeof dev === "string" ? dev : (dev?.linkID || dev?.linkId || dev?.id);
-          if (!linkId || linkId === getOrCreateLocalLinkId()) continue;
+          const candidateIds = typeof dev === "string"
+            ? [dev]
+            : [dev?.linkID, dev?.linkId, dev?.id, dev?.peerID, dev?.user].filter(Boolean);
+          if (candidateIds.length === 0 || candidateIds.includes(localId)) continue;
 
           // Strictly connect ONLY if this device is in our DID list or shared link target
-          const registered = deviceRegistry.get(linkId);
+          const registered = candidateIds.map(id => deviceRegistry.get(id)).find(Boolean);
           if (registered && !registered.local) {
-            console.log("[App] Gateway online device matches our DID device! Connecting:", linkId);
-            connectDevice(linkId);
+            if (typeof dev === "object" && dev) {
+              if (dev.peerID) registered.peerId = dev.peerID;
+              if (dev.linkID || dev.user) registered.shortId = dev.linkID || dev.user;
+            }
+            console.log("[App] Gateway online device matches our DID device! Connecting:", registered.linkId);
+            connectDevice(registered.linkId);
           } else {
-            console.log("[App] Ignoring online gateway device not in our DID list or local:", linkId);
+            console.log("[App] Ignoring online gateway device not in our DID list or local:", candidateIds[0]);
           }
         }
       }
@@ -866,8 +873,8 @@
         dev = deviceRegistry.get(linkId);
       }
       if (dev && !dev.local && (!dev.drive || !dev.drive.isConnected)) {
-        console.log("[App] Newly connected device is in our DID list! Connecting:", linkId);
-        connectDevice(linkId);
+        console.log("[App] Newly connected device is in our DID list! Connecting:", dev.linkId);
+        connectDevice(dev.linkId);
       }
     });
     gatewayChan.onLinkDisconnected((linkId) => {
@@ -917,7 +924,11 @@
       (async () => {
         await restoreIdentity();
         checkForOtaUpdate();
-        await restoreLocalDeviceIfShares();
+        // restoreIdentity() already restores the local device for persistent sessions;
+        // only invoke here when running in ephemeral mode so ClientDeviceServer isn't restarted twice.
+        if (identityType !== "persistent") {
+          await restoreLocalDeviceIfShares();
+        }
       })();
     }
 
@@ -1317,16 +1328,21 @@
     try {
       const devs = deviceRegistry.list();
       for (const dev of devs) {
-        if (dev.status === "connected") {
+        if (dev.status === "connected" || dev.local) {
           const devType = detectDeviceType(dev.name, dev.deviceType || dev.type);
           const caps = Array.isArray(dev.capabilities) && dev.capabilities.length > 0
             ? dev.capabilities
             : ["files"];
+          const isNativeNode = caps.includes("chat") || caps.includes("terminal") || devType === "embedded";
+          // Only publish our own local web/mobile device or paired C++ nodes —
+          // never overwrite remote browser/mobile clients' metadata in GunDB.
+          if (!dev.local && !isNativeNode) continue;
           identity.publishDevice(
             dev.linkId,
             dev.name || dev.linkId,
             devType,
-            caps
+            caps,
+            { isLocal: !!dev.local }
           );
         }
       }
@@ -2057,22 +2073,29 @@
         const onlineDevices = resData?.devices || [];
         console.log("[App] HTTP /api/devices returned online devices:", onlineDevices);
         if (Array.isArray(onlineDevices)) {
-          const localDev = deviceRegistry.get(getOrCreateLocalLinkId()) || deviceRegistry.list().find(d => d && d.local);
-          const localName = (localDev?.name || (typeof localStorage !== "undefined" ? localStorage.getItem("omd_local_devicename") : "") || getDefaultWebDeviceName() || "").toLowerCase();
+          const localId = getOrCreateLocalLinkId();
+          const myPub = identity?.devicePub || "";
           for (const dev of onlineDevices) {
-            const linkId = typeof dev === "string" ? dev : (dev?.linkID || dev?.linkId || dev?.id);
-            if (!linkId || linkId === getOrCreateLocalLinkId()) continue;
-            const registered = deviceRegistry.get(linkId);
+            const candidateIds = typeof dev === "string"
+              ? [dev]
+              : [dev?.linkID, dev?.linkId, dev?.id, dev?.peerID, dev?.user].filter(Boolean);
+            if (candidateIds.length === 0 || candidateIds.includes(localId)) continue;
+            const registered = candidateIds.map(id => deviceRegistry.get(id)).find(Boolean);
+            if (registered && typeof dev === "object" && dev) {
+              if (dev.peerID) registered.peerId = dev.peerID;
+              if (dev.linkID || dev.user) registered.shortId = dev.linkID || dev.user;
+            }
             // Public AI node is a chat-only pseudo device: skip full connectDevice
             // (it would otherwise trigger pairing UI / file operations).
             if (registered && registered.isAiNode) continue;
-            // Skip connecting to stale/other browser sessions with the same name as our local web device
-            if (dev?.type === "web" && registered && localName && (registered.name || "").toLowerCase() === localName) {
+            // Skip only stale linkIds belonging to this exact browser instance (same devicePub)
+            const savedMeta = registered && identity?.devices?.get ? identity.devices.get(registered.linkId) : null;
+            if (myPub && savedMeta?.originDevicePub && savedMeta.originDevicePub === myPub) {
               continue;
             }
             if (registered && !registered.local && (!registered.drive || !registered.drive.isConnected)) {
-              console.log("[App] HTTP online device matches our DID device! Connecting:", linkId);
-              connectDevice(linkId);
+              console.log("[App] HTTP online device matches our DID device! Connecting:", registered.linkId);
+              connectDevice(registered.linkId);
             }
           }
         }
@@ -2275,13 +2298,8 @@
     const resolvedName = devName || savedDev?.name || linkId;
     const resolvedType = savedDev?.type || "";
     const resolvedCaps = Array.isArray(savedDev?.capabilities) ? savedDev.capabilities : ["files"];
-    const localDev = deviceRegistry.get(getOrCreateLocalLinkId()) || deviceRegistry.list().find(d => d && d.local);
-    const localName = (localDev?.name || (typeof localStorage !== "undefined" ? localStorage.getItem("omd_local_devicename") : "") || getDefaultWebDeviceName() || "").toLowerCase();
-    if (
-      localName &&
-      resolvedName.toLowerCase() === localName &&
-      (resolvedType === "web" || (!resolvedCaps.includes("chat") && !resolvedCaps.includes("terminal")))
-    ) {
+    const myPub = identity?.devicePub || "";
+    if (myPub && savedDev?.originDevicePub && savedDev.originDevicePub === myPub) {
       return;
     }
 
@@ -2371,8 +2389,7 @@
     scanningNearbyDevices = true;
     try {
       const list = await fetchNearbyDevices();
-      const activeIds = new Set(deviceRegistry.list().map(d => d.linkId));
-      detectedNearbyDevices = (list || []).filter(d => d.linkId && !activeIds.has(d.linkId));
+      detectedNearbyDevices = (list || []).filter(d => d.linkId && !deviceRegistry.has(d.linkId));
     } catch (err) {
       console.warn("[App] refreshNearbyDevices error:", err);
     } finally {
@@ -2543,11 +2560,11 @@
   }
 
   async function registerLocalDeviceNode(device) {
-    const localNameLower = (device.name || "").toLowerCase();
+    const myPub = identity?.devicePub || "";
     for (const d of deviceRegistry.list()) {
-      if (d && !d.local && d.linkId !== device.linkId && (d.name || "").toLowerCase() === localNameLower) {
-        const caps = Array.isArray(d.capabilities) ? d.capabilities : [];
-        if (d.type === "web" || (!caps.includes("chat") && !caps.includes("terminal"))) {
+      if (d && !d.local && d.linkId !== device.linkId) {
+        const savedMeta = identity?.devices?.get ? identity.devices.get(d.linkId) : null;
+        if (myPub && savedMeta?.originDevicePub && savedMeta.originDevicePub === myPub) {
           deviceRegistry.delete(d.linkId);
         }
       }
@@ -2576,20 +2593,18 @@
     }
     if (identity && identity.type === "persistent" && identity.publishDevice) {
       try {
-        if (identity.devices && typeof identity.removeDevice === "function") {
+        if (myPub && identity.devices && typeof identity.removeDevice === "function") {
           for (const oldDev of identity.devices.values()) {
             if (!oldDev || !oldDev.linkId || oldDev.linkId === device.linkId) continue;
-            const caps = Array.isArray(oldDev.capabilities) ? oldDev.capabilities : [];
-            if (
-              (oldDev.name || "").toLowerCase() === localNameLower &&
-              (oldDev.type === "web" || (!caps.includes("chat") && !caps.includes("terminal")))
-            ) {
+            // Remove only stale linkIds created earlier by THIS exact browser instance,
+            // never another Linux/Windows desktop browser sharing the default OS name.
+            if (oldDev.originDevicePub && oldDev.originDevicePub === myPub) {
               identity.removeDevice(oldDev.linkId).catch(() => {});
             }
           }
         }
         const devType = detectDeviceType(device.name, isNativeStorageAvailable() ? "phone" : "web");
-        await identity.publishDevice(device.linkId, device.name, devType, ["files"]);
+        await identity.publishDevice(device.linkId, device.name, devType, ["files"], { isLocal: true });
       } catch (e) {
         console.warn("[App] publish local device error:", e);
       }
@@ -6487,27 +6502,37 @@ async function blobToBase64(blob) {
           {isDarkTheme}
           on:saved={(e) => {
             const s = e.detail || {};
-            if (s.hostname && deviceSettingsDrive) {
+            const savedDrive = deviceSettingsDrive;
+            const linkId = savedDrive ? (savedDrive.linkId || savedDrive.deviceId || "") : "";
+            const dev = linkId ? deviceRegistry.get(linkId) : null;
+            if (s.hostname && savedDrive && dev) {
               try {
-                const linkId = deviceSettingsDrive.linkId || deviceSettingsDrive.deviceId || "";
-                const dev = linkId ? deviceRegistry.get(linkId) : null;
-                if (dev) {
-                  dev.name = s.hostname;
-                  const newPrefix = "/" + s.hostname;
-                  if (dev.prefix !== newPrefix) {
-                    const old = dev.prefix;
-                    dev.prefix = newPrefix;
-                    // migrate cached _deviceItems
-                    if (window._deviceItems && window._deviceItems[old]) { window._deviceItems[newPrefix] = window._deviceItems[old]; delete window._deviceItems[old]; }
-                    deviceNodes = deviceNodes.map(n => n.linkId === linkId ? { ...n, id: newPrefix, value: s.hostname, name: s.hostname } : n);
-                    updateRootFilesData();
-                  } else {
-                    deviceNodes = deviceNodes.map(n => n.linkId === linkId ? { ...n, value: s.hostname, name: s.hostname } : n);
-                    updateRootFilesData();
-                  }
-                  deviceSettingsName = s.hostname;
+                dev.name = s.hostname;
+                const newPrefix = "/" + s.hostname;
+                if (dev.prefix !== newPrefix) {
+                  const old = dev.prefix;
+                  dev.prefix = newPrefix;
+                  // migrate cached _deviceItems
+                  if (window._deviceItems && window._deviceItems[old]) { window._deviceItems[newPrefix] = window._deviceItems[old]; delete window._deviceItems[old]; }
+                  deviceNodes = deviceNodes.map(n => n.linkId === linkId ? { ...n, id: newPrefix, value: s.hostname, name: s.hostname } : n);
+                  updateRootFilesData();
+                } else {
+                  deviceNodes = deviceNodes.map(n => n.linkId === linkId ? { ...n, value: s.hostname, name: s.hostname } : n);
+                  updateRootFilesData();
                 }
+                deviceSettingsName = s.hostname;
               } catch (_) {}
+            }
+            if (s._rcloneChanged && dev) {
+              const refreshDeviceRoot = () => {
+                try {
+                  const targetDev = linkId ? deviceRegistry.get(linkId) : dev;
+                  const rootId = targetDev && targetDev.prefix;
+                  if (fmApi && rootId) fmApi.exec("request-data", { id: rootId });
+                } catch (_) {}
+              };
+              setTimeout(refreshDeviceRoot, 900);
+              setTimeout(refreshDeviceRoot, 2600);
             }
           }}
           on:close={() => { showDeviceSettings = false; deviceSettingsDrive = null; deviceSettingsName = ""; deviceSettingsIcon = ""; deviceSettingsType = ""; }}

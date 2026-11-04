@@ -407,7 +407,7 @@ void Daemon::start()
 #endif
 
     // Initialize OTA updater
-#ifndef Q_OS_WIN
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MAC)
     OMDUpdater::instance().init();
 #endif
 

@@ -177,6 +177,7 @@ OnMyDiskHttpNode::OnMyDiskHttpNode(QString configFile, QObject *parent) : OnMyDi
     connect(&m_client, &OnMyDiskClient::logOutput, &m_clientBackend, &HttpDeviceBackend::logMessage);
 #endif
     connect(&m_client, &OnMyDiskClient::settingsLoaded, &m_linkClient, &OnMyDiskLinkClient::updateSettings);
+    connect(&m_linkClient, &OnMyDiskLinkClient::settingsChanged, &m_client, &OnMyDiskClient::applySettings, Qt::QueuedConnection);
 
     // Backend events
 #if !defined(P2P_ENABLED) && !defined(NO_WEB_UI)
@@ -646,8 +647,9 @@ void OnMyDiskHttpNode::sendClaimPage(QHttpRequest *req, QHttpResponse *resp)
 {
     Q_UNUSED(req)
     QString linkId = m_linkClient.linkId();
-    QString shortId = m_linkClient.deviceId();
-    if (shortId.isEmpty()) shortId = linkId.left(10);
+    QString deviceId = m_linkClient.deviceId();
+    QString claimId = !deviceId.isEmpty() ? deviceId : linkId;
+    QString shortId = !deviceId.isEmpty() ? deviceId : linkId.left(10);
     QString deviceName = m_rootResource ? m_rootResource->hostName() : QHostInfo::localHostName();
 
     // Use configured server, fallback to onmydisk.net
@@ -657,7 +659,7 @@ void OnMyDiskHttpNode::sendClaimPage(QHttpRequest *req, QHttpResponse *resp)
 
     QString claimUrl = QString("https://%1/?claimLink=%2&name=%3")
                            .arg(server,
-                                QString::fromLatin1(QUrl::toPercentEncoding(linkId)),
+                                QString::fromLatin1(QUrl::toPercentEncoding(claimId)),
                                 QString::fromLatin1(QUrl::toPercentEncoding(deviceName)));
 
     // Escape for HTML attribute and for JS string
@@ -766,8 +768,11 @@ void OnMyDiskHttpNode::sendPairInfo(QHttpRequest *req, QHttpResponse *resp)
 {
     Q_UNUSED(req)
     QJsonObject info;
-    info["linkId"] = m_linkClient.linkId();
-    info["deviceId"] = m_linkClient.deviceId();
+    const QString deviceId = m_linkClient.deviceId();
+    const QString peerId = m_linkClient.linkId();
+    info["linkId"] = !deviceId.isEmpty() ? deviceId : peerId;
+    info["peerId"] = peerId;
+    info["deviceId"] = deviceId;
     info["name"] = m_rootResource ? m_rootResource->hostName() : QHostInfo::localHostName();
     info["version"] = APP_VERSION;
     

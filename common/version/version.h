@@ -28,18 +28,21 @@
 #define PROTOCOL_STREAM_VERSION 4
 #endif
 
-#define DEFAULT_PORT   9000
 #ifdef INNBOX
+#define DEFAULT_PORT   9000
 #define DEFAULT_CLOUD "storage.innbox.app"
 #define DEFAULT_SECURE true
 #define DEFAULT_SEARCH_URL "http://localhost:9090"
 #define DEFAULT_AI_URL "http://localhost:4000"
 #else
 #ifdef P2P_ENABLED
+#define DEFAULT_PORT   9010
 #define DEFAULT_CLOUD "direct.onmydisk.net"
 #elif defined(STAGING)
+#define DEFAULT_PORT   9000
 #define DEFAULT_CLOUD "staging.onmydisk.net"
 #else
+#define DEFAULT_PORT   9000
 #ifdef QT_DEBUG
 #define DEFAULT_CLOUD "localhost"
 #else

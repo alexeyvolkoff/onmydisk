@@ -22,7 +22,7 @@
 DEFINES += EMBEDDED
 !contains(DEFINES, ROUTER) {
     DEFINES += BUILDROOT STAGING
-    !win32: DEFINES += TAGLIB_SUPPORTED
+    !win32:!macx: DEFINES += TAGLIB_SUPPORTED
 }
 
 include ($$PWD/client.pri)

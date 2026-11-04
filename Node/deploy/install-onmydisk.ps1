@@ -12,6 +12,13 @@ AiServer base URL of the node - no client settings change needed.
 
 Run from PowerShell:
 
+    # Typical laptop / PC without GPU (Node + Agentic AI):
+    & ([scriptblock]::Create((irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1))) -Agentic
+
+    # PC with NVIDIA GPU (Node + Local GPU AI + Ollama):
+    & ([scriptblock]::Create((irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1))) -Gpu
+
+    # Storage-only node:
     irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1 | iex
 
 or for install/uninstall options:
@@ -24,13 +31,15 @@ or for install/uninstall options:
 param(
     [switch]$Uninstall,
     [switch]$WithAi,
+    [switch]$Gpu,     # install Node + OnMyChat in full local GPU mode (CUDA PyTorch + local Ollama)
     [switch]$AiCpu,   # install CPU-only torch (much smaller) instead of the default CUDA build
     [switch]$NoOllama,
-    [switch]$Agentic, # configure OnMyChat in P2P agentic mode (implies -AiCpu -NoOllama)
+    [switch]$Agentic, # configure OnMyChat in P2P agentic mode (implies -WithAi -AiCpu -NoOllama)
     [string]$InferenceNode = "auto",
     [string]$RepoBase = "https://forge.bineon.team/repo/Windows"
 )
-if ($Agentic) { $AiCpu = $true; $NoOllama = $true }
+if ($Agentic) { $WithAi = $true; $AiCpu = $true; $NoOllama = $true }
+if ($Gpu)     { $WithAi = $true }
 
 $ErrorActionPreference = "Stop"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -90,6 +99,21 @@ if (-not (Test-Path $Conf)) {
 foreach ($d in $downloads) {
     Write-Host "Downloading $($d.Url) ..."
     Invoke-WebRequest -Uri $d.Url -OutFile $d.Out -UseBasicParsing
+}
+
+# Migrate existing 3.0 node configs from legacy gateway port 9000 -> direct gateway port 9010
+foreach ($cfgPath in @($Conf, "$Conf.user")) {
+    if (Test-Path $cfgPath) {
+        $rawCfg = [System.IO.File]::ReadAllText($cfgPath)
+        $newCfg = $rawCfg `
+            -replace '(?m)^host=onmydisk\.net\r?$', 'host=direct.onmydisk.net' `
+            -replace '(?m)^restUrl=https://onmydisk\.net/rest\r?$', 'restUrl=https://direct.onmydisk.net/rest' `
+            -replace '(?m)^wsPort=9988\r?$', 'wsPort=9989' `
+            -replace '(?m)^port=9000\r?$', 'port=9010'
+        if ($newCfg -ne $rawCfg) {
+            [System.IO.File]::WriteAllText($cfgPath, $newCfg, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    }
 }
 
 # strip Mark-of-the-Web so the statically signed-free exe is not flagged by SmartScreen on first run

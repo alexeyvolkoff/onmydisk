@@ -26,9 +26,10 @@ contains(DEFINES, ROUTER): DEFINES += NO_WEB_UI NO_QDRIVE
 QT       += core network sql
 !contains(DEFINES, ROUTER) {
     QT += dbus
-    win32: QT -= dbus
+    win32|macx: QT -= dbus
 }
 CONFIG   += rtti console
+macx: CONFIG -= app_bundle
 
 greaterThan(QT_MAJOR_VERSION, 4): {
     DEFINES += QT5
@@ -137,7 +138,7 @@ contains(DEFINES, ROUTER) {
         $$PWD/src/ssdpannouncer.cpp
 
     INCLUDEPATH += $$PWD/libqdrive/include
-    win32: DEFINES += NO_QDRIVE
+    win32|macx: DEFINES += NO_QDRIVE
 
     !contains(DEFINES, NO_QDRIVE) {
         !win32 {

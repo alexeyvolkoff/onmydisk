@@ -24,6 +24,7 @@ import { omdKeyStore, getStoredOmdKey, deriveEncryptionKey } from "../omd-key.js
 
 const LS_PREFIX = "omd_ssh_creds";
 const GRAPH_NODE = "ssh";
+const SHARED_SSH_PREFIX = "ssh_creds:";
 const SSH_SALT = "omd-ssh-salt-v1";
 
 let identityRef = null;
@@ -33,6 +34,8 @@ let unsubOmdKey = null;
 
 /** linkId -> { user, pass } */
 const cache = new Map();
+/** linkId -> raw encrypted payload for deferred decryption when omd_key arrives */
+const rawEntries = new Map();
 
 /** AES-GCM CryptoKey + the omd_key it was derived from, or null. */
 let vaultCrypto = null;
@@ -186,15 +189,34 @@ async function decryptEntry(entry, linkId) {
   return null;
 }
 
+async function redecryptPendingSshEntries() {
+  if (rawEntries.size === 0) return;
+  await refreshVaultCrypto();
+  if (!vaultCrypto) return;
+  let updated = false;
+  for (const [linkId, raw] of rawEntries.entries()) {
+    const rec = await decryptEntry(raw, linkId);
+    if (rec) {
+      cache.set(String(linkId), rec);
+      updated = true;
+    }
+  }
+  if (updated) {
+    publish();
+    persistMirror();
+  }
+}
+
 async function syncToGraph() {
   if (!identityRef || !identityRef.gun || !identityRef.mainPub) return;
   await refreshVaultCrypto();
-  const graph = identityRef.gun.get("~" + identityRef.mainPub).get(GRAPH_NODE);
+  await redecryptPendingSshEntries();
+  const sharedGraph = identityRef.gun.get(SHARED_SSH_PREFIX + identityRef.mainPub);
   for (const [linkId, rec] of cache) {
     const payload = await aesEncrypt(rec);
     if (payload) {
       try {
-        graph.get(String(linkId)).put({ ...payload, updatedAt: Date.now() });
+        sharedGraph.get(String(linkId)).put({ ...payload, deleted: false, updatedAt: Date.now() });
       } catch (e) {
         console.warn("[ssh-creds] graph put failed for", linkId, e);
       }
@@ -202,29 +224,54 @@ async function syncToGraph() {
   }
 }
 
-function subscribeGraph() {
-  const gun = identityRef && identityRef.gun;
-  const mainPub = identityRef && identityRef.mainPub;
-  if (!gun || !mainPub) return;
-  try {
-    const handle = gun.get("~" + mainPub).get(GRAPH_NODE).map().on(async (entry, linkId) => {
-      if (!linkId) return;
-      if (!entry || (typeof entry === "object" && !entry.ciphertext && !entry.enc)) {
-        if (cache.delete(String(linkId))) {
-          publish();
-          persistMirror();
-        }
-        return;
-      }
-      const rec = await decryptEntry(entry, linkId);
+function handleIncomingSshEntry(entry, linkId, { isLegacy = false } = {}) {
+  if (!linkId || linkId === "_") return;
+  if (entry === null || (entry && typeof entry === "object" && entry.deleted === true)) {
+    if (isLegacy) return;
+    rawEntries.delete(String(linkId));
+    if (cache.delete(String(linkId))) {
+      publish();
+      persistMirror();
+    }
+    return;
+  }
+  // Ignore GunDB soul-pointer stubs rather than wiping cached SSH credentials
+  if (!entry || typeof entry !== "object" || (!entry.ciphertext && !entry.enc)) {
+    return;
+  }
+  rawEntries.set(String(linkId), entry);
+  refreshVaultCrypto()
+    .then(() => decryptEntry(entry, linkId))
+    .then((rec) => {
       if (rec) {
         cache.set(String(linkId), rec);
         publish();
         persistMirror();
       }
-    });
+    })
+    .catch(() => {});
+}
+
+function subscribeGraph() {
+  const gun = identityRef && identityRef.gun;
+  const mainPub = identityRef && identityRef.mainPub;
+  if (!gun || !mainPub) return;
+  const handles = [];
+  try {
+    handles.push(
+      gun.get(SHARED_SSH_PREFIX + mainPub).map().on((entry, linkId) => {
+        handleIncomingSshEntry(entry, linkId, { isLegacy: false });
+      })
+    );
+    handles.push(
+      gun.get("~" + mainPub).get(GRAPH_NODE).map().on((entry, linkId) => {
+        handleIncomingSshEntry(entry, linkId, { isLegacy: true });
+      })
+    );
     unsubGraph = () => {
-      try { handle.off(); } catch (e) { /* ignore */ }
+      for (const h of handles) {
+        try { if (h && typeof h.off === "function") h.off(); } catch (_) {}
+      }
     };
   } catch (e) {
     console.warn("[ssh-creds] graph subscription failed:", e);
@@ -234,12 +281,13 @@ function subscribeGraph() {
 /** Bind the vault to a persistent identity; no-op when already bound. */
 export function setSshIdentity(identity) {
   if (!identity || identity.type !== "persistent" || !identity.devicePair) return;
-  const pub = identity.devicePair.pub || "";
+  const pub = identity.mainPub || identity.devicePair.pub || "";
   if (identityRef === identity && pub === boundPub) return;
   detach();
   identityRef = identity;
   boundPub = pub;
   cache.clear();
+  rawEntries.clear();
   loadLocalMirror();
   publish();
   subscribeGraph();
@@ -261,6 +309,7 @@ export function clearSshIdentity() {
   vaultCrypto = null;
   vaultKeySource = "";
   cache.clear();
+  rawEntries.clear();
   publish();
 }
 
@@ -286,7 +335,9 @@ export async function saveSshCredential(linkId, user, pass) {
     try {
       const payload = await aesEncrypt(rec);
       if (payload) {
-        gun.get("~" + mainPub).get(GRAPH_NODE).get(String(linkId)).put({ ...payload, updatedAt: Date.now() });
+        const entry = { ...payload, deleted: false, updatedAt: Date.now() };
+        rawEntries.set(String(linkId), entry);
+        gun.get(SHARED_SSH_PREFIX + mainPub).get(String(linkId)).put(entry);
       }
     } catch (e) {
       console.warn("[ssh-creds] graph put failed:", e);
@@ -298,6 +349,7 @@ export async function saveSshCredential(linkId, user, pass) {
 /** Remove stored credentials for a device everywhere. */
 export async function clearSshCredential(linkId) {
   if (!linkId) return;
+  rawEntries.delete(String(linkId));
   cache.delete(String(linkId));
   publish();
   try {
@@ -314,6 +366,12 @@ export async function clearSshCredential(linkId) {
   const mainPub = identityRef && identityRef.mainPub;
   if (gun && mainPub) {
     try {
+      gun.get(SHARED_SSH_PREFIX + mainPub).get(String(linkId)).put({
+        deleted: true,
+        ciphertext: "",
+        iv: "",
+        updatedAt: Date.now(),
+      });
       gun.get("~" + mainPub).get(GRAPH_NODE).get(String(linkId)).put(null);
     } catch (e) { /* ignore */ }
   }

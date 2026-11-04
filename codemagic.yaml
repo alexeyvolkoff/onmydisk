@@ -115,3 +115,25 @@ workflows:
       app_store_connect:
         auth: integration
         submit_to_testflight: true
+
+  macos-node-workflow:
+    name: OnMyDisk macOS Node & Tunnel
+    max_build_duration: 45
+    instance_type: mac_mini_m2
+    triggering:
+      events: []
+    scripts:
+      - name: Install Homebrew dependencies (qt@5, openssl@3, cmake)
+        script: |
+          set -e
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          brew install qt@5 openssl@3 cmake
+      - name: Build self-contained macOS arm64 Node & Tunnel bundle
+        script: |
+          set -e
+          chmod +x Node/deploy/build-macos-embedded.sh
+          ./Node/deploy/build-macos-embedded.sh
+    artifacts:
+      - dist/onmydisk-node-macos-*.tar.gz
+

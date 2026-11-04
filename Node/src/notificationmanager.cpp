@@ -32,29 +32,30 @@ void NotificationManager::init(SessionAuth *sessionAuthProvider, const QString &
     // Broadcast link connect / disconnect events to all active WebSocket clients so
     // browser PWAs immediately see remote nodes come online/offline without refresh.
     connect(&OnMyDiskLinkServer::instance(), &OnMyDiskLinkServer::linkConnected, this, [this](const QString &linkID, const QString &user) {
-        Q_UNUSED(user);
         QMutexLocker lock(&m_mutex);
-        if (linkID.isEmpty()) return;
-        qInfo() << "[NotificationManager] linkConnected:" << linkID << "broadcasting to" << m_connectedClients.count() << "clients";
+        if (linkID.isEmpty() && user.isEmpty()) return;
+        qInfo() << "[NotificationManager] linkConnected:" << linkID << "user:" << user << "broadcasting to" << m_connectedClients.count() << "clients";
         for (const auto &n : m_connectedClients) {
             if (n && !n->isDisconnected()) {
-                QMetaObject::invokeMethod(n.data(), [n, linkID]() {
-                    emit n->linkConnected(linkID);
+                QMetaObject::invokeMethod(n.data(), [n, linkID, user]() {
+                    if (!linkID.isEmpty()) emit n->linkConnected(linkID);
+                    if (!user.isEmpty() && user != linkID) emit n->linkConnected(user);
                 }, Qt::QueuedConnection);
             }
         }
     });
 
     connect(&OnMyDiskLinkServer::instance(), &OnMyDiskLinkServer::linkDisconnected, this, [this](const QString &linkID, const QString &user) {
-        Q_UNUSED(user);
         QMutexLocker lock(&m_mutex);
-        if (linkID.isEmpty()) return;
-        m_linkNotifiers.remove(linkID);
-        qInfo() << "[NotificationManager] linkDisconnected:" << linkID << "broadcasting to" << m_connectedClients.count() << "clients";
+        if (linkID.isEmpty() && user.isEmpty()) return;
+        if (!linkID.isEmpty()) m_linkNotifiers.remove(linkID);
+        if (!user.isEmpty()) m_linkNotifiers.remove(user);
+        qInfo() << "[NotificationManager] linkDisconnected:" << linkID << "user:" << user << "broadcasting to" << m_connectedClients.count() << "clients";
         for (const auto &n : m_connectedClients) {
             if (n && !n->isDisconnected()) {
-                QMetaObject::invokeMethod(n.data(), [n, linkID]() {
-                    emit n->linkDisconnected(linkID);
+                QMetaObject::invokeMethod(n.data(), [n, linkID, user]() {
+                    if (!linkID.isEmpty()) emit n->linkDisconnected(linkID);
+                    if (!user.isEmpty() && user != linkID) emit n->linkDisconnected(user);
                 }, Qt::QueuedConnection);
             }
         }
@@ -383,13 +384,19 @@ void NotificationManager::fileRemovedForGuests(const QString &user, const QStrin
 QSharedPointer<ClientNotifier> NotificationManager::getLinkNotifier(const QString &linkID)
 {
     QMutexLocker lock(&m_mutex);
-    if (m_linkNotifiers.contains(linkID))
-        return m_linkNotifiers[linkID];
+    if (m_linkNotifiers.contains(linkID)) {
+        auto cached = m_linkNotifiers[linkID];
+        if (cached && !cached->isDisconnected())
+            return cached;
+        m_linkNotifiers.remove(linkID);
+    }
 
-    // Fallback: Lookup in m_connectedClients strictly by linkID
+    // Fallback: Lookup in m_connectedClients strictly by active linkID
     for (const auto &notifier : m_connectedClients) {
-        if (notifier && notifier->getLinkId() == linkID)
+        if (notifier && !notifier->isDisconnected() && notifier->getLinkId() == linkID) {
+            m_linkNotifiers.insert(linkID, notifier);
             return notifier;
+        }
     }
 
     return QSharedPointer<ClientNotifier>(nullptr);
@@ -397,8 +404,19 @@ QSharedPointer<ClientNotifier> NotificationManager::getLinkNotifier(const QStrin
 
 bool NotificationManager::isWebSocketLink(const QString &linkID)
 {
-   QMutexLocker lock(&m_mutex);
-    return m_linkNotifiers.contains(linkID);
+    return hasActiveNotifierForLink(linkID, nullptr);
+}
+
+bool NotificationManager::hasActiveNotifierForLink(const QString &linkID, const ClientNotifier *exclude)
+{
+    if (linkID.isEmpty())
+        return false;
+    QMutexLocker lock(&m_mutex);
+    for (const auto &notifier : m_connectedClients) {
+        if (notifier && notifier.data() != exclude && !notifier->isDisconnected() && notifier->getLinkId() == linkID)
+            return true;
+    }
+    return false;
 }
 
 bool NotificationManager::hasConnections(const QString &userId, const QString &sessionId)

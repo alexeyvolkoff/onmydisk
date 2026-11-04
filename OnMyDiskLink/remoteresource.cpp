@@ -69,10 +69,13 @@ RemoteResource::RemoteResource(QString linkID, QString remotePath, QString query
       if ( m_parentResource_ptr->m_displayPath.endsWith("/"))
         m_displayPath = m_parentResource_ptr->m_displayPath + m_fileName;
       else
-        m_parentResource_ptr->m_displayPath + "/" + m_fileName;
+        m_displayPath = m_parentResource_ptr->m_displayPath + "/" + m_fileName;
 
       // Inherit path context from parent
-      m_remotePath = m_parentResource_ptr->m_remotePath + m_fileName;
+      QString parentRemPath = m_parentResource_ptr->m_remotePath;
+      if (!parentRemPath.endsWith("/"))
+          parentRemPath.append("/");
+      m_remotePath = parentRemPath + m_fileName;
       m_customAttributes.insert("itemPath", m_remotePath);
 
       if (!m_parentResource_ptr->m_realPath.isEmpty()) {
@@ -186,6 +189,7 @@ RemoteResource::RemoteResource(RemoteResource *resource, QString query):
         if (resource->m_webdavBackend) {
             QHash<QString, QVariant> webdavData;
             webdavData["baseUrl"] = resource->m_webdavBackend->baseUrl();
+            webdavData["prefix"] = resource->m_webdavBackend->prefix();
             initWebDAVBackend(webdavData);
         } else {
             m_currentBackendType = RemoteLinkBackend;
@@ -378,9 +382,17 @@ void RemoteResource::LoadEntryData(QHash<QString, QHash<QString, QVariant>> entr
         }
         else
         {
-            QString childRemotePath = entryData[childName].contains("remotePath") ? entryData[childName]["remotePath"].toString()  :  m_remotePath + childName;
+            QString childRemotePath = entryData[childName].contains("remotePath")
+                ? entryData[childName]["remotePath"].toString()
+                : (m_remotePath.endsWith("/") ? m_remotePath + childName : m_remotePath + "/" + childName);
             QString chilId =  entryData[childName].contains("linkID") ? entryData[childName]["linkID"].toString()  :  m_LinkID;
             RemoteResource* childResource = new RemoteResource(chilId, childRemotePath, QStringLiteral(""), false, this);
+            if (m_currentBackendType == CloudResource::WebDAVBackendType && m_webdavBackend) {
+                QHash<QString, QVariant> webdavData;
+                webdavData["baseUrl"] = m_webdavBackend->baseUrl();
+                webdavData["prefix"] = m_webdavBackend->prefix();
+                childResource->initWebDAVBackend(webdavData);
+            }
             childResource->LoadData(entryData[childName]);
             m_childResources.insert(childName, childResource);
         }
@@ -992,6 +1004,12 @@ CloudResource *RemoteResource::getChild(const QString &childName, bool create)
             child->m_sharedLinkId = this->m_sharedLinkId;
             child->m_overrideWritable = this->m_overrideWritable;
             child->m_owner = this->m_owner;
+            if (m_currentBackendType == CloudResource::WebDAVBackendType && m_webdavBackend) {
+                QHash<QString, QVariant> webdavData;
+                webdavData["baseUrl"] = m_webdavBackend->baseUrl();
+                webdavData["prefix"] = m_webdavBackend->prefix();
+                child->initWebDAVBackend(webdavData);
+            }
             m_childResources.insert(childName, child);
             if (! child->m_isActual) {
                 child->doRefresh();
@@ -1019,7 +1037,7 @@ CloudResource* RemoteResource::doGetChild(QStringList childPath, bool create)
         {
             if (create)
             {
-                QString childRemotePath = m_remotePath + childName;
+                QString childRemotePath = m_remotePath.endsWith("/") ? m_remotePath + childName : m_remotePath + "/" + childName;
                 RemoteResource* child = new RemoteResource(m_LinkID, childRemotePath, QStringLiteral(""), false, this);
                 child->m_sharedLinkId = this->m_sharedLinkId;
                 child->m_overrideWritable = this->m_overrideWritable;

@@ -19,13 +19,7 @@ export function loadMyDevices(identity, registerDevicePlaceholder, getFilesData,
   return identity.subscribeDeviceList((devices) => {
     const activeIds = new Set(devices.map(d => d.linkId).filter(Boolean));
     const localId = getOrCreateLocalLinkId();
-    const localDev = deviceRegistry.get(localId) || deviceRegistry.list().find(d => d && d.local);
-    const localName = (
-      localDev?.name ||
-      (typeof localStorage !== "undefined" ? localStorage.getItem("omd_local_devicename") : "") ||
-      getDefaultWebDeviceName() ||
-      ""
-    ).toLowerCase();
+    const myPub = identity.devicePub || "";
 
     for (const id of seen) {
       if (!activeIds.has(id)) seen.delete(id);
@@ -37,15 +31,9 @@ export function loadMyDevices(identity, registerDevicePlaceholder, getFilesData,
       const existing = deviceRegistry.get(dev.linkId);
       if (existing && existing.local) continue;
 
-      // Skip stale browser-device entries from previous sessions/origins that share
-      // our local web device's name (e.g. "Linux-desktop") and have no native node capabilities.
-      const devNameLower = (dev.name || "").toLowerCase();
-      const caps = Array.isArray(dev.capabilities) ? dev.capabilities : [];
-      const isStaleSameWebDevice =
-        localName &&
-        devNameLower === localName &&
-        (dev.type === "web" || (!caps.includes("chat") && !caps.includes("terminal")));
-      if (isStaleSameWebDevice) {
+      // Skip only stale linkIds that originated from THIS exact browser instance
+      // (same devicePub), never another machine sharing a default OS name like "Linux-desktop".
+      if (myPub && dev.originDevicePub && dev.originDevicePub === myPub) {
         continue;
       }
 

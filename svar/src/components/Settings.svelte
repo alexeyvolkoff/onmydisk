@@ -493,8 +493,14 @@
     scanningDetected = true;
     try {
       const list = await fetchNearbyDevices();
-      const activeIds = new Set((devices || []).map(d => d.linkId));
-      detectedDevices = (list || []).filter(d => d.linkId && !activeIds.has(d.linkId));
+      const activeIds = new Set();
+      for (const d of (devices || [])) {
+        if (d.linkId) activeIds.add(d.linkId);
+        if (d.peerId) activeIds.add(d.peerId);
+        if (d.shortId) activeIds.add(d.shortId);
+        if (d.deviceId) activeIds.add(d.deviceId);
+      }
+      detectedDevices = (list || []).filter(d => d.linkId && !activeIds.has(d.linkId) && !deviceRegistry.has(d.linkId));
     } catch (e) {
       console.warn("[Settings] scan detected devices error:", e);
     } finally {
