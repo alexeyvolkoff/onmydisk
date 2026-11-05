@@ -184,7 +184,7 @@
   $: if (typeof localStorage !== "undefined" && selectedPersonas) {
     saveLocalSelectedPersonas(selectedPersonas);
   }
-  let isLoadingFiles = false;
+  let isLoadingFiles = true;
   let isGenerating = false;
   let generationElapsed = 0;
   let generationTimer = null;
@@ -314,8 +314,8 @@
         archetype: primaryArchetype,
         archetype_strength: typeof s.archetype_strength === "number" ? s.archetype_strength : 0.4,
         aspect: s.aspect || "896x1152",
-        steps: typeof s.steps === "number" ? s.steps : (s.base_model === "anima" ? 25 : 12),
-        cfg: typeof s.cfg === "number" ? s.cfg : (s.base_model === "realism" ? 1.5 : (s.base_model === "semi_realism" ? 2.0 : 3.0))
+        steps: typeof s.steps === "number" ? s.steps : (isSdxlModel(s.base_model) ? 6 : (s.base_model === "anima" ? 25 : 12)),
+        cfg: typeof s.cfg === "number" ? s.cfg : (isSdxlModel(s.base_model) ? 1.0 : (s.base_model === "realism" ? 1.5 : (s.base_model === "semi_realism" ? 2.0 : 3.0)))
       };
       const jsonStr = JSON.stringify(payload);
 
@@ -367,10 +367,35 @@
     saveLocalSliders(sliders);
   }
 
+  const SDXL_BASE_MODELS = ["sdxl_realistic", "sdxl_perfect", "sdxl_fantasy", "sdxl_tooned"];
+
+  function isSdxlModel(m) {
+    const v = String(m || "").trim().toLowerCase();
+    return v === "sdxl" || SDXL_BASE_MODELS.includes(v);
+  }
+
+  function normalizeSdxlModel(m) {
+    const v = String(m || "").trim().toLowerCase();
+    if (SDXL_BASE_MODELS.includes(v)) return v;
+    return "sdxl_realistic";
+  }
+
+  function isStyleCompatibleWithCat(s, cat) {
+    if (!s) return false;
+    if (s.id === "none") return true;
+    if (cat === "sdxl") {
+      return Array.isArray(s.models) && s.models.includes("sdxl");
+    }
+    return !s.models || s.models.includes("all") || s.models.includes(cat);
+  }
+
   const initialSavedSliders = getLocalSliders();
-  const initStyles = (initialSavedSliders && Array.isArray(initialSavedSliders.styles))
+  const rawSavedStyles = (initialSavedSliders && Array.isArray(initialSavedSliders.styles))
     ? initialSavedSliders.styles.filter((x) => x && x !== "none")
     : ((initialSavedSliders && initialSavedSliders.style && initialSavedSliders.style !== "none") ? [initialSavedSliders.style] : []);
+  // Migrate legacy sdxl_* checkpoint IDs out of styles into base_model if present
+  const legacyCkptFromStyles = rawSavedStyles.find((id) => SDXL_BASE_MODELS.includes(id));
+  const initStyles = rawSavedStyles.filter((id) => !SDXL_BASE_MODELS.includes(id));
   const initPrimaryStyle = initStyles.length > 0 ? initStyles[0] : "none";
 
   const initArchetypes = (initialSavedSliders && Array.isArray(initialSavedSliders.archetypes))
@@ -378,11 +403,22 @@
     : ((initialSavedSliders && initialSavedSliders.archetype) ? [initialSavedSliders.archetype] : []);
   const initPrimaryArchetype = initArchetypes.length > 0 ? initArchetypes[0] : null;
 
+  const rawSavedBaseModel = (initialSavedSliders && initialSavedSliders.base_model) || "";
   const initBaseModel = !kreaSupported
-    ? "sdxl"
-    : ((initialSavedSliders && initialSavedSliders.base_model) || "realism");
+    ? normalizeSdxlModel(legacyCkptFromStyles || rawSavedBaseModel)
+    : (isSdxlModel(rawSavedBaseModel)
+        ? normalizeSdxlModel(legacyCkptFromStyles || rawSavedBaseModel)
+        : (rawSavedBaseModel || "realism"));
 
-  // Sliders state (restored from localStorage if available)
+  let lastSdxlModel = isSdxlModel(initBaseModel)
+    ? normalizeSdxlModel(initBaseModel)
+    : (legacyCkptFromStyles || "sdxl_realistic");
+  let lastDitModel = !isSdxlModel(initBaseModel) ? initBaseModel : "realism";
+
+  const initRawSteps = (initialSavedSliders && typeof initialSavedSliders.steps === "number") ? initialSavedSliders.steps : null;
+  const initRawCfg = (initialSavedSliders && typeof initialSavedSliders.cfg === "number") ? initialSavedSliders.cfg : null;
+
+  // Sliders state (restored from localStorage if available, with DMD2 steps/cfg normalized in SDXL mode)
   let sliders = {
     base_model: initBaseModel,
     detail: (initialSavedSliders && typeof initialSavedSliders.detail === "number") ? initialSavedSliders.detail : 0.5,
@@ -395,21 +431,32 @@
     archetype: initPrimaryArchetype,
     archetype_strength: (initialSavedSliders && typeof initialSavedSliders.archetype_strength === "number") ? initialSavedSliders.archetype_strength : 0.4,
     aspect: (initialSavedSliders && initialSavedSliders.aspect) || "896x1152",
-    steps: (initialSavedSliders && typeof initialSavedSliders.steps === "number")
-      ? initialSavedSliders.steps
-      : (initBaseModel === "sdxl" ? 6 : (initBaseModel === "anima" ? 25 : 12)),
-    cfg: (initialSavedSliders && typeof initialSavedSliders.cfg === "number")
-      ? initialSavedSliders.cfg
-      : (initBaseModel === "sdxl" ? 1.0 : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0)))
+    steps: isSdxlModel(initBaseModel)
+      ? ((initRawSteps !== null && initRawSteps >= 4 && initRawSteps <= 12) ? initRawSteps : 6)
+      : (initRawSteps !== null ? initRawSteps : (initBaseModel === "anima" ? 25 : 12)),
+    cfg: isSdxlModel(initBaseModel)
+      ? ((initRawCfg !== null && initRawCfg >= 1.0 && initRawCfg <= 2.0) ? initRawCfg : 1.0)
+      : (initRawCfg !== null ? initRawCfg : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0)))
   };
 
-  function setBaseModel(model, force = false) {
-    if (model !== "sdxl" && !force && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
+  $: studioEngineMode = isSdxlModel(sliders.base_model) ? "sdxl" : "dit";
+
+  function switchEngineMode(mode) {
+    if (mode === "sdxl") {
+      setBaseModel(lastSdxlModel || "sdxl_realistic");
+    } else {
+      setBaseModel(lastDitModel || "realism");
+    }
+  }
+
+  function setBaseModel(rawModel, force = false) {
+    const model = rawModel === "sdxl" ? (lastSdxlModel || "sdxl_realistic") : rawModel;
+    if (!isSdxlModel(model) && !force && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
       generationError = sanitizeExternalCheckoutText(
         kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima доступны по Club Pass или Muse Pass.")
       );
-      if (sliders.base_model !== "sdxl") {
-        sliders.base_model = "sdxl";
+      if (!isSdxlModel(sliders.base_model)) {
+        sliders.base_model = lastSdxlModel || "sdxl_realistic";
         sliders.cfg = 1.0;
         sliders.steps = 6;
         sliders = { ...sliders };
@@ -417,19 +464,28 @@
       }
       return;
     }
+    if (isSdxlModel(model)) {
+      lastSdxlModel = normalizeSdxlModel(model);
+    } else {
+      lastDitModel = model;
+    }
     if (sliders.base_model === model) {
-      if (model === "sdxl") generationError = "";
+      if (isSdxlModel(model)) {
+        generationError = "";
+        if (sliders.steps > 12 || sliders.cfg > 2.0) {
+          sliders.steps = 6;
+          sliders.cfg = 1.0;
+          sliders = { ...sliders };
+          saveLocalSliders(sliders);
+        }
+      }
       return;
     }
     sliders.base_model = model;
-    if (model === "sdxl") {
+    if (isSdxlModel(model)) {
       sliders.cfg = 1.0;
       sliders.steps = 6;
       generationError = "";
-      if (!sliders.styles || sliders.styles.length === 0) {
-        sliders.styles = ["sdxl_realistic"];
-        sliders.style = "sdxl_realistic";
-      }
     } else if (model === "realism") {
       sliders.cfg = 1.5;
       sliders.steps = 12;
@@ -467,7 +523,7 @@
   }
 
   function resetAdvancedToModelDefaults() {
-    if (sliders.base_model === "sdxl") {
+    if (isSdxlModel(sliders.base_model)) {
       sliders.cfg = 1.0;
       sliders.steps = 6;
     } else if (sliders.base_model === "realism") {
@@ -488,12 +544,9 @@
   // 1. Art Styles & Archetypes from unified registry krea_presets.json + SDXL flow.json
   let kreaPresets = defaultKreaPresets;
 
-  $: currentBaseCategory = sliders.base_model === "sdxl" ? "sdxl" : (sliders.base_model === "anima" ? "anima" : "krea2");
+  $: currentBaseCategory = isSdxlModel(sliders.base_model) ? "sdxl" : (sliders.base_model === "anima" ? "anima" : "krea2");
 
-  $: filteredArtStyles = (kreaPresets.art_styles || []).filter((s) => {
-    if (!s.models || s.models.includes("all")) return true;
-    return s.models.includes(currentBaseCategory);
-  });
+  $: filteredArtStyles = (kreaPresets.art_styles || []).filter((s) => isStyleCompatibleWithCat(s, currentBaseCategory));
 
   $: stylePresets = filteredArtStyles.map((s) => ({
     id: s.id,
@@ -520,15 +573,27 @@
     strength: a.strength
   }));
 
-  // Auto-validate selections when base model or presets change
-  let prevBaseModel = sliders.base_model;
-  $: if (sliders.base_model !== prevBaseModel) {
-    prevBaseModel = sliders.base_model;
-    const cat = sliders.base_model === "sdxl" ? "sdxl" : (sliders.base_model === "anima" ? "anima" : "krea2");
-    const availableStyles = (kreaPresets.art_styles || [])
-      .filter((s) => !s.models || s.models.includes("all") || s.models.includes(cat))
+  const _studioRuntime = {
+    prevBaseModel: sliders.base_model,
+    driveCleanup: null,
+    subscribedDrive: null,
+    lastDriveInstance: null,
+    lastDriveConnected: false,
+    lastStoragePath: "",
+    lastPassKeySignature: null,
+    creationsLoadSeq: 0,
+    initialMounted: false,
+    isDestroyed: false
+  };
+
+  function syncBaseModelPresets(curModel, presetsObj) {
+    if (curModel === _studioRuntime.prevBaseModel) return;
+    _studioRuntime.prevBaseModel = curModel;
+    const cat = isSdxlModel(curModel) ? "sdxl" : (curModel === "anima" ? "anima" : "krea2");
+    const availableStyles = ((presetsObj && presetsObj.art_styles) || [])
+      .filter((s) => isStyleCompatibleWithCat(s, cat))
       .map((s) => s.id);
-    const availableArchetypes = (kreaPresets.archetypes || [])
+    const availableArchetypes = ((presetsObj && presetsObj.archetypes) || [])
       .filter((a) => !a.models || a.models.includes("all") || a.models.includes(cat))
       .map((a) => a.id);
 
@@ -554,6 +619,8 @@
       saveLocalSliders(sliders);
     }
   }
+
+  $: syncBaseModelPresets(sliders.base_model, kreaPresets);
 
   $: activeStyleObjs = stylePresets.filter((s) => (sliders.styles || []).includes(s.id));
   $: activeStyleObj = activeStyleObjs[0] || stylePresets.find((s) => s.id === sliders.style) || stylePresets[0] || { label: "✨ " + $_("krea_free_style", {}, "Свободный"), lora: "" };
@@ -711,9 +778,9 @@
   let isAnalyzingFace = false;
   let avatarGenArchetype = "prompt";
 
-  $: personaModalEngineCat = personaFormBaseModel === "sdxl" ? "sdxl" : (personaFormBaseModel === "anima" ? "anima" : "krea2");
+  $: personaModalEngineCat = isSdxlModel(personaFormBaseModel) ? "sdxl" : (personaFormBaseModel === "anima" ? "anima" : "krea2");
   $: personaModalArchetypes = (kreaPresets.archetypes || []).filter((a) => !a.models || a.models.includes("all") || a.models.includes(personaModalEngineCat));
-  $: personaModalStyles = (kreaPresets.art_styles || []).filter((s) => s.id !== "none" && (!s.models || s.models.includes("all") || s.models.includes(personaModalEngineCat)));
+  $: personaModalStyles = (kreaPresets.art_styles || []).filter((s) => s.id !== "none" && isStyleCompatibleWithCat(s, personaModalEngineCat));
 
   // Direct CivitAI API Publish Modal state
   let showCivitaiPublishModal = false;
@@ -847,62 +914,65 @@
     );
   }
 
-  let driveCleanup = null;
-  let lastDriveInstance = null;
-  let lastDriveConnected = false;
-  let lastStoragePath = "";
-
-  $: if (deviceDrive) {
-    if (driveCleanup) {
-      driveCleanup();
-      driveCleanup = null;
-    }
-    const onStatus = (st) => {
-      if (st === "connected") {
-        loadCreations();
-        loadPersonas();
+  function syncDeviceDriveState(curDrive, curStorageRaw, privMode) {
+    if (curDrive !== _studioRuntime.subscribedDrive) {
+      if (_studioRuntime.driveCleanup) {
+        try { _studioRuntime.driveCleanup(); } catch (_) {}
+        _studioRuntime.driveCleanup = null;
       }
-    };
-    if (typeof deviceDrive.addStatusListener === "function") {
-      deviceDrive.addStatusListener(onStatus);
-      driveCleanup = () => {
-        if (typeof deviceDrive.removeStatusListener === "function") {
-          deviceDrive.removeStatusListener(onStatus);
+      _studioRuntime.subscribedDrive = curDrive;
+      if (curDrive) {
+        const onStatus = (st) => {
+          if (st === "connected" && !_studioRuntime.isDestroyed) {
+            loadCreations();
+            loadPersonas();
+          }
+        };
+        if (typeof curDrive.addStatusListener === "function") {
+          curDrive.addStatusListener(onStatus);
+          _studioRuntime.driveCleanup = () => {
+            if (typeof curDrive.removeStatusListener === "function") {
+              curDrive.removeStatusListener(onStatus);
+            }
+          };
+        } else if (typeof curDrive.onStatusChange === "function") {
+          const prev = curDrive.onStatusChange;
+          curDrive.onStatusChange = (st) => {
+            try { prev(st); } catch (_) {}
+            onStatus(st);
+          };
+          _studioRuntime.driveCleanup = () => {
+            curDrive.onStatusChange = prev;
+          };
         }
-      };
-    } else if (typeof deviceDrive.onStatusChange === "function") {
-      const prev = deviceDrive.onStatusChange;
-      deviceDrive.onStatusChange = (st) => {
-        try { prev(st); } catch (_) {}
-        onStatus(st);
-      };
-      driveCleanup = () => {
-        deviceDrive.onStatusChange = prev;
-      };
+      }
     }
-  }
 
-  $: {
-    const isConn = !!(deviceDrive && (deviceDrive.isConnected || deviceDrive.status === "connected"));
-    const curStorage = defaultStorage || "";
+    const isConn = !!(curDrive && (curDrive.isConnected || curDrive.status === "connected"));
+    const curStorage = curStorageRaw || "";
     if (
-      deviceDrive !== lastDriveInstance ||
-      isConn !== lastDriveConnected ||
-      curStorage !== lastStoragePath
+      curDrive !== _studioRuntime.lastDriveInstance ||
+      isConn !== _studioRuntime.lastDriveConnected ||
+      curStorage !== _studioRuntime.lastStoragePath
     ) {
-      lastDriveInstance = deviceDrive;
-      lastDriveConnected = isConn;
-      lastStoragePath = curStorage;
-      foundDevice = null;
-      items = [];
-      imageBlobCache = {};
-      thumbBlobCache = {};
-      if (isConn || isPrivateMode || curStorage) {
-        loadCreations();
-        loadPersonas();
+      const wasInitialized = _studioRuntime.initialMounted;
+      _studioRuntime.lastDriveInstance = curDrive;
+      _studioRuntime.lastDriveConnected = isConn;
+      _studioRuntime.lastStoragePath = curStorage;
+      if (wasInitialized) {
+        foundDevice = null;
+        items = [];
+        imageBlobCache = {};
+        thumbBlobCache = {};
+        if (isConn || privMode || curStorage) {
+          loadCreations();
+          loadPersonas();
+        }
       }
     }
   }
+
+  $: syncDeviceDriveState(deviceDrive, defaultStorage, isPrivateMode);
 
   async function ensureFolderRecursive(drive, folder) {
     if (!drive) return;
@@ -1927,6 +1997,7 @@
   }
 
   async function loadCreations() {
+    const loadSeq = ++_studioRuntime.creationsLoadSeq;
     isLoadingFiles = true;
     const targetFolder = getTargetFolder();
     let rawList = [];
@@ -2070,35 +2141,50 @@
       };
     });
 
+    if (loadSeq !== _studioRuntime.creationsLoadSeq || _studioRuntime.isDestroyed) return;
+
     items = sortItemsList(parsedItems, sortOrder);
     isLoadingFiles = false;
     dispatch("count-change", items.length);
 
     await tick();
+    if (loadSeq !== _studioRuntime.creationsLoadSeq || _studioRuntime.isDestroyed) return;
     initLightGallery();
 
-    // Быстрая асинхронная проверка через GunDB (chatStore) для недостающих промптов
-    if (chatStore && typeof chatStore.getPromptForFile === "function") {
-      for (const item of items) {
-        if (!item.prompt) {
-          chatStore.getPromptForFile(item.name).then((p) => {
-            if (p) {
-              item.prompt = p;
-              items = [...items];
-              setBoundedPromptCache(item.name, p);
-            }
-          }).catch(() => {});
-        }
-      }
-    }
-
-    fetchMissingPrompts(effectiveFolder, activeDrive);
+    fetchMissingPrompts(effectiveFolder, activeDrive, loadSeq);
   }
 
-  async function fetchMissingPrompts(effectiveFolder, activeDrive) {
+  async function fetchMissingPrompts(effectiveFolder, activeDrive, loadSeq) {
     const drive = activeDrive || getTargetDrive();
+    let dirty = false;
+    let lastFlushTs = Date.now();
+    const maybeFlush = (force = false) => {
+      if (!dirty) return;
+      const now = Date.now();
+      if (force || now - lastFlushTs >= 500) {
+        items = [...items];
+        dirty = false;
+        lastFlushTs = now;
+      }
+    };
+
     for (const item of items) {
+      if (loadSeq !== _studioRuntime.creationsLoadSeq || _studioRuntime.isDestroyed) return;
       if (item.prompt && item.description && item.title !== item.name.replace(/\.[^.]+$/, "")) continue;
+
+      if (!item.prompt && chatStore && typeof chatStore.getPromptForFile === "function") {
+        try {
+          const cachedPrompt = await chatStore.getPromptForFile(item.name).catch(() => "");
+          if (cachedPrompt) {
+            item.prompt = cachedPrompt;
+            setBoundedPromptCache(item.name, cachedPrompt);
+            dirty = true;
+            maybeFlush(false);
+            if (item.description && item.title !== item.name.replace(/\.[^.]+$/, "")) continue;
+          }
+        } catch (_) {}
+      }
+
       const readmePath = item.path.replace(/\.[^/.]+$/, "") + ".Readme.md";
       const baseName = item.name.replace(/\.[^/.]+$/, "") + ".Readme.md";
       try {
@@ -2121,6 +2207,7 @@
             txt = await resp.text().catch(() => "");
           }
         }
+        if (loadSeq !== _studioRuntime.creationsLoadSeq || _studioRuntime.isDestroyed) return;
         if (txt) {
           const titleMatch = txt.match(/^#\s*([^\n]+)/);
           if (titleMatch) {
@@ -2137,13 +2224,14 @@
           }
           if (item.prompt) {
             setBoundedPromptCache(item.name, item.prompt);
-            if (chatStore && typeof chatStore.associateFileWithPrompt === "function") {
-              chatStore.associateFileWithPrompt("", item.name, item.prompt).catch(() => {});
-            }
           }
-          items = [...items];
+          dirty = true;
+          maybeFlush(false);
         }
       } catch (_) {}
+    }
+    if (loadSeq === _studioRuntime.creationsLoadSeq && !_studioRuntime.isDestroyed) {
+      maybeFlush(true);
     }
   }
 
@@ -2220,6 +2308,8 @@
     return seg || "local";
   }
 
+  $: activeDevSegment = (deviceDrive, targetLinkId, targetDevice, defaultStorage, getDevSegment());
+
   function getThumbnailUrl(item) {
     if (!item) return "";
     if (item.thumbBlobUrl) return item.thumbBlobUrl;
@@ -2228,7 +2318,7 @@
     if (item.blobUrl) return item.blobUrl;
     if (imageBlobCache[item.path]) return imageBlobCache[item.path];
     if (imageBlobCache[item.name]) return imageBlobCache[item.name];
-    const dev = getDevSegment();
+    const dev = activeDevSegment || getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
     return `/p2p/${dev}${encodeURI(cleanPath)}?resize=true&width=480&height=480`;
   }
@@ -2236,17 +2326,52 @@
   function lazyLoad(node, src) {
     let currentSrc = src || "";
     let observer = null;
+    const markLoaded = () => {
+      node.classList.add("thumb-loaded");
+      if (node.parentElement) {
+        node.parentElement.classList.remove("thumb-loading");
+        node.parentElement.classList.add("thumb-ready");
+      }
+    };
+    const markLoading = () => {
+      node.classList.remove("thumb-loaded");
+      if (node.parentElement) {
+        node.parentElement.classList.remove("thumb-ready");
+        node.parentElement.classList.add("thumb-loading");
+      }
+    };
+    const onLoad = () => markLoaded();
+    node.addEventListener("load", onLoad);
+
     const show = () => {
       if (currentSrc && node.getAttribute("src") !== currentSrc) {
+        markLoading();
         node.src = currentSrc;
+        if (node.complete && node.naturalWidth > 0) {
+          markLoaded();
+        }
+      } else if (node.complete && node.naturalWidth > 0 && node.getAttribute("src")) {
+        markLoaded();
       }
     };
     const root = null; // viewport-based lazy loading
     if (typeof IntersectionObserver === "undefined") {
       show();
       return {
-        update(newSrc) { currentSrc = newSrc || ""; if (node.getAttribute("src")) node.src = currentSrc; },
-        destroy() {}
+        update(newSrc) {
+          const next = newSrc || "";
+          if (next !== currentSrc) {
+            currentSrc = next;
+            if (node.getAttribute("src") && currentSrc) {
+              markLoading();
+              node.src = currentSrc;
+              if (node.complete && node.naturalWidth > 0) markLoaded();
+            }
+          }
+        },
+        destroy() {
+          node.removeEventListener("load", onLoad);
+        }
       };
     }
     observer = new IntersectionObserver((entries) => {
@@ -2260,12 +2385,18 @@
     observer.observe(node);
     return {
       update(newSrc) {
-        currentSrc = newSrc || "";
-        if (node.getAttribute("src") && currentSrc) {
-          node.src = currentSrc;
+        const next = newSrc || "";
+        if (next !== currentSrc) {
+          currentSrc = next;
+          if (node.getAttribute("src") && currentSrc) {
+            markLoading();
+            node.src = currentSrc;
+            if (node.complete && node.naturalWidth > 0) markLoaded();
+          }
         }
       },
       destroy() {
+        node.removeEventListener("load", onLoad);
         try { observer && observer.disconnect(); } catch (_) {}
       }
     };
@@ -2276,7 +2407,7 @@
     if (item.blobUrl) return item.blobUrl;
     if (imageBlobCache[item.path]) return imageBlobCache[item.path];
     if (imageBlobCache[item.name]) return imageBlobCache[item.name];
-    const dev = getDevSegment();
+    const dev = activeDevSegment || getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
     return `/p2p/${dev}${encodeURI(cleanPath)}`;
   }
@@ -2286,7 +2417,7 @@
     if (item.blobUrl) return item.blobUrl;
     if (imageBlobCache[item.path]) return imageBlobCache[item.path];
     if (imageBlobCache[item.name]) return imageBlobCache[item.name];
-    const dev = getDevSegment();
+    const dev = activeDevSegment || getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
     const vs = getViewerSettings();
     const base = `/p2p/${dev}${encodeURI(cleanPath)}`;
@@ -2352,7 +2483,10 @@
   }
 
   async function handleImageError(item, e) {
-    if (!item || item._fallbackTried) return;
+    if (!item || item._fallbackTried) {
+      e?.target?.parentElement?.classList.remove("thumb-loading");
+      return;
+    }
     if (!e || !e.target || !e.target.src || e.target.src === window.location.href) return;
     item._fallbackTried = true;
 
@@ -2407,6 +2541,9 @@
         return;
       }
     } catch (_) {}
+
+    // All fallbacks failed — stop spinner so broken/missing cards stay idle at 0% CPU
+    e?.target?.parentElement?.classList.remove("thumb-loading");
   }
 
   function buildDevicePush() {
@@ -2447,11 +2584,14 @@
   function applyImportedSettings(applied) {
     if (!applied || typeof applied !== "object") return;
     if (applied.base_model) {
-      prevBaseModel = applied.base_model;
-      sliders.base_model = applied.base_model;
+      const normModel = isSdxlModel(applied.base_model) ? normalizeSdxlModel(applied.base_model) : applied.base_model;
+      if (isSdxlModel(normModel)) lastSdxlModel = normModel;
+      else lastDitModel = normModel;
+      _studioRuntime.prevBaseModel = normModel;
+      sliders.base_model = normModel;
     }
     if (Array.isArray(applied.styles)) {
-      sliders.styles = applied.styles.filter((x) => x && x !== "none");
+      sliders.styles = applied.styles.filter((x) => x && x !== "none" && !SDXL_BASE_MODELS.includes(x));
       sliders.style = sliders.styles[0] || "none";
       sliders.style_weights = (applied.style_weights && typeof applied.style_weights === "object")
         ? { ...applied.style_weights }
@@ -2471,10 +2611,10 @@
       }
     }
     if (typeof applied.steps === "number") {
-      sliders.steps = applied.steps;
+      sliders.steps = isSdxlModel(sliders.base_model) ? 6 : applied.steps;
     }
     if (typeof applied.cfg === "number") {
-      sliders.cfg = applied.cfg;
+      sliders.cfg = isSdxlModel(sliders.base_model) ? 1.0 : applied.cfg;
     }
     if (applied.aspect) {
       sliders.aspect = applied.aspect;
@@ -2492,7 +2632,7 @@
     if (isGenerating) return null;
 
     generationError = "";
-    if (sliders.base_model !== "sdxl" && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
+    if (!isSdxlModel(sliders.base_model) && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
       generationError = sanitizeExternalCheckoutText(
         kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima доступны по Club Pass или Muse Pass.")
       );
@@ -2788,7 +2928,7 @@
 
       // GPU generation completed — now downloading chunk stream and saving!
       generatingStage = "saving";
-      if (sliders.base_model !== "sdxl") {
+      if (!isSdxlModel(sliders.base_model)) {
         isGpuWarm = true;
         lastGenFinishedAt = Date.now();
         gpuWarmUntil = lastGenFinishedAt + 290000;
@@ -4375,7 +4515,8 @@
     if (chatStore && typeof chatStore.onPromptsChanged === "function") {
       unsubPrompts = chatStore.onPromptsChanged((list) => {
         if (Array.isArray(list) && list.length > 0) {
-          recentPrompts = list;
+          const same = list.length === recentPrompts.length && list.every((v, idx) => v === recentPrompts[idx]);
+          if (!same) recentPrompts = list;
         }
       });
     }
@@ -4413,6 +4554,7 @@
 
     await refreshStudioStatusAndPresets();
 
+    _studioRuntime.initialMounted = true;
     await loadPersonas();
     await loadCreations();
     loadSavedStories().catch(() => {});
@@ -4481,8 +4623,8 @@
         }
 
         if (!kreaSupported || data.tier === "guest" || data.krea_allowed === false) {
-          if (sliders.base_model !== "sdxl" && sdxlSupported !== false) {
-            setBaseModel("sdxl", true);
+          if (!isSdxlModel(sliders.base_model) && sdxlSupported !== false) {
+            setBaseModel(lastSdxlModel || "sdxl_realistic", true);
           }
         } else if (data.krea_allowed) {
           generationError = "";
@@ -4491,24 +4633,26 @@
     } catch (_) {}
   }
 
-  let lastPassKeySignature = null;
-  $: {
-    const byApp = ($mcpKeysStore && $mcpKeysStore.byApp) || {};
+  function syncPassKeySignature(byAppObj) {
+    const byApp = byAppObj || {};
     const sig = ["club_pass", "muse_pass", "whop", "whop_key", "studio_pass"]
       .map((k) => (byApp[k] && byApp[k].key) || "")
       .join("|");
-    if (lastPassKeySignature === null) {
-      lastPassKeySignature = sig;
-    } else if (sig !== lastPassKeySignature) {
-      lastPassKeySignature = sig;
+    if (_studioRuntime.lastPassKeySignature === null) {
+      _studioRuntime.lastPassKeySignature = sig;
+    } else if (sig !== _studioRuntime.lastPassKeySignature) {
+      _studioRuntime.lastPassKeySignature = sig;
       refreshStudioStatusAndPresets();
     }
   }
 
+  $: syncPassKeySignature($mcpKeysStore && $mcpKeysStore.byApp);
+
   onDestroy(() => {
-    if (driveCleanup) {
-      driveCleanup();
-      driveCleanup = null;
+    _studioRuntime.isDestroyed = true;
+    if (_studioRuntime.driveCleanup) {
+      try { _studioRuntime.driveCleanup(); } catch (_) {}
+      _studioRuntime.driveCleanup = null;
     }
     if (unsubPrompts) unsubPrompts();
     if (lgPagination) {
@@ -4547,11 +4691,41 @@
       {/if}
 
       <div class="header-mode-toggle-group">
-        <div class="studio-brand-pill" title={$_("krea_studio", {}, "Creative Studio")}>
-          <span class="mode-icon">⚡</span>
-          <span class="mode-text mode-text-full">{$_("krea_studio", {}, "Creative Studio")}</span>
-          <span class="mode-text mode-text-short">Studio</span>
-        </div>
+        {#if sdxlSupported !== false && kreaSupported}
+          <div class="header-mode-toggle" role="tablist" aria-label="Режим генерации">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={studioEngineMode === "sdxl"}
+              class="mode-toggle-btn"
+              class:active={studioEngineMode === "sdxl"}
+              title={$_("studio_mode_express_hint", {}, "Экспресс (SDXL Turbo) — мгновенная локальная генерация за 6 шагов (~3 сек)")}
+              on:click={() => switchEngineMode("sdxl")}
+            >
+              <span class="mode-icon">⚡</span>
+              <span>{$_("studio_mode_express", {}, "Экспресс")}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={studioEngineMode === "dit"}
+              class="mode-toggle-btn"
+              class:active={studioEngineMode === "dit"}
+              class:locked={statusLoadedOnce && !kreaAllowed}
+              title={$_("studio_mode_studio_hint", {}, "Студия (DiT: Krea 2 / Muse / Anima) — кинематографичный рендер нового поколения")}
+              on:click={() => switchEngineMode("dit")}
+            >
+              <span class="mode-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "🎬"}</span>
+              <span>{$_("studio_mode_studio", {}, "Студия")}</span>
+            </button>
+          </div>
+        {:else}
+          <div class="studio-brand-pill" title={$_("krea_studio", {}, "Creative Studio")}>
+            <span class="mode-icon">⚡</span>
+            <span class="mode-text mode-text-full">{$_("krea_studio", {}, "Creative Studio")}</span>
+            <span class="mode-text mode-text-short">Studio</span>
+          </div>
+        {/if}
         {#if items.length > 0}
           <span class="header-count-pill" title={$_("generated", {}, "Creations")}>
             {items.length}
@@ -4830,7 +5004,12 @@
           </div>
         {/if}
 
-        {#if items.length === 0 && !isGenerating}
+        {#if isLoadingFiles && items.length === 0 && !isGenerating}
+          <div class="empty-gallery loading-gallery">
+            <div class="gallery-load-spinner"></div>
+            <p class="loading-gallery-text">{$_("krea_loading_creations", {}, "Загрузка творений...")}</p>
+          </div>
+        {:else if items.length === 0 && !isGenerating}
           <div class="empty-gallery">
             <div class="empty-icon">🎨</div>
             <h3>{$_("krea_no_creations_title", {}, "Пока нет генераций в студии")}</h3>
@@ -5262,23 +5441,41 @@
                 <div class="advanced-setting-row">
                   <div class="setting-title-row">
                     <span class="setting-name">{$_("krea_steps", {}, "Шаги (Steps):")}</span>
-                    <span class="setting-val-badge">{sliders.steps} {sliders.steps <= 8 ? "(Turbo)" : ""}</span>
+                    <span class="setting-val-badge">{sliders.steps} {studioEngineMode === "sdxl" ? "(DMD2)" : (sliders.steps <= 8 ? "(Turbo)" : "")}</span>
                   </div>
-                  <input
-                    type="range"
-                    min="4"
-                    max="50"
-                    step="1"
-                    bind:value={sliders.steps}
-                    on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
-                    class="slider-input advanced-slider"
-                  />
-                  <div class="setting-subtext">
-                    <span>4 ({$_("krea_steps_fast", {}, "Быстро")})</span>
-                    <span>14 ({$_("krea_steps_quality", {}, "Качество")})</span>
-                    <span>25 (Anima)</span>
-                    <span>40 (Max)</span>
-                  </div>
+                  {#if studioEngineMode === "sdxl"}
+                    <input
+                      type="range"
+                      min="4"
+                      max="12"
+                      step="1"
+                      bind:value={sliders.steps}
+                      on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
+                      class="slider-input advanced-slider"
+                    />
+                    <div class="setting-subtext">
+                      <span>4 ({$_("krea_steps_fast", {}, "Быстро")})</span>
+                      <span>6 (DMD2)</span>
+                      <span>8</span>
+                      <span>12 (Max)</span>
+                    </div>
+                  {:else}
+                    <input
+                      type="range"
+                      min="4"
+                      max="50"
+                      step="1"
+                      bind:value={sliders.steps}
+                      on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
+                      class="slider-input advanced-slider"
+                    />
+                    <div class="setting-subtext">
+                      <span>4 ({$_("krea_steps_fast", {}, "Быстро")})</span>
+                      <span>14 ({$_("krea_steps_quality", {}, "Качество")})</span>
+                      <span>25 (Anima)</span>
+                      <span>40 (Max)</span>
+                    </div>
+                  {/if}
                 </div>
 
                 <!-- Setting 3: CFG Scale -->
@@ -5287,26 +5484,60 @@
                     <span class="setting-name">{$_("krea_cfg", {}, "Сила промпта (CFG Scale):")}</span>
                     <span class="setting-val-badge">{sliders.cfg}</span>
                   </div>
-                  <input
-                    type="range"
-                    min="1.0"
-                    max="7.0"
-                    step="0.1"
-                    bind:value={sliders.cfg}
-                    on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
-                    class="slider-input advanced-slider"
-                  />
-                  <div class="setting-subtext">
-                    <span>1.0 ({$_("krea_cfg_soft", {}, "Мягко")})</span>
-                    <span>1.5 ({$_("krea_realism", {}, "Реализм")})</span>
-                    <span>2.0 ({$_("krea_semi_realism", {}, "Полуреализм")})</span>
-                    <span>3.0 ({$_("krea_anima", {}, "Анима")})</span>
-                  </div>
+                  {#if studioEngineMode === "sdxl"}
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="2.2"
+                      step="0.1"
+                      bind:value={sliders.cfg}
+                      on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
+                      class="slider-input advanced-slider"
+                    />
+                    <div class="setting-subtext">
+                      <span>1.0 (DMD2)</span>
+                      <span>1.5</span>
+                      <span>2.0 (Max)</span>
+                    </div>
+                  {:else}
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="7.0"
+                      step="0.1"
+                      bind:value={sliders.cfg}
+                      on:input={() => { sliders = { ...sliders }; saveLocalSliders(sliders); }}
+                      class="slider-input advanced-slider"
+                    />
+                    <div class="setting-subtext">
+                      <span>1.0 ({$_("krea_cfg_soft", {}, "Мягко")})</span>
+                      <span>1.5 ({$_("krea_realism", {}, "Реализм")})</span>
+                      <span>2.0 ({$_("krea_semi_realism", {}, "Полуреализм")})</span>
+                      <span>3.0 ({$_("krea_anima", {}, "Анима")})</span>
+                    </div>
+                  {/if}
                 </div>
               </div>
 
               <div class="popup-menu-footer">
-                <span class="popup-count-hint">{$_("krea_model_label", {}, "Модель:")} {sliders.base_model === "sdxl" ? "SDXL DMD2" : (sliders.base_model === "anima" ? $_("krea_anima", {}, "Анима") : (sliders.base_model === "semi_realism" ? $_("krea_semi_realism", {}, "Полуреализм") : $_("krea_realism", {}, "Реализм")))}</span>
+                <span class="popup-count-hint">
+                  {$_("krea_model_label", {}, "Модель:")}
+                  {#if sliders.base_model === "sdxl_realistic"}
+                    Realistic (DMD2)
+                  {:else if sliders.base_model === "sdxl_perfect"}
+                    Perfect (DMD2)
+                  {:else if sliders.base_model === "sdxl_fantasy"}
+                    Fantasy (DMD2)
+                  {:else if sliders.base_model === "sdxl_tooned"}
+                    Tooned (DMD2)
+                  {:else if sliders.base_model === "anima"}
+                    {$_("krea_anima", {}, "Анима")}
+                  {:else if sliders.base_model === "semi_realism"}
+                    {$_("krea_semi_realism", {}, "Полуреализм")}
+                  {:else}
+                    {$_("krea_realism", {}, "Реализм")}
+                  {/if}
+                </span>
                 <button
                   type="button"
                   class="popup-done-btn"
@@ -5324,29 +5555,72 @@
     <!-- Sliders and Style Presets Panel -->
     {#if showSlidersPanel}
       <div class="sliders-panel" in:fade={{ duration: 120 }}>
-        <!-- Card 1: Base Model -->
+        <!-- Card 1: Base Model (Mode-dependent: SDXL Express vs DiT Studio) -->
         <div class="param-card model-card">
           <div class="model-pill-control">
             <div class="model-pill-header">
               <span>{$_("krea_base_model", {}, "Базовая модель")}</span>
               <span class="model-pill-hint">
-                {sliders.base_model === "sdxl" ? "SDXL DMD2" : (sliders.base_model === "anima" ? "Anima V1.1" : (sliders.base_model === "semi_realism" ? "Muse Yogi" : "CyberReal"))}
+                {#if sliders.base_model === "sdxl_realistic"}
+                  CyberRealistic XL
+                {:else if sliders.base_model === "sdxl_perfect"}
+                  CyberPony XL
+                {:else if sliders.base_model === "sdxl_fantasy"}
+                  Illustrious XL
+                {:else if sliders.base_model === "sdxl_tooned"}
+                  Pony Semi-Real
+                {:else if sliders.base_model === "anima"}
+                  Anima V1.1
+                {:else if sliders.base_model === "semi_realism"}
+                  Muse Yogi
+                {:else}
+                  CyberReal Krea 2
+                {/if}
               </span>
             </div>
             <div class="pill-toggle-wrapper">
-              {#if sdxlSupported !== false}
+              {#if studioEngineMode === "sdxl"}
                 <button
                   type="button"
                   class="pill-btn"
-                  class:active={sliders.base_model === "sdxl"}
-                  on:click={() => setBaseModel("sdxl")}
-                  title={$_("krea_sdxl_title", {}, "SDXL DMD2 — мгновенная генерация (~3 сек) с чекпоинтами CyberRealistic XL / Pony / Illustrious и классическими LoRA")}
+                  class:active={sliders.base_model === "sdxl_realistic" || sliders.base_model === "sdxl"}
+                  on:click={() => setBaseModel("sdxl_realistic")}
+                  title="Realistic (CyberRealistic XL) — живая фотография, естественный свет и фактура кожи"
                 >
-                  <span class="pill-icon">⚡</span>
-                  <span>SDXL</span>
+                  <span class="pill-icon">📸</span>
+                  <span>Realistic</span>
                 </button>
-              {/if}
-              {#if kreaSupported}
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "sdxl_perfect"}
+                  on:click={() => setBaseModel("sdxl_perfect")}
+                  title="Perfect (CyberPony XL) — выразительная пластика, яркие образы и сложные ракурсы"
+                >
+                  <span class="pill-icon">💎</span>
+                  <span>Perfect</span>
+                </button>
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "sdxl_fantasy"}
+                  on:click={() => setBaseModel("sdxl_fantasy")}
+                  title="Fantasy (CyberIllustrious XL) — фэнтези, аниме и художественная иллюстрация"
+                >
+                  <span class="pill-icon">🔮</span>
+                  <span>Fantasy</span>
+                </button>
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "sdxl_tooned"}
+                  on:click={() => setBaseModel("sdxl_tooned")}
+                  title="Tooned (CyberPony Semi-Real) — стилизованный 2.5D полуреализм"
+                >
+                  <span class="pill-icon">🎨</span>
+                  <span>Tooned</span>
+                </button>
+              {:else}
                 <button
                   type="button"
                   class="pill-btn"
@@ -5953,9 +6227,6 @@
       {#if directorTab === "prompt"}
         <!-- TAB 1: PROMPT CO-PILOT -->
         <div class="director-context-bar">
-          <span class="ctx-chip">
-            {sliders.base_model === "anima" ? "🌸 Anima" : (sliders.base_model === "semi_realism" ? "🎨 Muse" : "📸 Krea 2")}
-          </span>
           {#if selectedPersonas.length > 0}
             <span class="ctx-chip persona">👤 {selectedPersonas.map((p) => p.name).join(", ")}</span>
           {/if}
@@ -6486,10 +6757,13 @@
                   <div>
                     <label for="p-base-model" style="font-size: 11.5px; opacity: 0.85;">{$_("krea_base_engine", {}, "Базовая модель:")}</label>
                     <select id="p-base-model" bind:value={personaFormBaseModel} class="select-styled modal-input">
-                      <option value="sdxl">⚡ SDXL (Fast Local)</option>
-                      <option value="realism">Krea 2 Realism</option>
-                      <option value="semi_realism">Muse Semi-Realism</option>
-                      <option value="anima">Anima Aesthetic 2D</option>
+                      <option value="sdxl_realistic">⚡ Express · Realistic</option>
+                      <option value="sdxl_perfect">⚡ Express · Perfect</option>
+                      <option value="sdxl_fantasy">⚡ Express · Fantasy</option>
+                      <option value="sdxl_tooned">⚡ Express · Tooned</option>
+                      <option value="realism">🎬 Studio · Krea 2 Realism</option>
+                      <option value="semi_realism">🎬 Studio · Muse Semi-Realism</option>
+                      <option value="anima">🎬 Studio · Anima Aesthetic 2D</option>
                     </select>
                   </div>
                   <div style="padding-top: 14px;">
@@ -7372,6 +7646,40 @@
     margin: 0 auto;
   }
 
+  .loading-gallery {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 80px 20px;
+  }
+
+  .gallery-load-spinner {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 3px solid rgba(139, 92, 246, 0.2);
+    border-top-color: #8b5cf6;
+    animation: gallerySpin 0.8s linear infinite;
+  }
+
+  .krea-studio-root.light-theme .gallery-load-spinner {
+    border-color: rgba(99, 102, 241, 0.18);
+    border-top-color: #6366f1;
+  }
+
+  .loading-gallery-text {
+    margin: 0 !important;
+    font-size: 13.5px;
+    color: #94a3b8;
+  }
+
+  @keyframes gallerySpin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
   .empty-icon {
     font-size: 48px;
     margin-bottom: 12px;
@@ -7424,7 +7732,14 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    transition: all 0.2s;
+    transition: border-color 0.2s ease, transform 0.2s ease;
+    content-visibility: auto;
+    contain-intrinsic-size: 240px 360px;
+  }
+
+  .gallery-card.placeholder-card {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
   }
 
   /* Dynamic Generating Placeholder Card */
@@ -7608,23 +7923,73 @@
     display: block;
     aspect-ratio: 3 / 4;
     overflow: hidden;
-    background: #05070a;
+    background: linear-gradient(145deg, #161d2b 0%, #202b40 100%);
     cursor: pointer;
     position: relative;
+  }
+
+  .krea-studio-root.light-theme .gallery-card-thumb-wrap {
+    background: linear-gradient(145deg, #e2e8f0 0%, #f1f5f9 100%);
+  }
+
+  .gallery-card-thumb-wrap::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 2px solid rgba(148, 163, 184, 0.18);
+    border-top-color: rgba(167, 139, 250, 0.6);
+    opacity: 0;
+    animation: none;
+    pointer-events: none;
+    will-change: transform;
+  }
+
+  .krea-studio-root.light-theme .gallery-card-thumb-wrap::before {
+    border-color: rgba(100, 116, 139, 0.16);
+    border-top-color: rgba(99, 102, 241, 0.6);
+  }
+
+  .gallery-card-thumb-wrap.thumb-loading::before {
+    opacity: 1;
+    animation: gallerySpin 0.9s linear infinite;
+  }
+
+  .gallery-card-thumb-wrap.thumb-ready {
+    background: rgba(15, 23, 42, 0.4);
+  }
+
+  .krea-studio-root.light-theme .gallery-card-thumb-wrap.thumb-ready {
+    background: #f1f5f9;
+  }
+
+  .gallery-card-thumb-wrap.thumb-ready::before {
+    opacity: 0;
+    animation: none;
   }
 
   .gallery-thumb {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: transform 0.3s ease;
+    opacity: 0;
+    transition: opacity 0.24s ease, transform 0.3s ease;
+    position: relative;
+    z-index: 1;
+  }
+
+  .gallery-thumb.thumb-loaded {
+    opacity: 1;
   }
 
   .gallery-thumb[src=""] {
     opacity: 0;
   }
 
-  .gallery-card:hover .gallery-thumb {
+  .gallery-card:hover .gallery-thumb.thumb-loaded {
     transform: scale(1.03);
   }
 
@@ -10700,6 +11065,9 @@
   }
   .mode-toggle-btn .mode-icon {
     font-size: 0.95rem;
+  }
+  .mode-toggle-btn.locked {
+    opacity: 0.72;
   }
 
   .mode-text-short {

@@ -459,6 +459,8 @@ self.addEventListener('notificationclick', event => {
             if (extra.action_url) params.set('action_url', extra.action_url);
             if (extra.item_id) params.set('item_id', extra.item_id);
             if (extra.action_token) params.set('token', extra.action_token);
+            if (extra.node_link_id) params.set('node_link_id', extra.node_link_id);
+            if (extra.node_name) params.set('node_name', extra.node_name);
             if (extra.default_storage) params.set('storage', extra.default_storage);
             if (extra.filename) params.set('file', extra.filename);
             const targetUrl = '/?' + params.toString();
