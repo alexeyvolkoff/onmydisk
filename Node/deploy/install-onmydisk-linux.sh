@@ -4,16 +4,16 @@
 # ==============================================================================
 # Usage:
 #   # Typical install (Node + OnMyChat in P2P Agentic AI mode — no local GPU needed):
-#   curl -fsSL https://forge.bineon.team/repo/Linux/install-onmydisk.sh | bash -s -- --agentic
+#   curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash -s -- --agentic
 #
 #   # Workstation / server with NVIDIA GPU (Node + OnMyChat + local Ollama):
-#   curl -fsSL https://forge.bineon.team/repo/Linux/install-onmydisk.sh | bash -s -- --gpu
+#   curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash -s -- --gpu
 #
 #   # Storage-only P2P node:
-#   curl -fsSL https://forge.bineon.team/repo/Linux/install-onmydisk.sh | bash
+#   curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash
 #
 #   # Uninstall:
-#   curl -fsSL https://forge.bineon.team/repo/Linux/install-onmydisk.sh | bash -s -- --uninstall
+#   curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash -s -- --uninstall
 # ==============================================================================
 set -euo pipefail
 
@@ -25,7 +25,7 @@ NO_OLLAMA=0
 RKLLAMA=0
 UNINSTALL=0
 INFERENCE_NODE="auto"
-REPO_BASE="https://forge.bineon.team/repo"
+REPO_BASE="https://forge.onmydisk.net/repo"
 
 while [ $# -gt 0 ]; do
     case "$1" in

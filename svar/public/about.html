@@ -1004,7 +1004,7 @@
             </div>
             <div class="qs-cmd-box">
               <span class="qs-cmd-prompt" id="qs-cmd-prompt">$</span>
-              <code class="qs-cmd-code" id="qs-cmd-code" onclick="window.__selectQsCmd && window.__selectQsCmd(this)">curl -fsSL https://forge.bineon.team/repo/Linux/install-onmydisk.sh | bash -s -- --agentic</code>
+              <code class="qs-cmd-code" id="qs-cmd-code" onclick="window.__selectQsCmd && window.__selectQsCmd(this)">curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash -s -- --agentic</code>
               <button type="button" class="qs-copy-btn" id="qs-copy-btn">
                 <svg id="qs-copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 <span id="qs-copy-label" data-i18n="qs2_copy">Copy</span>
@@ -1104,11 +1104,11 @@
       function buildCmd(os, gpu) {
         if (os === "windows") {
           var wFlag = gpu ? "-Gpu" : "-Agentic";
-          return "& ([scriptblock]::Create((irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1))) " + wFlag;
+          return "& ([scriptblock]::Create((irm https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1))) " + wFlag;
         }
         var uFlag = gpu ? "--gpu" : "--agentic";
         var dir = os === "macos" ? "macOS" : "Linux";
-        return "curl -fsSL https://forge.bineon.team/repo/" + dir + "/install-onmydisk.sh | bash -s -- " + uFlag;
+        return "curl -fsSL https://forge.onmydisk.net/repo/" + dir + "/install-onmydisk.sh | bash -s -- " + uFlag;
       }
 
       function renderInstaller() {

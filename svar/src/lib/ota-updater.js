@@ -6,8 +6,8 @@ import { isIosNative } from './platform.js';
 
 const NativeStorage = registerPlugin('NativeStorage');
 
-const OTA_VERSION_URL = 'https://forge.bineon.team/repo/OnMyDisk/version.json';
-const OTA_BUNDLE_URL = 'https://forge.bineon.team/repo/OnMyDisk/Android/omd-frontend.zip';
+const OTA_VERSION_URL = 'https://forge.onmydisk.net/repo/OnMyDisk/version.json';
+const OTA_BUNDLE_URL = 'https://forge.onmydisk.net/repo/OnMyDisk/Android/omd-frontend.zip';
 const DEFAULT_VERSION = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_APP_VERSION) || '3.0.4823';
 
 async function getNativeAppVersion() {

@@ -13,17 +13,17 @@ AiServer base URL of the node - no client settings change needed.
 Run from PowerShell:
 
     # Typical laptop / PC without GPU (Node + Agentic AI):
-    & ([scriptblock]::Create((irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1))) -Agentic
+    & ([scriptblock]::Create((irm https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1))) -Agentic
 
     # PC with NVIDIA GPU (Node + Local GPU AI + Ollama):
-    & ([scriptblock]::Create((irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1))) -Gpu
+    & ([scriptblock]::Create((irm https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1))) -Gpu
 
     # Storage-only node:
-    irm https://forge.bineon.team/repo/Windows/install-onmydisk.ps1 | iex
+    irm https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1 | iex
 
 or for install/uninstall options:
 
-    curl.exe -fsSL https://forge.bineon.team/repo/Windows/install-onmydisk.ps1 -o install-onmydisk.ps1
+    curl.exe -fsSL https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1 -o install-onmydisk.ps1
     powershell -ExecutionPolicy Bypass -File .\install-onmydisk.ps1                # node only
     powershell -ExecutionPolicy Bypass -File .\install-onmydisk.ps1 -WithAi        # node + OnMyChat
     powershell -ExecutionPolicy Bypass -File .\install-onmydisk.ps1 -Uninstall     # uninstall
@@ -36,7 +36,7 @@ param(
     [switch]$NoOllama,
     [switch]$Agentic, # configure OnMyChat in P2P agentic mode (implies -WithAi -AiCpu -NoOllama)
     [string]$InferenceNode = "auto",
-    [string]$RepoBase = "https://forge.bineon.team/repo/Windows"
+    [string]$RepoBase = "https://forge.onmydisk.net/repo/Windows"
 )
 if ($Agentic) { $WithAi = $true; $AiCpu = $true; $NoOllama = $true }
 if ($Gpu)     { $WithAi = $true }
@@ -311,7 +311,7 @@ function Install-Ai {
         New-Item -ItemType Directory -Force -Path $UnifiedIndexDir | Out-Null
         $ChromaTar = Join-Path $TmpDir "chroma_omd.tar.gz"
         try {
-            Download "https://forge.bineon.team/repo/OnMyChat/chroma_omd.tar.gz" $ChromaTar
+            Download "https://forge.onmydisk.net/repo/OnMyChat/chroma_omd.tar.gz" $ChromaTar
             Run-Step "tar.exe" ('-xzf "' + $ChromaTar + '" -C "' + $UnifiedIndexDir + '"') | Out-Null
             if (Test-Path $ChromaTar) { Remove-Item $ChromaTar -Force }
         } catch {
@@ -326,7 +326,7 @@ function Install-Ai {
         New-Item -ItemType Directory -Force -Path $HfHubDir | Out-Null
         $ModelTar = Join-Path $TmpDir "sentence_model.tar.gz"
         try {
-            Download "https://forge.bineon.team/repo/OnMyChat/sentence_model.tar.gz" $ModelTar
+            Download "https://forge.onmydisk.net/repo/OnMyChat/sentence_model.tar.gz" $ModelTar
             Run-Step "tar.exe" ('-xzf "' + $ModelTar + '" -C "' + $HfHubDir + '"') | Out-Null
             if (Test-Path $ModelTar) { Remove-Item $ModelTar -Force }
         } catch {

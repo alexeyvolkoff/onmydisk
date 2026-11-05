@@ -50,7 +50,7 @@ build_openwrt_arm:
   - popd
   - echo 2.0 > debian-binary
   - tar czvf onmydisk_"2.1.5.$CI_PIPELINE_ID"_armhf.ipk  control.tar.gz data.tar.gz  debian-binary
-  - scp onmydisk_"2.1.5.$CI_PIPELINE_ID"_armhf.ipk repo@forge.bineon.team:/opt/repo/OpenWrt/onmydisk-latest-armhf.ipk
+  - scp onmydisk_"2.1.5.$CI_PIPELINE_ID"_armhf.ipk repo@forge.onmydisk.net:/opt/repo/OpenWrt/onmydisk-latest-armhf.ipk
   - popd
   tags:
   - arm
@@ -152,8 +152,8 @@ deploy_innbox:
   script:
   - pushd Node/router/opt/bin
   - echo "2.1.5.$CI_PIPELINE_ID" >> version
-  - scp onmydisk-* repo@forge.bineon.team:/opt/repo/InnBox/
-  - scp version repo@forge.bineon.team:/opt/repo/InnBox/version
+  - scp onmydisk-* repo@forge.onmydisk.net:/opt/repo/InnBox/
+  - scp version repo@forge.onmydisk.net:/opt/repo/InnBox/version
   - popd
   when: manual
   tags:
@@ -170,9 +170,9 @@ build_connector_amd64_deb:
   - docker run --rm --entrypoint bash --user $(id -u):$(id -g) -v "$(pwd)":/onmydisk -v /opt/omd-libdatachannel:/opt/omd-libdatachannel:ro onmydisk/omd-builder:latest -c "cd /onmydisk && mkdir -p build && cd build && qmake-qt5 CONFIG+=DEPLOY DEFINES+=_ISOC23_SOURCE=0 DEFINES+=P2P_ENABLED DEFINES+=RTC_STATIC LDATACHANNEL_ROOT=/opt/omd-libdatachannel/x86_64 BUILD_VERSION=$CI_PIPELINE_ID ../Node.pro && make"
   - pushd Node
   - fpm -s dir -t deb -a x86_64 -n onmydisk-connector --description "On My Disk Connector" --depends "samba,udisks2,libstdc++6,libgl1,libegl1,libglu1-mesa,libxcb-xkb1,libxcb-xinerama0,libxcb-xinput0,libz1,libxkbcommon0,libxkbcommon-x11-0,libxrender1,libtag1v5,libpcre2-16-0,libcrypt1,ffmpeg,ruby-full,build-essential,zlib1g-dev,libqt5core5a | libqt5core5t64,libqt5network5 | libqt5network5t64,libqt5websockets5,libqt5widgets5 | libqt5widgets5t64,libqt5sql5 | libqt5sql5t64,libqt5webchannel5,poppler-utils,pandoc,rclone" --license "Apache" -v "2.1.5.$CI_PIPELINE_ID" --after-install after-install.sh -C target
-  - scp onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_amd64.deb repo@forge.bineon.team:/opt/repo/Ubuntu/focal/onmydisk-connector-amd64.deb
-  - ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/Connector"
-  - scp -o StrictHostKeyChecking=no onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_amd64.deb repo@forge.bineon.team:/opt/repo/OnMyDisk/Connector/onmydisk-connector-amd64.deb
+  - scp onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_amd64.deb repo@forge.onmydisk.net:/opt/repo/Ubuntu/focal/onmydisk-connector-amd64.deb
+  - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/Connector"
+  - scp -o StrictHostKeyChecking=no onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_amd64.deb repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Connector/onmydisk-connector-amd64.deb
   - popd
   tags:
   - deb
@@ -201,9 +201,9 @@ build_connector_arm64_deb:
   - popd
   - pushd Node
   - fpm -s dir -t deb -a arm64 -n onmydisk-connector --description "On My Disk Connector" --depends "samba,udisks2,libstdc++6,libgl1,libegl1,libglu1-mesa,libxcb-xkb1,libxcb-xinerama0,libxcb-xinput0,libz1,libxkbcommon0,libxkbcommon-x11-0,libxrender1,libtag1v5,libpcre2-16-0,libcrypt1,ffmpeg,ruby-full,build-essential,zlib1g-dev,libqt5core5a | libqt5core5t64,libqt5network5 | libqt5network5t64,libqt5websockets5,libqt5widgets5 | libqt5widgets5t64,libqt5sql5 | libqt5sql5t64,libqt5webchannel5,poppler-utils,pandoc,rclone" --license "Apache" -v "2.1.5.$CI_PIPELINE_ID" --after-install after-install.sh -C target
-  - scp onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_arm64.deb repo@forge.bineon.team:/opt/repo/Ubuntu/focal/onmydisk-connector-arm64.deb
-  - ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/Connector"
-  - scp -o StrictHostKeyChecking=no onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_arm64.deb repo@forge.bineon.team:/opt/repo/OnMyDisk/Connector/onmydisk-connector-arm64.deb
+  - scp onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_arm64.deb repo@forge.onmydisk.net:/opt/repo/Ubuntu/focal/onmydisk-connector-arm64.deb
+  - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/Connector"
+  - scp -o StrictHostKeyChecking=no onmydisk-connector_"2.1.5.$CI_PIPELINE_ID"_arm64.deb repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Connector/onmydisk-connector-arm64.deb
   - popd
   tags:
   - deb
@@ -218,9 +218,9 @@ deploy_connector_ota:
   tags:
     - linux
   script:
-    - ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/Connector"
+    - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/Connector"
     - |
-      ssh -o StrictHostKeyChecking=no repo@forge.bineon.team bash -c "'
+      ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net bash -c "'
         cd /opt/repo/OnMyDisk/Connector
         AMD64_SHA=\$(sha256sum onmydisk-connector-amd64.deb 2>/dev/null | cut -d\" \" -f1 || echo \"\")
         ARM64_SHA=\$(sha256sum onmydisk-connector-arm64.deb 2>/dev/null | cut -d\" \" -f1 || echo \"\")
@@ -231,15 +231,15 @@ deploy_connector_ota:
         \"build\": ${CI_PIPELINE_ID},
         \"packages\": {
           \"x86_64\": {
-            \"url\": \"https://forge.bineon.team/repo/OnMyDisk/Connector/onmydisk-connector-amd64.deb\",
+            \"url\": \"https://forge.onmydisk.net/repo/OnMyDisk/Connector/onmydisk-connector-amd64.deb\",
             \"sha256\": \"\$AMD64_SHA\"
           },
           \"aarch64\": {
-            \"url\": \"https://forge.bineon.team/repo/OnMyDisk/Connector/onmydisk-connector-arm64.deb\",
+            \"url\": \"https://forge.onmydisk.net/repo/OnMyDisk/Connector/onmydisk-connector-arm64.deb\",
             \"sha256\": \"\$ARM64_SHA\"
           },
           \"armv7l\": {
-            \"url\": \"https://forge.bineon.team/repo/OnMyDisk/Connector/onmydisk-connector-armhf.deb\",
+            \"url\": \"https://forge.onmydisk.net/repo/OnMyDisk/Connector/onmydisk-connector-armhf.deb\",
             \"sha256\": \"\$ARMHF_SHA\"
           }
         }
@@ -479,7 +479,7 @@ build_tunnel_deb:
   stage: build
   script:
   - ./omd-tunnel/deploy/build-deb.sh
-  - scp build-deb/omd-tunnel_*.deb repo@forge.bineon.team:/opt/repo/Ubuntu/focal/omd-tunnel-amd64.deb
+  - scp build-deb/omd-tunnel_*.deb repo@forge.onmydisk.net:/opt/repo/Ubuntu/focal/omd-tunnel-amd64.deb
   variables:
     OMD_TUNNEL_P2P_REQUIRED: "1"
   tags:
@@ -497,7 +497,7 @@ build_tunnel_mxe:
   script:
   - export PATH=/opt/mxe/usr/bin:$PATH
   - ./omd-tunnel/deploy/build-windows-mxe.sh
-  - scp bin/omd-tunnel.exe repo@forge.bineon.team:/opt/repo/Windows/omd-tunnel-x64.exe
+  - scp bin/omd-tunnel.exe repo@forge.onmydisk.net:/opt/repo/Windows/omd-tunnel-x64.exe
   variables:
     OMD_TUNNEL_P2P_REQUIRED: "1"
   tags:
@@ -518,10 +518,9 @@ build_node_mxe:
   - ./Node/deploy/build-windows-embedded-mxe.sh
   - cp Node/deploy/install-onmydisk.ps1 run/etc/config/onmydisk.conf bin/
   - |-
-    # git.bineon.team serves a cert for forge.bineon.team (SSL mismatch),
-    # so clone via the host GitLab is actually served from
+    # Clone OnMyChat directly from forge.onmydisk.net
     git clone --depth 1 \
-        "https://gitlab-ci-token:${CI_JOB_TOKEN}@forge.bineon.team/onmydisk/onmychat.git" \
+        "https://gitlab-ci-token:${CI_JOB_TOKEN}@forge.onmydisk.net/onmydisk/onmychat.git" \
         onmychat-src
     ./Node/deploy/package-onmychat-win.sh onmychat-src bin/onmychat-latest.zip
   # publish from the same runner that has repo@forge keys (same as build_tunnel_mxe)
@@ -529,22 +528,22 @@ build_node_mxe:
   - |-
     scp -o StrictHostKeyChecking=accept-new \
         bin/onmydisk.exe \
-        repo@forge.bineon.team:/opt/repo/Windows/onmydisk-node-latest-x64.exe
+        repo@forge.onmydisk.net:/opt/repo/Windows/onmydisk-node-latest-x64.exe
   - |-
     scp -o StrictHostKeyChecking=accept-new \
         bin/install-onmydisk.ps1 \
         bin/onmydisk.conf \
-        repo@forge.bineon.team:/opt/repo/Windows/
+        repo@forge.onmydisk.net:/opt/repo/Windows/
   - 'echo "== PUBLISH 2/3 - onmychat zip"'
   - |-
     if [ -f bin/onmychat-latest.zip ]; then
       scp -o StrictHostKeyChecking=accept-new \
           bin/onmychat-latest.zip \
-          repo@forge.bineon.team:/opt/repo/Windows/
+          repo@forge.onmydisk.net:/opt/repo/Windows/
     fi
   - 'echo "== PUBLISH 3/3 - verify files on server (job fails if missing)"'
   - |-
-    ssh -o StrictHostKeyChecking=accept-new repo@forge.bineon.team \
+    ssh -o StrictHostKeyChecking=accept-new repo@forge.onmydisk.net \
         "ls -la /opt/repo/Windows/ | grep -E 'onmydisk-node-latest-x64|install-onmydisk\.ps1|onmydisk\.conf|onmychat'"
   cache:
     key: libdatachannel-build-mxe
@@ -621,8 +620,8 @@ build-android:
     # 6. Copy final APK to OnMyDisk.apk
     - cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/OnMyDisk.apk
     # 7. Upload to central binary repository
-    - ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/Android"
-    - scp -o StrictHostKeyChecking=no android/app/build/outputs/apk/debug/OnMyDisk.apk repo@forge.bineon.team:/opt/repo/OnMyDisk/Android/OnMyDisk.apk
+    - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/Android"
+    - scp -o StrictHostKeyChecking=no android/app/build/outputs/apk/debug/OnMyDisk.apk repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Android/OnMyDisk.apk
   artifacts:
     paths:
       - mobile/android/app/build/outputs/apk/debug/OnMyDisk.apk
@@ -661,8 +660,8 @@ build-ios:
             mkdir -p build_ios
             curl -s -L "$IPA_URL" -o build_ios/OnMyDisk.ipa
             echo "Downloaded IPA to build_ios/OnMyDisk.ipa"
-            ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/iOS" || true
-            scp -o StrictHostKeyChecking=no build_ios/OnMyDisk.ipa repo@forge.bineon.team:/opt/repo/OnMyDisk/iOS/OnMyDisk.ipa || true
+            ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/iOS" || true
+            scp -o StrictHostKeyChecking=no build_ios/OnMyDisk.ipa repo@forge.onmydisk.net:/opt/repo/OnMyDisk/iOS/OnMyDisk.ipa || true
           else
             echo "ERROR: Codemagic finished without producing an IPA artifact! Check logs: https://codemagic.io/app/6abe4c845eb3cd34fe4cc074/build/$BUILD_ID"
             exit 1
@@ -701,11 +700,11 @@ deploy_mobile_ota:
     - zip -r ../../omd-frontend.zip . -x "*.map" -x "*tracemonkey*" -x "wordcraft/*" -x "deckcraft/*" -x "gridcraft/*"
     - cd ../..
     # 4. Upload zip to central binary repository for live updates
-    - ssh -o StrictHostKeyChecking=no repo@forge.bineon.team "mkdir -p /opt/repo/OnMyDisk/Android"
-    - scp -o StrictHostKeyChecking=no omd-frontend.zip repo@forge.bineon.team:/opt/repo/OnMyDisk/Android/omd-frontend.zip
+    - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/Android"
+    - scp -o StrictHostKeyChecking=no omd-frontend.zip repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Android/omd-frontend.zip
     # 5. Generate and upload version.json for OTA live update check
     - echo "{\"version\":\"3.0.${CI_PIPELINE_IID}\"}" > version.json
-    - scp -o StrictHostKeyChecking=no version.json repo@forge.bineon.team:/opt/repo/OnMyDisk/version.json
-    - scp -o StrictHostKeyChecking=no version.json repo@forge.bineon.team:/opt/repo/OnMyDisk/Android/version.json
+    - scp -o StrictHostKeyChecking=no version.json repo@forge.onmydisk.net:/opt/repo/OnMyDisk/version.json
+    - scp -o StrictHostKeyChecking=no version.json repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Android/version.json
   when: manual
 
