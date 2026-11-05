@@ -172,12 +172,44 @@ Manage your remote machines and developer workspaces straight from any browser w
 
 ## Quick Start
 
-### Deploy your own gateway
+For most laptops, desktops, and mini-PCs, run **one command** to install the **On My Disk 3.0 Node** together with **[On My Chat](https://github.com/alexeyvolkoff/onmychat)** in **Agentic AI mode**. Your files and private RAG knowledge index stay **100% on your device**, while heavy LLM & image generation runs automatically over encrypted P2P on a remote GPU:
 
-Our GitLab CI builds the web client, compiles the gateway and publishes the Docker image as
+**🐧 Linux (`Ubuntu / Debian / Armbian`)**
+
+```bash
+curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash -s -- --agentic
+```
+
+**🪟 Windows 10 / 11 (`PowerShell` — per-user, no Administrator rights needed)**
+
+```powershell
+& ([scriptblock]::Create((irm https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1))) -Agentic
+```
+
+**🍎 macOS (`Terminal`, Apple Silicon — per-user, no `sudo` needed)**
+
+```bash
+curl -fsSL https://forge.onmydisk.net/repo/macOS/install-onmydisk.sh | bash -s -- --agentic
+```
+
+> [!TIP]
+> **Have a GPU? Run Full Local AI:** Replace `--agentic` with **`--gpu`** (Linux / macOS Apple Silicon) or `-Agentic` with **`-Gpu`** (Windows NVIDIA GPU) to install **Ollama** locally and run all LLM inference directly on your own hardware (`AI_PROVIDER = local`).
+
+> [!NOTE]
+> **Storage-Only Node (No AI):** Need only P2P file sharing and remote SSH access without **On My Chat**? Run the basic installer instead:
+> - **Linux:** `curl -fsSL https://forge.onmydisk.net/repo/Linux/install-onmydisk.sh | bash`
+> - **Windows (`PowerShell`):** `irm https://forge.onmydisk.net/repo/Windows/install-onmydisk.ps1 | iex`
+> - **macOS:** `curl -fsSL https://forge.onmydisk.net/repo/macOS/install-onmydisk.sh | bash`
+
+**After installation:** Sign in at [**direct.onmydisk.net**](https://direct.onmydisk.net) and connect your device from **Settings → Devices** (or open the local claim page at `http://localhost:8081` on Windows/macOS, `http://localhost/` on Linux). For OpenWrt routers, manual `.deb` packages, and detailed operating modes, see the [Node Deployment Guide](https://onmydisk.org/advanced/).
+
+## Advanced Setup: Deploy Your Own Isolated Gateway
+
+If you want a **completely self-contained, isolated private network** — for an organization, lab, or sovereign home setup with zero dependency on the public `direct.onmydisk.net` coordinator — you can host the entire signaling and identity stack yourself.
+
+Our CI builds the web client, compiles the gateway, and publishes the Docker image as
 `onmydisk/onmydisk:direct` — the web client is baked into the image, so no local
-build is needed. The GunDB relay (`gun-hub`) is part of the same compose, so one
-command brings up the whole gateway stack:
+build is needed. The GunDB relay (`gun-hub`) and TURN server (`coturn`) are part of the same Compose stack, so one command brings up a fully independent deployment:
 
 ```bash
 git clone https://github.com/alexeyvolkoff/onmydisk.git
@@ -185,13 +217,11 @@ cd onmydisk
 docker compose up -d
 ```
 
-- Gateway: `http://localhost:8080` (data, PKI and logs live under `srvconf/`,
-  `bin/`, `www/`, `logs/`).
-- GunDB relay: `http://localhost:8765` (data lives under `gun-hub/data/`).
-- coturn TURN server: port `3478` (config in `coturn/turnserver.conf`).
+- **Gateway & Web Client:** `http://localhost:8080` (data, PKI, and logs live under `srvconf/`, `bin/`, `www/`, `logs/`).
+- **GunDB DID Relay (`gun-hub`):** `http://localhost:8765` (data lives under `gun-hub/data/`).
+- **coturn TURN Server:** port `3478` (config in `coturn/turnserver.conf`).
 
-To update only the relay, use the `deploy_gun_hub` CI job (or rebuild the
-`omd-gun-hub` service locally).
+Point your storage nodes to your custom gateway host in `onmydisk.conf`, and your entire P2P cloud operates inside your own infrastructure. To update only the relay, use the `deploy_gun_hub` CI job (or rebuild the `omd-gun-hub` service locally).
 
 ### Optional: peer replication between hubs
 
@@ -200,7 +230,7 @@ Set `GUN_PEERS` (comma-separated list of other hub URLs, e.g.
 GunDB replication between instances. Leave it empty for a standalone hub.
 For clustered setups also set the same `DELETE_TOKEN_SECRET` on every instance.
 
-### Build from source
+## Building from Source
 
 Prerequisites: Qt 5.15 (qtbase, webchannel, websockets, xmlpatterns, svg),
 a C++17 compiler, and optionally [libdatachannel](https://github.com/paullouisageneau/libdatachannel)
