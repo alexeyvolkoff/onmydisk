@@ -271,6 +271,7 @@ export function createWebRTCTransport(targetLinkId, signalingUrl = '/api/signali
             drive = new WebRTCDataChannelDrive(targetLinkId, signalingUrl, port, '');
             // One-shot tunnel per request - never auto-reconnect
             drive.autoReconnectEnabled = false;
+            let disconnected = false;
             drive.onRawMessage = (data) => {
                 let bytes = null;
                 if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
@@ -278,13 +279,21 @@ export function createWebRTCTransport(targetLinkId, signalingUrl = '/api/signali
                 if (bytes) onData(bytes);
             };
             drive.onStatusChange = (status) => {
-                if (status === 'disconnected') onClose();
+                if (status === 'disconnected' || status === 'error') {
+                    disconnected = true;
+                    onClose();
+                }
             };
             await drive.connect();
             const deadline = Date.now() + timeoutMs;
             while (Date.now() < deadline) {
                 if (drive.dc && drive.dc.readyState === 'open') return;
-                await sleep(100);
+                if (disconnected || drive._disposed || (!drive.pc && !drive._isConnecting && !drive.isConnected)) {
+                    try { drive.disconnect(); } catch (_) {}
+                    drive = null;
+                    throw new Error('Target node offline or unreachable');
+                }
+                await sleep(40);
             }
             try { drive.disconnect(); } catch (_) {}
             drive = null;
@@ -663,7 +672,7 @@ export class HttpDrive {
         });
     }
 
-    async _acquire() {
+    async _acquire(connectTimeoutMs = 0) {
         if (this.closed) throw new Error('HttpDrive closed');
         const idleConn = this.idle.pop();
         if (idleConn) {
@@ -671,11 +680,12 @@ export class HttpDrive {
             idleConn.destroy();
             this.total--;
         }
+        const effTimeout = connectTimeoutMs > 0 ? connectTimeoutMs : this.connectTimeoutMs;
         if (this.total < this.maxConns) {
             this.total++;
             const conn = this._newConn();
             try {
-                await conn.open(this.connectTimeoutMs);
+                await conn.open(effTimeout);
             } catch (e) {
                 conn.destroy();
                 this.total--;
@@ -683,7 +693,7 @@ export class HttpDrive {
             }
             return conn;
         }
-        return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
+        return new Promise((resolve, reject) => this.waiters.push({ resolve, reject, connectTimeoutMs: effTimeout }));
     }
 
     _pump() {
@@ -703,7 +713,7 @@ export class HttpDrive {
                 this.total++;
                 const conn = this._newConn();
                 conn
-                    .open(this.connectTimeoutMs)
+                    .open(w.connectTimeoutMs || this.connectTimeoutMs)
                     .then(() => w.resolve(conn))
                     .catch((e) => {
                         conn.destroy();
@@ -748,7 +758,7 @@ export class HttpDrive {
         const bodyBytes = await encodeBody(init.body);
 
         for (let attempt = 0; ; attempt++) {
-            const conn = await this._acquire();
+            const conn = await this._acquire(init.connectTimeoutMs || 0);
             const wasReused = conn.reuseCount > 0;
             try {
                 return await conn.request(method, path, headers, bodyBytes, {

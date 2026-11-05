@@ -552,7 +552,7 @@
     id: s.id,
     label: (s.icon ? s.icon + " " : "") + (s.id === "none" ? $_("krea_style_none", {}, s.name) : s.name),
     name: s.id === "none" ? $_("krea_style_none", {}, s.name) : s.name,
-    desc: s.id === "none" ? $_("krea_style_none_desc", {}, s.description) : s.description,
+    desc: s.id === "none" ? $_("krea_style_none_desc", {}, s.description) : $_(`krea_preset_desc_${s.id}`, {}, s.description),
     trigger: s.trigger,
     lora: s.filename,
     strength: s.strength
@@ -567,7 +567,7 @@
     id: a.id,
     label: (a.icon ? a.icon + " " : "") + a.name,
     name: a.name,
-    desc: a.description,
+    desc: $_(`krea_preset_desc_${a.id}`, {}, a.description),
     trigger: a.trigger,
     lora: a.filename,
     strength: a.strength
@@ -696,6 +696,9 @@
   let attachedReferences = []; // [{ id, name, path, preview, dataUrl }]
   let refFileInputEl = null;
   let isUploadingRef = false;
+  let sdxlRefMode = "faceswap"; // "faceswap" | "inpaint"
+  let sdxlFaceTarget = "auto"; // "auto" | "left" | "right" | "second"
+  let sdxlInpaintTarget = "outfit"; // "outfit" | "background" | "person"
 
   // Prompt History
   let showPromptsPopup = false;
@@ -807,16 +810,19 @@
   // Confirmation Modal state
   let deleteConfirmTarget = null;
   let isDeletingItem = false;
-  $: aiArchetypes = (kreaPresets.archetypes || []).map((a) => ({
-    id: a.id,
-    name: (a.icon ? a.icon + " " : "") + a.name,
-    rawName: a.name,
-    title: a.title || `${a.name} / ${a.description}`,
-    hint: a.description + (a.filename ? " (LoRA)" : ""),
-    trigger: a.trigger || "",
-    icon: a.icon || "👤",
-    lora: a.filename || ""
-  }));
+  $: aiArchetypes = (kreaPresets.archetypes || []).map((a) => {
+    const locDesc = $_(`krea_preset_desc_${a.id}`, {}, a.description);
+    return {
+      id: a.id,
+      name: (a.icon ? a.icon + " " : "") + a.name,
+      rawName: a.name,
+      title: a.title || `${a.name} / ${locDesc}`,
+      hint: locDesc + (a.filename ? " (LoRA)" : ""),
+      trigger: a.trigger || "",
+      icon: a.icon || "👤",
+      lora: a.filename || ""
+    };
+  });
   $: if (!aiFactoryArchetype && aiArchetypes.length > 0) {
     aiFactoryArchetype = aiArchetypes[0].id;
   }
@@ -2655,13 +2661,13 @@
             base_model: sliders.base_model || "realism",
             persona_name: selectedPersonas.map((p) => p.name).join(", "),
             persona_prompt: selectedPersonas.map((p) => p.prompt || p.passport || "").join("; "),
-            warmup_gpu: true,
+            warmup_gpu: !isSdxlModel(sliders.base_model),
             mcp_keys: mcpPayloadPre,
             settings: { platform: getClientPlatform(), language: $locale || "ru", mcp_keys: mcpPayloadPre }
           })
         });
         if (!preRes || !preRes.ok) {
-          let errMsg = preRes ? `HTTP ${preRes.status}` : "Нет ответа от сервера";
+          let errMsg = preRes ? `HTTP ${preRes.status}` : $_("krea_err_no_response", {}, "No response from server");
           if (preRes) {
             try {
               const ed = await preRes.json();
@@ -2717,12 +2723,13 @@
     generatingPrompt = cleanPrompt || selectedPersonas.map((p) => p.name).join(", ");
     generatingPersona = selectedPersonas.map((p) => p.name).join(", ");
     
-    // Start in "warming" until ComfyUI actually finishes loading models/LoRAs and enters KSampler:
+    const isLocalSdxlGen = isSdxlModel(sliders.base_model);
     const now = Date.now();
     const warm = gpuWarmUntil > now;
     isGpuWarm = warm;
-    generatingStage = "warming";
-    warmingPhase = warm ? "loading_models" : "booting";
+    // Local SDXL has no cloud GPU wakeup — start directly in "generating"
+    generatingStage = isLocalSdxlGen ? "generating" : "warming";
+    warmingPhase = isLocalSdxlGen ? "loading_models" : (warm ? "loading_models" : "booting");
     generatingStep = 0;
     generatingTotalSteps = 0;
 
@@ -2780,7 +2787,14 @@
         archetype_weights: sliders.archetype_weights || {},
         archetype_strength: sliders.archetype_strength,
         steps: sliders.steps || (sliders.base_model === "anima" ? 25 : 12),
-        cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0))
+        cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0)),
+        ...(isLocalSdxlGen && resolvedRefImages.length > 0
+          ? {
+              sdxl_ref_mode: sdxlRefMode || "faceswap",
+              sdxl_face_target: sdxlFaceTarget || "auto",
+              sdxl_inpaint_target: sdxlInpaintTarget || "outfit"
+            }
+          : {})
       },
       width,
       height,
@@ -2829,7 +2843,7 @@
         requestHeaders["X-OMD-Private-Mode"] = "1";
       }
 
-      // 1. Через P2P-туннель к ноде (httpDrive)
+      // 1. Via P2P tunnel to node (httpDrive)
       if (httpDrive && typeof httpDrive.fetch === "function") {
         try {
           res = await httpDrive.fetch("/generate/krea2", {
@@ -2840,10 +2854,10 @@
             timeoutMs: 180000
           });
         } catch (driveErr) {
-          throw new Error(`Ошибка P2P-связи с нодой: ${driveErr.message || driveErr}. Пожалуйста, обновите страницу (F5).`);
+          throw new Error($_("krea_err_p2p_node", { err: driveErr.message || driveErr }, `P2P node connection error: ${driveErr.message || driveErr}. Please reload the page (F5).`));
         }
       } else {
-        // 2. Прямой HTTP-запрос (только если приложение запущено без P2P-драйва)
+        // 2. Direct HTTP request (fallback when running without P2P drive)
         res = await fetch("/generate/krea2", {
           method: "POST",
           headers: requestHeaders,
@@ -2853,7 +2867,7 @@
       }
 
       if (!res || !res.ok) {
-        let errDetail = res ? `HTTP ${res.status}` : "Нет ответа от сервера";
+        let errDetail = res ? `HTTP ${res.status}` : $_("krea_err_no_response", {}, "No response from server");
         if (res) {
           try {
             const errData = await res.json();
@@ -2883,14 +2897,20 @@
           }
           if (!evt || typeof evt !== "object") return;
           if (evt.type === "progress") {
-            if (evt.stage) generatingStage = evt.stage;
+            if (evt.stage) {
+              const nextStage = (isLocalSdxlGen && evt.stage === "warming") ? "generating" : evt.stage;
+              const stageRank = { warming: 0, generating: 1, saving: 2 };
+              if ((stageRank[nextStage] ?? 0) >= (stageRank[generatingStage] ?? 0)) {
+                generatingStage = nextStage;
+              }
+            }
             if (evt.phase) warmingPhase = evt.phase;
             if (typeof evt.step === "number") generatingStep = evt.step;
             if (typeof evt.total_steps === "number" && evt.total_steps > 0) generatingTotalSteps = evt.total_steps;
           } else if (evt.type === "result" && evt.data) {
             data = evt.data;
           } else if (evt.type === "error") {
-            throw new Error(evt.detail || "Ошибка генерации");
+            throw new Error(evt.detail || $_("krea_err_generation", {}, "Generation failed"));
           }
         };
 
@@ -2910,7 +2930,7 @@
           handleStreamLine(streamBuf);
         }
         if (!data) {
-          throw new Error("Поток генерации завершился без результата");
+          throw new Error($_("krea_err_empty_stream", {}, "Generation stream ended without a result"));
         }
       } else {
         data = await res.json();
@@ -3406,7 +3426,7 @@
   async function openPublishStoryToCivitai() {
     const renderedScenes = (storyScenes || []).filter((s) => s.image_name);
     if (renderedScenes.length === 0) {
-      alert("Сначала отснимите хотя бы один кадр истории для публикации.");
+      alert($_("civitai_err_no_scenes", {}, "Please shoot at least one story frame before publishing."));
       return;
     }
     await persistCurrentStory(true).catch(() => {});
@@ -3440,7 +3460,7 @@
     if (isPublishingCivitai || !civitaiPubItems.length) return;
     const rawCustomTok = civitaiPubCustomToken.trim();
     if (civitaiPubAccountId === "custom" && !rawCustomTok) {
-      civitaiPubError = "Введите API-ключ CivitAI (или добавьте его в Настройках → MCP API Keys).";
+      civitaiPubError = $_("civitai_err_missing_token", {}, "Enter a CivitAI API key (or add one in Settings → MCP API Keys).");
       return;
     }
     isPublishingCivitai = true;
@@ -3918,7 +3938,7 @@
       });
 
       if (!res || !res.ok) {
-        let errTxt = res ? `HTTP ${res.status}` : "Нет ответа от сервера";
+        let errTxt = res ? `HTTP ${res.status}` : $_("krea_err_no_response", {}, "No response from server");
         if (res) {
           try {
             const ed = await res.json();
@@ -3943,7 +3963,7 @@
         {
           id: "da_" + Date.now(),
           role: "assistant",
-          text: data.reply || "Промпт обновлён!",
+          text: data.reply || $_("krea_dir_prompt_updated", {}, "Prompt updated!"),
           promptSnapshot: (data.prompt || promptText || "").trim(),
           appliedSettings: data.applied_settings || null
         }
@@ -3965,7 +3985,7 @@
           id: "de_" + Date.now(),
           role: "assistant",
           isError: true,
-          text: `Ошибка: ${err.message || err}`
+          text: $_("krea_dir_error_prefix", { err: err.message || err }, `Error: ${err.message || err}`)
         }
       ];
     } finally {
@@ -4018,7 +4038,7 @@
   async function planOrContinueStory(mode = "plan") {
     if (isPlanningStory) return;
     if (mode === "plan" && !storySetting.trim() && !storyIdea.trim()) {
-      alert("Опишите сеттинг или идею истории в двух словах.");
+      alert($_("krea_story_err_empty_idea", {}, "Briefly describe the setting or story idea."));
       return;
     }
     isPlanningStory = true;
@@ -4060,7 +4080,7 @@
       });
 
       if (!res || !res.ok) {
-        let errTxt = res ? `HTTP ${res.status}` : "Нет ответа от сервера";
+        let errTxt = res ? `HTTP ${res.status}` : $_("krea_err_no_response", {}, "No response from server");
         if (res) {
           try {
             const ed = await res.json();
@@ -4078,7 +4098,7 @@
       const mappedNew = (data.scenes || []).map((sc, i) => ({
         id: `sc_${Date.now()}_${i}`,
         scene_number: sc.scene_number || ((mode === "continue" ? storyScenes.length : 0) + i + 1),
-        title: sc.title || `Сцена ${i + 1}`,
+        title: sc.title || $_("krea_story_scene_num", { num: i + 1 }, `Scene ${i + 1}`),
         narrative: sc.narrative || "",
         visual_prompt: sc.visual_prompt || "",
         aspect: sc.aspect || sliders.aspect || "896x1152",
@@ -4103,7 +4123,7 @@
       saveActiveDraftStoryToLocal();
       await persistCurrentStory(true);
     } catch (err) {
-      alert(`Ошибка планирования сценария: ${err.message || err}`);
+      alert($_("krea_story_err_plan", { err: err.message || err }, `Failed to plan storyboard: ${err.message || err}`));
     } finally {
       isPlanningStory = false;
     }
@@ -4137,7 +4157,7 @@
           settings: { language: $locale || "ru", mcp_keys: mcpPayload }
         })
       });
-      if (!res || !res.ok) throw new Error(res ? `HTTP ${res.status}` : "Ошибка сети");
+      if (!res || !res.ok) throw new Error(res ? `HTTP ${res.status}` : $_("krea_err_network", {}, "Network error"));
       const data = await res.json();
       if (data && data.scene) {
         storyScenes[idx] = {
@@ -4153,7 +4173,7 @@
         saveActiveDraftStoryToLocal();
       }
     } catch (err) {
-      alert(`Не удалось обновить сцену: ${err.message || err}`);
+      alert($_("krea_story_err_refine", { err: err.message || err }, `Failed to update scene: ${err.message || err}`));
     } finally {
       refiningSceneIdx = -1;
     }
@@ -4173,7 +4193,7 @@
       {
         id: `sc_${Date.now()}_${nextNum}`,
         scene_number: nextNum,
-        title: `Сцена ${nextNum}`,
+        title: $_("krea_story_scene_num", { num: nextNum }, `Scene ${nextNum}`),
         narrative: "",
         visual_prompt: "",
         aspect: sliders.aspect || "896x1152",
@@ -4198,7 +4218,7 @@
       const baseStorage = getBaseStorage();
       const cleanScenes = storyScenes.map((s, i) => ({
         scene_number: s.scene_number || i + 1,
-        title: s.title || `Сцена ${i + 1}`,
+        title: s.title || $_("krea_story_scene_num", { num: i + 1 }, `Scene ${i + 1}`),
         narrative: s.narrative || "",
         visual_prompt: s.visual_prompt || "",
         aspect: s.aspect || "896x1152",
@@ -4211,7 +4231,7 @@
         headers: buildAuthHeaders(),
         body: JSON.stringify({
           omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
-          story_title: storyTitle.trim() || "Новая история",
+          story_title: storyTitle.trim() || $_("krea_story_default_title", {}, "New Story"),
           story_slug: storySlug.trim(),
           setting: storySetting.trim(),
           personas: selectedPersonas.map((p) => ({ id: p.id, name: p.name, title: p.title || "", prompt: p.prompt || "" })),
@@ -4249,7 +4269,7 @@
           const list = JSON.parse(localStorage.getItem("krea_saved_stories_v1") || "[]");
           const entry = {
             story_slug: data.story_slug,
-            story_title: storyTitle.trim() || "Новая история",
+            story_title: storyTitle.trim() || $_("krea_story_default_title", {}, "New Story"),
             setting: storySetting.trim(),
             scene_count: cleanScenes.length,
             updated_at: new Date().toISOString(),
@@ -4263,7 +4283,7 @@
         return data;
       }
     } catch (err) {
-      if (!silent) alert(`Ошибка сохранения истории: ${err.message || err}`);
+      if (!silent) alert($_("krea_story_err_save", { err: err.message || err }, `Failed to save story: ${err.message || err}`));
     } finally {
       isSavingStory = false;
     }
@@ -4310,7 +4330,7 @@
       return {
         id: `sc_${Date.now()}_${i}`,
         scene_number: sc.scene_number || i + 1,
-        title: sc.title || `Сцена ${i + 1}`,
+        title: sc.title || $_("krea_story_scene_num", { num: i + 1 }, `Scene ${i + 1}`),
         narrative: sc.narrative || "",
         visual_prompt: sc.visual_prompt || "",
         aspect: sc.aspect || "896x1152",
@@ -4367,7 +4387,7 @@
     const sc = storyScenes[idx];
     if (!sc || isGenerating) return false;
     if (!sc.visual_prompt || !sc.visual_prompt.trim()) {
-      alert("У этой сцены пустой визуальный промпт.");
+      alert($_("krea_story_err_empty_vprompt", {}, "This scene has an empty visual prompt."));
       return false;
     }
 
@@ -4384,7 +4404,7 @@
     storyScenes = [...storyScenes];
 
     const padNum = String(sc.scene_number || idx + 1).padStart(2, "0");
-    const sceneHeader = `${sc.scene_number || idx + 1}. ${sc.title || `Сцена ${idx + 1}`}`;
+    const sceneHeader = `${sc.scene_number || idx + 1}. ${sc.title || $_("krea_story_scene_num", { num: idx + 1 }, `Scene ${idx + 1}`)}`;
     const item = await runGeneration({
       prompt: sc.visual_prompt,
       aspect: sc.aspect || sliders.aspect || "896x1152",
@@ -4420,7 +4440,7 @@
       .map((s, idx) => (!s.image_name ? idx : -1))
       .filter((idx) => idx >= 0);
     if (pendingIndices.length === 0) {
-      alert("Все сцены уже отсняты! Вы можете переснять любую карточку кнопкой 🔄 или продолжить историю.");
+      alert($_("krea_story_all_shot", {}, "All scenes are already shot! You can reshoot any card with 🔄 or continue the story."));
       return;
     }
 
@@ -4505,7 +4525,7 @@
         setTimeout(() => URL.revokeObjectURL(dlUrl), 5000);
       }
     } catch (err) {
-      alert(`Ошибка экспорта серии: ${err.message || err}`);
+      alert($_("krea_story_err_export", { err: err.message || err }, `Failed to export story pack: ${err.message || err}`));
     } finally {
       isExportingStory = false;
     }
@@ -4692,18 +4712,18 @@
 
       <div class="header-mode-toggle-group">
         {#if sdxlSupported !== false && kreaSupported}
-          <div class="header-mode-toggle" role="tablist" aria-label="Режим генерации">
+          <div class="header-mode-toggle" role="tablist" aria-label={$_("studio_mode_aria", {}, "Generation mode")}>
             <button
               type="button"
               role="tab"
               aria-selected={studioEngineMode === "sdxl"}
               class="mode-toggle-btn"
               class:active={studioEngineMode === "sdxl"}
-              title={$_("studio_mode_express_hint", {}, "Экспресс (SDXL Turbo) — мгновенная локальная генерация за 6 шагов (~3 сек)")}
+              title={$_("studio_mode_express_hint", {}, "Express (SDXL Turbo) — instant 6-step local generation (~3s)")}
               on:click={() => switchEngineMode("sdxl")}
             >
               <span class="mode-icon">⚡</span>
-              <span>{$_("studio_mode_express", {}, "Экспресс")}</span>
+              <span>{$_("studio_mode_express", {}, "Express")}</span>
             </button>
             <button
               type="button"
@@ -4712,11 +4732,11 @@
               class="mode-toggle-btn"
               class:active={studioEngineMode === "dit"}
               class:locked={statusLoadedOnce && !kreaAllowed}
-              title={$_("studio_mode_studio_hint", {}, "Студия (DiT: Krea 2 / Muse / Anima) — кинематографичный рендер нового поколения")}
+              title={$_("studio_mode_studio_hint", {}, "Studio (DiT: Krea 2 / Muse / Anima) — next-gen cinematic rendering")}
               on:click={() => switchEngineMode("dit")}
             >
               <span class="mode-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "🎬"}</span>
-              <span>{$_("studio_mode_studio", {}, "Студия")}</span>
+              <span>{$_("studio_mode_studio", {}, "Studio")}</span>
             </button>
           </div>
         {:else}
@@ -4734,14 +4754,14 @@
         {#if studioTier === "muse" && kreaDailyRemaining !== null && kreaDailyLimit !== null}
           <span
             class="studio-tier-badge muse"
-            title="Muse Pass — SDXL ∞ + {kreaDailyRemaining}/{kreaDailyLimit} Krea/Anima кадров сегодня"
+            title={$_("studio_muse_pass_hint", { rem: kreaDailyRemaining, limit: kreaDailyLimit }, `Muse Pass — SDXL ∞ + ${kreaDailyRemaining}/${kreaDailyLimit} Krea/Anima frames today`)}
           >
             ✨ Muse · Krea {kreaDailyRemaining}/{kreaDailyLimit}
           </span>
         {:else if studioTier === "member" && memberCredits !== null}
           <span
             class="studio-tier-badge member"
-            title="Club Pass — SDXL ∞ + {memberCredits} Cloud GPU кредитов"
+            title={$_("studio_club_pass_hint", { credits: memberCredits }, `Club Pass — SDXL ∞ + ${memberCredits} Cloud GPU credits`)}
           >
             💎 {memberCredits}
           </span>
@@ -4749,7 +4769,7 @@
           <button
             type="button"
             class="studio-tier-badge guest-pass-btn"
-            title={$_("enter_club_pass", {}, "Ввести Club Pass или Muse Pass")}
+            title={$_("enter_club_pass", {}, "Enter Club Pass or Muse Pass")}
             on:click={openPassSettings}
           >
             🔑 Pass
@@ -4914,12 +4934,12 @@
                 <div class="persona-header-row">
                   <span class="persona-name">{p.name}</span>
                   {#if p.render_preset && p.render_preset.enabled !== false && p.render_preset.archetypes && p.render_preset.archetypes.length > 0}
-                    <span class="persona-ref-chip" title="Родная персонажная LoRA и пресет рендера">🎛️ {p.render_preset.archetypes.join(", ")}</span>
+                    <span class="persona-ref-chip" title={$_("krea_persona_native_chip_hint", {}, "Native character LoRA & render preset")}>🎛️ {p.render_preset.archetypes.join(", ")}</span>
                   {:else if p.avatarData || p.avatar}
                     <span class="persona-ref-chip" title="One-Shot Face Likeness: Krea 2 Identity Edit dual conditioning">📸 One-Shot Ref</span>
                   {/if}
                   {#if p.personality}
-                    <span class="persona-ref-chip" title={p.personality}>💬 Лор</span>
+                    <span class="persona-ref-chip" title={p.personality}>💬 {$_("krea_persona_lore_chip", {}, "Lore")}</span>
                   {/if}
                   {#if p.title}
                     <span class="persona-title-chip">{p.title}</span>
@@ -4998,7 +5018,7 @@
                 class="story-open-director-chip"
                 on:click={() => { showDirectorPanel = true; directorTab = "storyboard"; }}
               >
-                🎬 Сценарий
+                🎬 {$_("krea_storyboard_tab", {}, "Storyboard")}
               </button>
             {/if}
           </div>
@@ -5069,9 +5089,11 @@
                         ? $_("krea_stage_loading_models_hint", {}, "Загрузка модели и художественных стилей...")
                         : $_("krea_stage_warming_hint", {}, "Подготовка студии и загрузка моделей...")}
                     {:else if generatingStage === "generating"}
-                      {generatingTotalSteps > 0
-                        ? $_("krea_stage_generating_steps_hint", { step: Math.max(1, generatingStep), total: generatingTotalSteps }, `Отрисовка кадра (шаг ${Math.max(1, generatingStep)} из ${generatingTotalSteps})...`)
-                        : $_("krea_stage_generating_hint", {}, "Отрисовка кадра нейросетью...")}
+                      {generatingTotalSteps > 0 && generatingStep > 0
+                        ? $_("krea_stage_generating_steps_hint", { step: generatingStep, total: generatingTotalSteps }, `Отрисовка кадра (шаг ${generatingStep} из ${generatingTotalSteps})...`)
+                        : (warmingPhase === "loading_models"
+                          ? $_("krea_stage_loading_models_hint", {}, "Загрузка модели и художественных стилей...")
+                          : $_("krea_stage_generating_hint", {}, "Отрисовка кадра нейросетью..."))}
                     {:else}
                       {$_("krea_stage_saving_hint", {}, "Запись файла и подготовка кадра...")}
                     {/if}
@@ -5189,7 +5211,7 @@
                       <button
                         type="button"
                         class="toolbar-btn civitai-publish-btn {item.civitaiPostUrl ? 'published' : ''}"
-                        title={item.civitaiPostUrl ? "Опубликовано на CivitAI (нажмите для повторной публикации)" : $_("publish_civitai", {}, "Опубликовать на CivitAI")}
+                        title={item.civitaiPostUrl ? $_("civitai_already_published_hint", {}, "Published on CivitAI (click to republish)") : $_("publish_civitai", {}, "Publish to CivitAI")}
                         on:click|stopPropagation={() => publishToCivitai(item)}
                       >
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -5326,7 +5348,7 @@
           class="toggle-director-pill"
           class:open={showDirectorPanel}
           class:active={showDirectorPanel}
-          title="Открыть Режиссёрское кресло (правка промпта и сценарии)"
+          title={$_("krea_director_open_hint", {}, "Open AI Director's Chair (prompt co-pilot & storyboards)")}
           on:click={toggleDirectorPanel}
         >
           <span class="pill-label-desktop">{$_("krea_director_btn", {}, "Режиссёр")}</span>
@@ -5585,7 +5607,7 @@
                   class="pill-btn"
                   class:active={sliders.base_model === "sdxl_realistic" || sliders.base_model === "sdxl"}
                   on:click={() => setBaseModel("sdxl_realistic")}
-                  title="Realistic (CyberRealistic XL) — живая фотография, естественный свет и фактура кожи"
+                  title={$_("sdxl_realistic_title", {}, "Realistic (CyberRealistic XL) — candid photography, natural light & skin texture")}
                 >
                   <span class="pill-icon">📸</span>
                   <span>Realistic</span>
@@ -5595,7 +5617,7 @@
                   class="pill-btn"
                   class:active={sliders.base_model === "sdxl_perfect"}
                   on:click={() => setBaseModel("sdxl_perfect")}
-                  title="Perfect (CyberPony XL) — выразительная пластика, яркие образы и сложные ракурсы"
+                  title={$_("sdxl_perfect_title", {}, "Perfect (CyberPony XL) — expressive anatomy, vivid looks & dynamic angles")}
                 >
                   <span class="pill-icon">💎</span>
                   <span>Perfect</span>
@@ -5605,7 +5627,7 @@
                   class="pill-btn"
                   class:active={sliders.base_model === "sdxl_fantasy"}
                   on:click={() => setBaseModel("sdxl_fantasy")}
-                  title="Fantasy (CyberIllustrious XL) — фэнтези, аниме и художественная иллюстрация"
+                  title={$_("sdxl_fantasy_title", {}, "Fantasy (CyberIllustrious XL) — fantasy, anime & painterly illustration")}
                 >
                   <span class="pill-icon">🔮</span>
                   <span>Fantasy</span>
@@ -5615,7 +5637,7 @@
                   class="pill-btn"
                   class:active={sliders.base_model === "sdxl_tooned"}
                   on:click={() => setBaseModel("sdxl_tooned")}
-                  title="Tooned (CyberPony Semi-Real) — стилизованный 2.5D полуреализм"
+                  title={$_("sdxl_tooned_title", {}, "Tooned (CyberPony Semi-Real) — stylized 2.5D semi-realism")}
                 >
                   <span class="pill-icon">🎨</span>
                   <span>Tooned</span>
@@ -6127,6 +6149,99 @@
             </button>
           {/if}
         </div>
+        {#if studioEngineMode === "sdxl"}
+          <div class="sdxl-ref-controls">
+            <div class="sdxl-ref-mode-group" role="tablist" aria-label={$_("krea_sdxl_ref_mode_aria", {}, "Reference mode")}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sdxlRefMode === "faceswap"}
+                class="sdxl-mode-pill"
+                class:active={sdxlRefMode === "faceswap"}
+                title={$_("krea_sdxl_mode_face_hint", {}, "Transfer face from reference into a brand-new scene (ReActor HyperSwap 256)")}
+                on:click={() => (sdxlRefMode = "faceswap")}
+              >
+                🎭 {$_("krea_sdxl_mode_face", {}, "Face")}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sdxlRefMode === "inpaint"}
+                class="sdxl-mode-pill"
+                class:active={sdxlRefMode === "inpaint"}
+                title={$_("krea_sdxl_mode_inpaint_hint", {}, "Auto-Inpaint: replace outfit, background, or person on photo #1 while preserving unmasked pixels")}
+                on:click={() => (sdxlRefMode = "inpaint")}
+              >
+                👗 {$_("krea_sdxl_mode_inpaint", {}, "Retouch")}
+              </button>
+            </div>
+            {#if sdxlRefMode === "inpaint"}
+              <div class="sdxl-face-target-group" role="group" aria-label={$_("krea_sdxl_inpaint_target_aria", {}, "Retouch target")}>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlInpaintTarget === "outfit"}
+                  title={$_("krea_sdxl_inpaint_outfit_hint", {}, "Replace clothing on photo #1 — face, hair, hands, and background stay untouched")}
+                  on:click={() => (sdxlInpaintTarget = "outfit")}
+                >{$_("krea_sdxl_inpaint_outfit", {}, "Outfit")}</button>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlInpaintTarget === "background"}
+                  title={$_("krea_sdxl_inpaint_bg_hint", {}, "Replace background & environment around the person on photo #1")}
+                  on:click={() => (sdxlInpaintTarget = "background")}
+                >{$_("krea_sdxl_inpaint_bg", {}, "Background")}</button>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlInpaintTarget === "person"}
+                  title={$_("krea_sdxl_inpaint_person_hint", {}, "Replace the foreground person on photo #1 while keeping the background (photo #2 swaps face)")}
+                  on:click={() => (sdxlInpaintTarget = "person")}
+                >{$_("krea_sdxl_inpaint_person", {}, "Person")}</button>
+              </div>
+              {#if sdxlInpaintTarget === "person" && attachedReferences.length >= 2}
+                <span class="sdxl-duo-hint" title={$_("krea_sdxl_inpaint_duo_hint_title", {}, "Photo #1 provides the scene & background, photo #2 transfers the face")}>
+                  {$_("krea_sdxl_inpaint_duo_hint", {}, "#1 scene · #2 face")}
+                </span>
+              {/if}
+            {:else if attachedReferences.length === 1}
+              <div class="sdxl-face-target-group" role="group" aria-label={$_("krea_sdxl_face_target_aria", {}, "Target face in frame")}>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlFaceTarget === "auto"}
+                  title={$_("krea_sdxl_face_auto_hint", {}, "Primary (largest) face in frame")}
+                  on:click={() => (sdxlFaceTarget = "auto")}
+                >{$_("krea_sdxl_face_auto", {}, "Auto")}</button>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlFaceTarget === "left"}
+                  title={$_("krea_sdxl_face_left_hint", {}, "Left person (handy for duo scenes with a character)")}
+                  on:click={() => (sdxlFaceTarget = "left")}
+                >{$_("krea_sdxl_face_left", {}, "Left")}</button>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlFaceTarget === "right"}
+                  title={$_("krea_sdxl_face_right_hint", {}, "Right person (handy for duo scenes with a character)")}
+                  on:click={() => (sdxlFaceTarget = "right")}
+                >{$_("krea_sdxl_face_right", {}, "Right")}</button>
+                <button
+                  type="button"
+                  class="sdxl-target-pill"
+                  class:active={sdxlFaceTarget === "second"}
+                  title={$_("krea_sdxl_face_second_hint", {}, "Second largest face in frame")}
+                  on:click={() => (sdxlFaceTarget = "second")}
+                >{$_("krea_sdxl_face_second", {}, "2nd")}</button>
+              </div>
+            {:else if attachedReferences.length >= 2}
+              <span class="sdxl-duo-hint" title={$_("krea_sdxl_duo_hint_title", {}, "In a duo scene #1 maps to the person on the left and #2 to the person on the right")}>
+                {$_("krea_sdxl_duo_hint", {}, "#1 → left · #2 → right")}
+              </span>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -6135,7 +6250,13 @@
       <textarea
         bind:this={textareaEl}
         bind:value={promptText}
-        placeholder={$_("krea_prompt_placeholder", {}, "Опишите изображение...")}
+        placeholder={studioEngineMode === "sdxl" && attachedReferences.length > 0 && sdxlRefMode === "inpaint"
+          ? (sdxlInpaintTarget === "background"
+            ? $_("krea_sdxl_inpaint_bg_placeholder", {}, "Describe the new background & lighting (person and outfit stay intact)...")
+            : (sdxlInpaintTarget === "person"
+              ? $_("krea_sdxl_inpaint_person_placeholder", {}, "Describe the new character in this scene...")
+              : $_("krea_sdxl_inpaint_outfit_placeholder", {}, "Describe the new outfit / look (face, hands & background stay intact)...")))
+          : $_("krea_prompt_placeholder", {}, "Describe the image...")}
         rows="1"
         class="prompt-textarea"
         on:input={resizeTextarea}
@@ -6187,7 +6308,7 @@
       <div
         class="director-resize-handle"
         class:active={isResizingDirector}
-        title="Потяните за край для изменения ширины (двойной клик — сброс)"
+        title={$_("krea_dir_resize_hint", {}, "Drag edge to resize (double-click to reset)")}
         on:pointerdown={startDirectorResize}
         on:dblclick={resetDirectorWidth}
       ></div>
@@ -6195,11 +6316,11 @@
         <div class="director-title-group">
           <span class="director-icon">🎬</span>
           <div>
-            <div class="director-title">Режиссёрское кресло</div>
-            <div class="director-subtitle">Постановка сцен и умные промпты</div>
+            <div class="director-title">{$_("krea_dir_title", {}, "Director's Chair")}</div>
+            <div class="director-subtitle">{$_("krea_dir_subtitle", {}, "Scene staging & smart prompts")}</div>
           </div>
         </div>
-        <button type="button" class="director-close-btn" title="Скрыть панель" on:click={toggleDirectorPanel}>✕</button>
+        <button type="button" class="director-close-btn" title={$_("krea_dir_hide_panel", {}, "Hide panel")} on:click={toggleDirectorPanel}>✕</button>
       </div>
 
       <div class="director-mode-tabs">
@@ -6209,7 +6330,7 @@
           class:active={directorTab === "prompt"}
           on:click={() => (directorTab = "prompt")}
         >
-          ✍️ Промпт-ассистент
+          ✍️ {$_("krea_dir_tab_prompt", {}, "Prompt Co-Pilot")}
         </button>
         <button
           type="button"
@@ -6217,7 +6338,7 @@
           class:active={directorTab === "storyboard"}
           on:click={() => { directorTab = "storyboard"; loadSavedStories().catch(() => {}); }}
         >
-          🎞️ Сценарий
+          🎞️ {$_("krea_storyboard_tab", {}, "Storyboard")}
           {#if storyScenes.length > 0}
             <span class="director-tab-badge">{storyScenes.length}</span>
           {/if}
@@ -6231,31 +6352,31 @@
             <span class="ctx-chip persona">👤 {selectedPersonas.map((p) => p.name).join(", ")}</span>
           {/if}
           <span class="ctx-chip muted">
-            {promptText.trim() ? `${promptText.trim().length} симв.` : "Пустой промпт"}
+            {promptText.trim() ? $_("krea_dir_char_count", { count: promptText.trim().length }, `${promptText.trim().length} chars`) : $_("krea_dir_empty_prompt", {}, "Empty prompt")}
           </span>
           {#if promptUndoStack.length > 0}
-            <button type="button" class="ctx-undo-btn" title="Вернуть предыдущий вариант промпта в композере" on:click={undoDirectorPrompt}>
-              ↶ Откат
+            <button type="button" class="ctx-undo-btn" title={$_("krea_dir_undo_hint", {}, "Restore previous prompt in composer")} on:click={undoDirectorPrompt}>
+              ↶ {$_("krea_dir_undo", {}, "Undo")}
             </button>
           {/if}
         </div>
 
         <div class="director-quick-chips">
-          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Придумай атмосферный сюжет и детальную сцену под выбранную модель, стиль и персону: ")}>✨ Придумать сюжет</button>
-          <button type="button" class="quick-chip" title="Вставьте ссылку на кадр CivitAI (.com / .red) и напишите правку — модель, LoRA и промпт подтянутся автоматически!" on:click={() => applyDirectorQuickHint("https://civitai.red/images/ — ")}>🔗 Ссылка CivitAI</button>
-          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Поменяй позу и ракурс: пусть ")}>🧍‍♀️ Поза / ракурс</button>
-          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Смени одежду на: ")}>👗 Наряд</button>
-          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Перенеси действие в локацию и настрой свет: ")}>🌆 Сеттинг и свет</button>
-          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Добавь живой эмоции, игривого взгляда и чувственности, сохранив композицию")}>🔥 Эмоции / шарм</button>
-          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint("Переведи на английский и адаптируй структуру промпта идеально под выбранную базовую модель")}>🎯 Под модель</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint($_("krea_dir_hint_plot", {}, "Invent an atmospheric storyline and detailed scene tailored to the active model, style, and persona: "))}>✨ {$_("krea_dir_chip_plot", {}, "Invent plot")}</button>
+          <button type="button" class="quick-chip" title={$_("krea_dir_chip_civitai_hint", {}, "Paste a CivitAI image link (.com / .red) + optional edit — model, LoRAs, and prompt will be imported automatically!")} on:click={() => applyDirectorQuickHint("https://civitai.red/images/ — ")}>🔗 {$_("krea_dir_chip_civitai", {}, "CivitAI link")}</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint($_("krea_dir_hint_pose", {}, "Change pose and camera angle: make "))}>🧍‍♀️ {$_("krea_dir_chip_pose", {}, "Pose / angle")}</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint($_("krea_dir_hint_outfit", {}, "Change the outfit to: "))}>👗 {$_("krea_dir_chip_outfit", {}, "Outfit")}</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint($_("krea_dir_hint_setting", {}, "Move the scene to this location and lighting: "))}>🌆 {$_("krea_dir_chip_setting", {}, "Setting & light")}</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint($_("krea_dir_hint_emotion", {}, "Add vivid emotion, playful gaze, and sensual charm while keeping the composition"))}>🔥 {$_("krea_dir_chip_emotion", {}, "Emotion / charm")}</button>
+          <button type="button" class="quick-chip" on:click={() => applyDirectorQuickHint($_("krea_dir_hint_adapt", {}, "Translate into English and adapt the prompt structure ideally for the selected base model"))}>🎯 {$_("krea_dir_chip_adapt", {}, "Fit model")}</button>
         </div>
 
         <div class="director-feed" bind:this={directorFeedEl}>
           {#if directorMessages.length === 0}
             <div class="director-empty-hint">
               <div class="empty-clapper">🎬</div>
-              <p><strong>Киньте ссылку с CivitAI</strong> (например, <code>civitai.red/images/...</code> + правку <em>«пусть держит в руке меч»</em>) — модель, веса LoRA и промпт подтянутся сами!</p>
-              <p>Либо опишите идею с нуля или поправьте промпт из композера обычными словами.</p>
+              <p><strong>{$_("krea_dir_empty_p1_bold", {}, "Drop a CivitAI link")}</strong> ({$_("krea_dir_empty_p1_eg", {}, "e.g.")} <code>civitai.red/images/...</code> + <em>{$_("krea_dir_empty_p1_ex", {}, "\"holding a sword\"")}</em>) — {$_("krea_dir_empty_p1_rest", {}, "the model, LoRA weights, and prompt will be pulled in automatically!")}</p>
+              <p>{$_("krea_dir_empty_p2", {}, "Or describe an idea from scratch or tweak the composer prompt in plain words.")}</p>
             </div>
           {:else}
             {#each directorMessages as msg (msg.id)}
@@ -6266,10 +6387,10 @@
                     <div class="msg-prompt-text">{msg.promptSnapshot}</div>
                     <div class="msg-prompt-actions">
                       <button type="button" class="mini-act-btn" on:click={() => applyDirectorSnapshot(msg.promptSnapshot, msg.appliedSettings)}>
-                        ✓ В композер
+                        ✓ {$_("krea_dir_to_composer", {}, "To composer")}
                       </button>
                       <button type="button" class="mini-act-btn" on:click={() => copyPrompt(msg.promptSnapshot, msg.id)}>
-                        {copiedPromptId === msg.id ? "Скопировано!" : "Копировать"}
+                        {copiedPromptId === msg.id ? $_("krea_copied", {}, "Copied!") : $_("krea_copy", {}, "Copy")}
                       </button>
                     </div>
                   </div>
@@ -6280,7 +6401,7 @@
           {#if isDirectorThinking}
             <div class="director-msg assistant">
               <div class="msg-bubble thinking-bubble">
-                <span class="dot-pulse"></span> {isDirectorImportingCivitai ? "Извлекаю пресет с CivitAI и ставлю мизансцену..." : "Режиссёр переписывает мизансцену..."}
+                <span class="dot-pulse"></span> {isDirectorImportingCivitai ? $_("krea_dir_thinking_civitai", {}, "Extracting CivitAI preset and staging the scene...") : $_("krea_dir_thinking_rewrite", {}, "Director is rewriting the scene...")}
               </div>
             </div>
           {/if}
@@ -6292,7 +6413,7 @@
             bind:value={directorInput}
             rows="1"
             class="director-textarea"
-            placeholder="Ссылка с CivitAI + правка или любая сцена..."
+            placeholder={$_("krea_dir_input_placeholder", {}, "CivitAI link + tweak or any scene idea...")}
             on:input={resizeDirectorTextarea}
             on:keydown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -6309,10 +6430,10 @@
               <button
                 type="button"
                 class="dir-clear-btn"
-                title="Очистить переписку с режиссёром"
+                title={$_("krea_dir_clear_chat_hint", {}, "Clear chat with Director")}
                 on:click={() => { directorMessages = []; try { sessionStorage.removeItem("krea_director_msgs_v1"); } catch (_) {} }}
               >
-                Очистить
+                {$_("krea_clear", {}, "Clear")}
               </button>
             {/if}
             <button
@@ -6320,18 +6441,18 @@
               class="dir-rewrite-btn"
               disabled={isDirectorThinking || !directorInput.trim()}
               on:click={() => askDirectorPrompt(false)}
-              title="Собрать или обновить промпт в Студии (Enter)"
+              title={$_("krea_dir_update_prompt_hint", {}, "Build or update prompt in Studio (Enter)")}
             >
-              ✍️ Обновить промпт
+              ✍️ {$_("krea_dir_update_prompt", {}, "Update prompt")}
             </button>
             <button
               type="button"
               class="dir-shoot-now-btn"
               disabled={isDirectorThinking || isGenerating || !directorInput.trim()}
               on:click={() => askDirectorPrompt(true)}
-              title="Обновить промпт и сразу снять кадр (Ctrl+Enter)"
+              title={$_("krea_dir_shoot_now_hint", {}, "Update prompt and shoot immediately (Ctrl+Enter)")}
             >
-              ⚡ Снять
+              ⚡ {$_("krea_dir_shoot_now", {}, "Shoot")}
             </button>
           </div>
         </div>
@@ -6350,17 +6471,17 @@
                 if (found) openSavedStory(found);
               }}
             >
-              <option value="">📂 Сохранённые истории ({savedStoriesList.length})</option>
+              <option value="">📂 {$_("krea_story_saved_list", { count: savedStoriesList.length }, `Saved stories (${savedStoriesList.length})`)}</option>
               {#each savedStoriesList as st}
-                <option value={st.story_slug}>{st.story_title} ({st.scene_count || (st.story?.scenes?.length || 0)} сц.)</option>
+                <option value={st.story_slug}>{st.story_title} ({$_("krea_story_scenes_short", { count: st.scene_count || (st.story?.scenes?.length || 0) }, `${st.scene_count || (st.story?.scenes?.length || 0)} sc.`)})</option>
               {/each}
             </select>
-            <button type="button" class="story-new-btn" title="Новая история с чистого листа" on:click={() => startFreshStory(false)}>
-              + Новая
+            <button type="button" class="story-new-btn" title={$_("krea_story_new_hint", {}, "Start a brand-new story")} on:click={() => startFreshStory(false)}>
+              {$_("krea_story_new_btn", {}, "+ New")}
             </button>
             {#if storySetting.trim() && storyScenes.length > 0}
-              <button type="button" class="story-new-btn subtle" title="Новая история в этом же сеттинге" on:click={() => startFreshStory(true)}>
-                В том же мире
+              <button type="button" class="story-new-btn subtle" title={$_("krea_story_same_world_hint", {}, "New story in the same world/setting")} on:click={() => startFreshStory(true)}>
+                {$_("krea_story_same_world_btn", {}, "Same world")}
               </button>
             {/if}
           </div>
@@ -6369,7 +6490,7 @@
           <div class="story-setup-card">
             <button type="button" class="setup-card-toggle" on:click={() => (isSetupCollapsed = !isSetupCollapsed)}>
               <span class="setup-toggle-title">
-                🌍 {storyTitle.trim() || "Сеттинг и завязка"}
+                🌍 {storyTitle.trim() || $_("krea_story_setup_header", {}, "Setting & Premise")}
                 {#if storySlug}
                   <span class="slug-pill">/{storySlug}</span>
                 {/if}
@@ -6382,15 +6503,15 @@
                 <input
                   type="text"
                   class="dir-input"
-                  placeholder="Название истории (или придумает Режиссёр)"
+                  placeholder={$_("krea_story_title_placeholder", {}, "Story title (or let the Director invent one)")}
                   bind:value={storyTitle}
                   on:input={saveActiveDraftStoryToLocal}
                 />
 
                 <div class="field-label-row">
-                  <span>Сеттинг / мир и атмосфера:</span>
+                  <span>{$_("krea_story_setting_label", {}, "Setting / world & atmosphere:")}</span>
                   {#if storySetting.trim()}
-                    <button type="button" class="text-link-btn" on:click={saveSettingPreset}>📌 В пресеты</button>
+                    <button type="button" class="text-link-btn" on:click={saveSettingPreset}>📌 {$_("krea_story_save_preset", {}, "Save preset")}</button>
                   {/if}
                 </div>
                 {#if savedSettingPresets.length > 0}
@@ -6408,25 +6529,25 @@
                 <textarea
                   rows="2"
                   class="dir-textarea"
-                  placeholder="Например: Дождливый вечер в пентхаусе над неоновым Токио, тёплый свет камина..."
+                  placeholder={$_("krea_story_setting_placeholder", {}, "E.g.: Rainy evening in a penthouse above neon Tokyo, warm fireplace glow...")}
                   bind:value={storySetting}
                   on:input={saveActiveDraftStoryToLocal}
                 ></textarea>
 
                 <div class="field-label-row">
-                  <span>{storyScenes.length > 0 ? "Что происходит дальше (или новая завязка):" : "Завязка сюжета в двух словах:"}</span>
+                  <span>{storyScenes.length > 0 ? $_("krea_story_next_label", {}, "What happens next (or new premise):") : $_("krea_story_premise_label", {}, "Plot premise in a few words:")}</span>
                 </div>
                 <textarea
                   rows="2"
                   class="dir-textarea"
-                  placeholder="Опишите идею или поворот сюжета простыми словами..."
+                  placeholder={$_("krea_story_idea_placeholder", {}, "Describe the idea or plot twist in plain words...")}
                   bind:value={storyIdea}
                   on:input={saveActiveDraftStoryToLocal}
                 ></textarea>
 
                 <div class="plan-controls-row">
                   <label class="scene-count-label">
-                    Кадров:
+                    {$_("krea_story_frames_label", {}, "Frames:")}
                     <select bind:value={storySceneCount} class="count-select">
                       <option value={2}>2</option>
                       <option value={3}>3</option>
@@ -6443,7 +6564,7 @@
                       disabled={isPlanningStory}
                       on:click={() => planOrContinueStory("plan")}
                     >
-                      🔄 Заново
+                      🔄 {$_("krea_story_replan_btn", {}, "Replan")}
                     </button>
                     <button
                       type="button"
@@ -6451,7 +6572,7 @@
                       disabled={isPlanningStory}
                       on:click={() => planOrContinueStory("continue")}
                     >
-                      {isPlanningStory ? "Пишем..." : `➕ Продолжить (+${storySceneCount})`}
+                      {isPlanningStory ? $_("krea_story_writing", {}, "Writing...") : $_("krea_story_continue_count", { count: storySceneCount }, `➕ Continue (+${storySceneCount})`)}
                     </button>
                   {:else}
                     <button
@@ -6460,7 +6581,7 @@
                       disabled={isPlanningStory}
                       on:click={() => planOrContinueStory("plan")}
                     >
-                      {isPlanningStory ? "🎬 Режиссёр расписывает сцены..." : `🎬 Разложить на ${storySceneCount} сцен`}
+                      {isPlanningStory ? $_("krea_story_planning", {}, "🎬 Director is scripting scenes...") : $_("krea_story_plan_count", { count: storySceneCount }, `🎬 Plan ${storySceneCount} scenes`)}
                     </button>
                   {/if}
                 </div>
@@ -6472,7 +6593,7 @@
           <div class="story-scenes-list">
             {#if storyScenes.length === 0 && !isPlanningStory}
               <div class="director-empty-hint compact">
-                <p>Задайте <strong>Сеттинг</strong> и пару слов <strong>Завязки</strong> выше (не забудьте выбрать Персону, если история с ней) — Режиссёр напишет художественный текст, диалоги и визуальные промпты кадров.</p>
+                <p>{$_("krea_story_empty_hint", {}, "Enter a Setting and a brief Premise above (and select a Persona if starring in the story) — the Director will write literary narrative, dialogue, and visual frame prompts.")}</p>
               </div>
             {:else}
               {#each storyScenes as sc, idx (sc.id || idx)}
@@ -6489,13 +6610,13 @@
                       class="scene-aspect-select"
                       bind:value={sc.aspect}
                       on:change={saveActiveDraftStoryToLocal}
-                      title="Формат кадра"
+                      title={$_("krea_story_frame_aspect_hint", {}, "Frame aspect ratio")}
                     >
                       <option value="896x1152">3:4</option>
                       <option value="1024x1024">1:1</option>
                       <option value="1152x896">4:3</option>
                     </select>
-                    <button type="button" class="scene-del-btn" title="Удалить сцену" on:click={() => removeStoryScene(idx)}>✕</button>
+                    <button type="button" class="scene-del-btn" title={$_("krea_story_del_scene_hint", {}, "Delete scene")} on:click={() => removeStoryScene(idx)}>✕</button>
                   </div>
 
                   {#if sc.blobUrl || sc.image_path}
@@ -6505,32 +6626,32 @@
                         alt={sc.title}
                         class="scene-thumb-img"
                       />
-                      <span class="scene-done-badge">✓ Снято</span>
+                      <span class="scene-done-badge">✓ {$_("krea_story_shot_done", {}, "Shot")}</span>
                     </div>
                   {/if}
 
                   <textarea
                     rows="3"
                     class="scene-narrative-box"
-                    placeholder="Художественный текст сцены и диалоги..."
+                    placeholder={$_("krea_story_narrative_placeholder", {}, "Scene literary prose & dialogue...")}
                     bind:value={sc.narrative}
                     on:change={saveActiveDraftStoryToLocal}
                   ></textarea>
 
                   <div class="scene-sub-toggles">
                     <button type="button" class="scene-sub-link" on:click={() => { sc.showPrompt = !sc.showPrompt; storyScenes = [...storyScenes]; }}>
-                      🎥 Промпт кадра {sc.showPrompt ? "▲" : "▼"}
+                      🎥 {$_("krea_story_frame_prompt_btn", {}, "Frame prompt")} {sc.showPrompt ? "▲" : "▼"}
                     </button>
                     <button type="button" class="scene-sub-link" on:click={() => { sc.showRefine = !sc.showRefine; storyScenes = [...storyScenes]; }}>
-                      🪄 AI-правка
+                      🪄 {$_("krea_story_ai_refine_btn", {}, "AI tweak")}
                     </button>
                     <button
                       type="button"
                       class="scene-sub-link"
-                      title="Отправить промпт этой сцены в основной композер Студии"
+                      title={$_("krea_story_send_composer_hint", {}, "Send this scene's prompt to main Studio composer")}
                       on:click={() => { pushPromptUndo(promptText); promptText = sc.visual_prompt; tick().then(resizeTextarea); }}
                     >
-                      ↗ В композер
+                      ↗ {$_("krea_dir_to_composer", {}, "To composer")}
                     </button>
                   </div>
 
@@ -6538,7 +6659,7 @@
                     <textarea
                       rows="3"
                       class="scene-vprompt-box"
-                      placeholder="English diffusion visual prompt..."
+                      placeholder={$_("krea_story_vprompt_placeholder", {}, "English diffusion visual prompt...")}
                       bind:value={sc.visual_prompt}
                       on:change={saveActiveDraftStoryToLocal}
                     ></textarea>
@@ -6549,7 +6670,7 @@
                       <input
                         type="text"
                         class="dir-input small"
-                        placeholder="Что поменять в этой сцене?.."
+                        placeholder={$_("krea_story_refine_placeholder", {}, "What should change in this scene?")}
                         bind:value={sc.refineText}
                         on:keydown={(e) => e.key === "Enter" && refineSingleScene(idx)}
                       />
@@ -6559,7 +6680,7 @@
                         disabled={refiningSceneIdx !== -1 || !(sc.refineText || "").trim()}
                         on:click={() => refineSingleScene(idx)}
                       >
-                        {refiningSceneIdx === idx ? "..." : "Ок"}
+                        {refiningSceneIdx === idx ? "..." : $_("krea_ok", {}, "OK")}
                       </button>
                     </div>
                   {/if}
@@ -6572,11 +6693,11 @@
                       on:click={() => shootSingleScene(idx)}
                     >
                       {#if shootingSceneIdx === idx}
-                        ⏳ Съёмка ({generationElapsed}s)...
+                        ⏳ {$_("krea_story_shooting_elapsed", { sec: generationElapsed }, `Shooting (${generationElapsed}s)...`)}
                       {:else if sc.image_name}
-                        🔄 Переснять кадр
+                        🔄 {$_("krea_story_reshoot_btn", {}, "Reshoot frame")}
                       {:else}
-                        🎬 Снять кадр
+                        🎬 {$_("krea_story_shoot_frame_btn", {}, "Shoot frame")}
                       {/if}
                     </button>
                   </div>
@@ -6584,14 +6705,14 @@
               {/each}
 
               <div class="story-continue-inline">
-                <button type="button" class="add-scene-inline-btn" on:click={addManualStoryScene}>+ Пустая сцена</button>
+                <button type="button" class="add-scene-inline-btn" on:click={addManualStoryScene}>{$_("krea_story_add_empty_scene", {}, "+ Empty scene")}</button>
                 <button
                   type="button"
                   class="add-scene-inline-btn highlight"
                   disabled={isPlanningStory}
                   on:click={() => { isSetupCollapsed = false; }}
                 >
-                  ➕ Продолжить сюжет...
+                  ➕ {$_("krea_story_continue_plot_btn", {}, "Continue story...")}
                 </button>
               </div>
             {/if}
@@ -6602,7 +6723,7 @@
             <div class="storyboard-footer">
               {#if isShootingSeries}
                 <button type="button" class="series-stop-btn" on:click={() => (stopSeriesRequested = true)}>
-                  ⏹ Остановить после текущего кадра
+                  ⏹ {$_("krea_story_stop_after_frame", {}, "Stop after current frame")}
                 </button>
               {:else}
                 <button
@@ -6611,7 +6732,7 @@
                   disabled={isGenerating}
                   on:click={shootAllRemainingScenes}
                 >
-                  ▶️ Снять серию ({storyScenes.filter((s) => !s.image_name).length || storyScenes.length})
+                  ▶️ {$_("krea_story_shoot_series", { count: storyScenes.filter((s) => !s.image_name).length || storyScenes.length }, `Shoot series (${storyScenes.filter((s) => !s.image_name).length || storyScenes.length})`)}
                 </button>
               {/if}
               <div class="storyboard-footer-sub">
@@ -6620,7 +6741,7 @@
                   class="story-util-btn"
                   disabled={isSavingStory}
                   on:click={() => persistCurrentStory(false)}
-                  title="Сохранить иллюстрированный Readme.md и story.json в папку истории"
+                  title={$_("krea_story_save_md_hint", {}, "Save illustrated Readme.md and story.json into story folder")}
                 >
                   {isSavingStory ? "💾..." : "💾 Story.md"}
                 </button>
@@ -6629,9 +6750,9 @@
                     type="button"
                     class="story-util-btn"
                     on:click={() => selectStorySubfolder(storySlug)}
-                    title="Показать папку этой истории в Галерее"
+                    title={$_("krea_story_open_gallery_hint", {}, "Show this story folder in Gallery")}
                   >
-                    📁 В галерее
+                    📁 {$_("krea_story_in_gallery", {}, "In gallery")}
                   </button>
                 {/if}
                 <button
@@ -6639,7 +6760,7 @@
                   class="story-util-btn"
                   disabled={isExportingStory}
                   on:click={() => exportStoryPack(false)}
-                  title="Скачать ZIP-архив со всеми кадрами и Story.md"
+                  title={$_("krea_story_zip_hint", {}, "Download ZIP archive with all frames and Story.md")}
                 >
                   {isExportingStory ? "📦..." : "📦 ZIP"}
                 </button>
@@ -6649,9 +6770,9 @@
                     class="story-util-btn civitai"
                     disabled={isPublishingCivitai}
                     on:click={openPublishStoryToCivitai}
-                    title="Прямая публикация всех отснятых кадров и сюжета на CivitAI по API"
+                    title={$_("krea_story_civitai_hint", {}, "Publish all shot frames and story directly to CivitAI via API")}
                   >
-                    🚀 В CivitAI
+                    🚀 {$_("krea_story_to_civitai", {}, "To CivitAI")}
                   </button>
                 {/if}
               </div>
@@ -6769,13 +6890,13 @@
                   <div style="padding-top: 14px;">
                     <label style="display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;">
                       <input type="checkbox" bind:checked={personaFormUseFaceRef} />
-                      <span>📸 Face Lock с аватара</span>
+                      <span>📸 {$_("krea_persona_face_lock", {}, "Face Lock from avatar")}</span>
                     </label>
                   </div>
                 </div>
 
                 <div>
-                  <span style="font-size: 11.5px; opacity: 0.85;">{$_("krea_persona_archetypes", {}, "Персонажные LoRA / Типажи:")}</span>
+                  <span style="font-size: 11.5px; opacity: 0.85;">{$_("krea_persona_archetypes", {}, "Character LoRAs / Archetypes:")}</span>
                   <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px;">
                     {#each personaModalArchetypes as arch}
                       <button
@@ -6789,7 +6910,7 @@
                   </div>
                   {#each personaFormArchetypes as aid}
                     <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px;">
-                      <span style="min-width: 90px; opacity: 0.85;">Вес {aid}:</span>
+                      <span style="min-width: 90px; opacity: 0.85;">{$_("krea_persona_lora_weight", { id: aid }, `Weight ${aid}:`)}</span>
                       <input
                         type="range"
                         min="0.1"
@@ -6805,7 +6926,7 @@
                 </div>
 
                 <div>
-                  <span style="font-size: 11.5px; opacity: 0.85;">{$_("krea_persona_styles", {}, "Стилевые LoRA (необязательно):")}</span>
+                  <span style="font-size: 11.5px; opacity: 0.85;">{$_("krea_persona_styles", {}, "Style LoRAs (optional):")}</span>
                   <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px;">
                     {#each personaModalStyles as st}
                       <button
@@ -6818,7 +6939,7 @@
                     {/each}
                   </div>
                 </div>
-                <span class="field-hint">При выборе этой персоны Студия (и автогенерация) автоматически подставит её модель и веса. Для собственной LoRA (например, Kate) Face Lock лучше отключить.</span>
+                <span class="field-hint">{$_("krea_persona_native_preset_hint", {}, "When this persona is selected, Studio automatically applies her model and LoRA weights. For a dedicated character LoRA (e.g. Kate), disable Face Lock.")}</span>
               </div>
             {/if}
           </div>
@@ -6892,9 +7013,9 @@
           </div>
           {#if effectiveCivitaiAccounts.length > 0}
             <div class="modal-field">
-              <label for="p-civitai-acc">Аккаунт публикации на CivitAI (MCP):</label>
+              <label for="p-civitai-acc">{$_("civitai_persona_acc_label", {}, "CivitAI publishing account (MCP):")}</label>
               <select id="p-civitai-acc" bind:value={personaFormCivitaiAccount} class="select-styled modal-input">
-                <option value="">По умолчанию</option>
+                <option value="">{$_("civitai_default_acc", {}, "Default")}</option>
                 {#each effectiveCivitaiAccounts as acc}
                   <option value={acc.id}>{acc.label}</option>
                 {/each}
@@ -6904,13 +7025,13 @@
         </div>
 
         <div class="modal-footer">
-          <button class="cancel-btn" on:click={() => (showPersonaModal = false)}>{$_("krea_cancel", {}, "Отмена")}</button>
+          <button class="cancel-btn" on:click={() => (showPersonaModal = false)}>{$_("krea_cancel", {}, "Cancel")}</button>
           <button
             class="save-btn"
             disabled={isSavingPersona || !personaFormName.trim() || !personaFormPrompt.trim()}
             on:click={savePersona}
           >
-            {isSavingPersona ? $_("krea_saving", {}, "Сохранение...") : $_("krea_save", {}, "Сохранить")}
+            {isSavingPersona ? $_("krea_saving", {}, "Saving...") : $_("krea_save", {}, "Save")}
           </button>
         </div>
       </div>
@@ -6926,45 +7047,45 @@
       <!-- svelte-ignore a11y-no-static-element-interactions -->
       <div class="persona-modal-card civitai-publish-modal" on:click|stopPropagation>
         <div class="modal-header">
-          <h3>🚀 Публикация на CivitAI {civitaiPubMode === "story" ? `(${civitaiPubItems.length} кадр.)` : ""}</h3>
+          <h3>🚀 {$_("civitai_pub_modal_title", {}, "Publish to CivitAI")} {civitaiPubMode === "story" ? $_("civitai_pub_frames_count", { count: civitaiPubItems.length }, `(${civitaiPubItems.length} frames)`) : ""}</h3>
           <button class="modal-close-btn" disabled={isPublishingCivitai} on:click={() => (showCivitaiPublishModal = false)}>✕</button>
         </div>
 
         <div class="modal-body">
           <div class="modal-field">
-            <label for="civ-pub-acc">Аккаунт публикации (из ваших MCP-ключей):</label>
+            <label for="civ-pub-acc">{$_("civitai_pub_acc_label", {}, "Publishing account (from your MCP keys):")}</label>
             <select id="civ-pub-acc" bind:value={civitaiPubAccountId} class="select-styled modal-input" disabled={isPublishingCivitai}>
               {#each effectiveCivitaiAccounts as acc}
                 <option value={acc.id}>{acc.label}</option>
               {/each}
-              <option value="custom">➕ Добавить / другой API-ключ CivitAI...</option>
+              <option value="custom">{$_("civitai_pub_custom_acc_opt", {}, "➕ Add / use another CivitAI API key...")}</option>
             </select>
           </div>
 
           {#if civitaiPubAccountId === "custom"}
             <div class="modal-field">
-              <label for="civ-pub-tok">API-ключ CivitAI (Bearer):</label>
+              <label for="civ-pub-tok">{$_("civitai_pub_token_label", {}, "CivitAI API Key (Bearer):")}</label>
               <input
                 id="civ-pub-tok"
                 type="password"
-                placeholder="Вставьте API-ключ нужного аккаунта CivitAI..."
+                placeholder={$_("civitai_pub_token_placeholder", {}, "Paste the API key for your CivitAI account...")}
                 bind:value={civitaiPubCustomToken}
                 class="modal-input"
                 disabled={isPublishingCivitai}
               />
               <label class="civitai-check-row" style="margin-top: 6px;">
                 <input type="checkbox" bind:checked={civitaiPubSaveKey} disabled={isPublishingCivitai} />
-                <span>Сохранить этот аккаунт в мои MCP-ключи (зашифровано в DID)</span>
+                <span>{$_("civitai_pub_save_key_check", {}, "Save this account in my MCP keys (encrypted with DID)")}</span>
               </label>
             </div>
           {/if}
 
           <div class="modal-field">
-            <label for="civ-pub-title">Заголовок поста:</label>
+            <label for="civ-pub-title">{$_("civitai_pub_title_label", {}, "Post title:")}</label>
             <input
               id="civ-pub-title"
               type="text"
-              placeholder="Название работы или серии..."
+              placeholder={$_("civitai_pub_title_placeholder", {}, "Artwork or story title...")}
               bind:value={civitaiPubTitle}
               class="modal-input"
               disabled={isPublishingCivitai}
@@ -6972,11 +7093,11 @@
           </div>
 
           <div class="modal-field">
-            <label for="civ-pub-detail">Описание / история:</label>
+            <label for="civ-pub-detail">{$_("civitai_pub_detail_label", {}, "Description / story:")}</label>
             <textarea
               id="civ-pub-detail"
               rows={civitaiPubMode === "story" ? 5 : 3}
-              placeholder="Подпись к посту на CivitAI (необязательно)..."
+              placeholder={$_("civitai_pub_detail_placeholder", {}, "Post caption on CivitAI (optional)...")}
               bind:value={civitaiPubDetail}
               class="modal-textarea"
               disabled={isPublishingCivitai}
@@ -6984,11 +7105,11 @@
           </div>
 
           <div class="modal-field">
-            <label for="civ-pub-tags">Теги (через запятую, необязательно):</label>
+            <label for="civ-pub-tags">{$_("civitai_pub_tags_label", {}, "Tags (comma-separated, optional):")}</label>
             <input
               id="civ-pub-tags"
               type="text"
-              placeholder="например: anime, portrait, cyberpunk"
+              placeholder={$_("civitai_pub_tags_placeholder", {}, "e.g.: anime, portrait, cyberpunk")}
               bind:value={civitaiPubTags}
               class="modal-input"
               disabled={isPublishingCivitai}
@@ -6998,11 +7119,11 @@
           <div class="civitai-pub-toggles">
             <label class="civitai-check-row">
               <input type="checkbox" bind:checked={civitaiPubIncludeMeta} disabled={isPublishingCivitai} />
-              <span>Прикрепить промпт, чекпоинт и LoRA (для попадания в галереи моделей)</span>
+              <span>{$_("civitai_pub_include_meta", {}, "Attach prompt, checkpoint & LoRAs (for model gallery indexing)")}</span>
             </label>
             <label class="civitai-check-row">
               <input type="checkbox" bind:checked={civitaiPubImmediate} disabled={isPublishingCivitai} />
-              <span>Опубликовать сразу (если снять — сохранится как черновик на аккаунте)</span>
+              <span>{$_("civitai_pub_immediate", {}, "Publish immediately (uncheck to save as draft on your account)")}</span>
             </label>
           </div>
 
@@ -7014,7 +7135,7 @@
             <div class="civitai-pub-alert success">
               <div class="civitai-pub-success-head">
                 <strong>
-                  {civitaiPubResult.published ? "✅ Пост опубликован!" : "📝 Черновик сохранён!"}
+                  {civitaiPubResult.published ? $_("civitai_pub_done_live", {}, "✅ Post published!") : $_("civitai_pub_done_draft", {}, "📝 Draft saved!")}
                 </strong>
                 {#if civitaiPubResult.username}
                   <span class="civitai-user-pill">@{civitaiPubResult.username}</span>
@@ -7022,16 +7143,16 @@
               </div>
               {#if civitaiPubResult.linked_resources && civitaiPubResult.linked_resources.length > 0}
                 <div class="civitai-linked-res">
-                  Привязаны ресурсы: {civitaiPubResult.linked_resources.join(" • ")}
+                  {$_("civitai_pub_linked_res", { list: civitaiPubResult.linked_resources.join(" • ") }, `Linked resources: ${civitaiPubResult.linked_resources.join(" • ")}`)}
                 </div>
               {/if}
               <div class="civitai-pub-links">
                 <a href={civitaiPubResult.post_url} target="_blank" rel="noopener noreferrer" class="civitai-open-post-btn">
-                  Открыть на CivitAI ↗
+                  {$_("civitai_pub_open_btn", {}, "Open on CivitAI ↗")}
                 </a>
                 {#if civitaiPubResult.published && civitaiPubResult.edit_url}
                   <a href={civitaiPubResult.edit_url} target="_blank" rel="noopener noreferrer" class="civitai-edit-post-link">
-                    Редактировать
+                    {$_("krea_persona_edit", {}, "Edit")}
                   </a>
                 {/if}
               </div>
@@ -7041,7 +7162,7 @@
 
         <div class="modal-footer">
           <button class="cancel-btn" disabled={isPublishingCivitai} on:click={() => (showCivitaiPublishModal = false)}>
-            {civitaiPubResult ? "Готово" : "Отмена"}
+            {civitaiPubResult ? $_("krea_done", {}, "Done") : $_("krea_cancel", {}, "Cancel")}
           </button>
           {#if !civitaiPubResult}
             <button
@@ -7050,9 +7171,9 @@
               on:click={submitCivitaiPublish}
             >
               {#if isPublishingCivitai}
-                ⏳ Загрузка на CivitAI...
+                ⏳ {$_("civitai_pub_uploading", {}, "Uploading to CivitAI...")}
               {:else}
-                {civitaiPubImmediate ? "🚀 Опубликовать" : "📝 В черновики"}
+                {civitaiPubImmediate ? $_("civitai_pub_submit_live", {}, "🚀 Publish") : $_("civitai_pub_submit_draft", {}, "📝 Save draft")}
               {/if}
             </button>
           {/if}
@@ -10574,6 +10695,29 @@
     border-color: #7c3aed;
     color: #7c3aed;
   }
+  .krea-studio-root.light-theme .sdxl-ref-mode-badge {
+    background: #f5f3ff;
+    border-color: #ddd6fe;
+    color: #6d28d9;
+  }
+  .krea-studio-root.light-theme .sdxl-face-target-group {
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .sdxl-target-pill {
+    color: #475569;
+  }
+  .krea-studio-root.light-theme .sdxl-target-pill:hover {
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .sdxl-target-pill.active {
+    background: #ffffff;
+    color: #6d28d9;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  }
+  .krea-studio-root.light-theme .sdxl-duo-hint {
+    color: #64748b;
+  }
   .krea-studio-root.light-theme .prompts-popup {
     background: #ffffff;
     border-color: #e2e8f0;
@@ -10867,6 +11011,7 @@
   .attached-refs-bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
     padding: 6px 14px;
     background: rgba(15, 23, 42, 0.7);
@@ -10957,6 +11102,85 @@
     background: rgba(139, 92, 246, 0.15);
     border-color: #8b5cf6;
     color: #c084fc;
+  }
+
+  .sdxl-ref-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-wrap: wrap;
+  }
+
+  .sdxl-ref-mode-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 14px;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(139, 92, 246, 0.35);
+  }
+
+  .sdxl-mode-pill {
+    border: none;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 9px;
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .sdxl-mode-pill:hover {
+    color: #e2e8f0;
+  }
+
+  .sdxl-mode-pill.active {
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.45), rgba(99, 102, 241, 0.45));
+    color: #ffffff;
+    box-shadow: 0 1px 4px rgba(139, 92, 246, 0.25);
+  }
+
+  .sdxl-face-target-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 14px;
+    background: rgba(30, 41, 59, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .sdxl-target-pill {
+    border: none;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .sdxl-target-pill:hover {
+    color: #e2e8f0;
+  }
+
+  .sdxl-target-pill.active {
+    background: rgba(139, 92, 246, 0.35);
+    color: #ffffff;
+  }
+
+  .sdxl-duo-hint {
+    font-size: 0.72rem;
+    color: #94a3b8;
+    white-space: nowrap;
   }
 
 

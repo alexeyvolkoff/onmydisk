@@ -3849,8 +3849,16 @@
       (dev.isOwner === true && !isSharedRoute);
     const key = (identity && identity.profile && identity.profile.omd_key) || getStoredOmdKey() || "";
 
+    // Reuse already-warm fmHttpDrive connection pool when targeting the same node & mode
+    if (fmHttpDrive && !fmHttpDrive.closed && fmHttpDrive.targetLinkId === dev.linkId && fmHttpDrive.isPrivateMode === isPrivate) {
+      if (key && fmHttpDrive.authToken !== key) {
+        fmHttpDrive.setAuth(key);
+      }
+      return fmHttpDrive;
+    }
+
     let drv = httpDrivePool.get(dev.linkId);
-    if (!drv || drv.isPrivateMode !== isPrivate) {
+    if (!drv || drv.closed || drv.isPrivateMode !== isPrivate) {
       if (drv) drv.close();
       drv = new HttpDrive({
         targetLinkId: dev.linkId,
@@ -3918,6 +3926,8 @@
   let nodeWidgetError = "";
   let nodeWidgetHostEl = null;
   let nodeWidgetCleanup = null;
+  let activeNodeWidgetKey = "";
+  let nodeWidgetReqSeq = 0;
 
   function showNodePushToast(msg, duration = 4500) {
     nodePushToast = msg;
@@ -3932,6 +3942,8 @@
   }
 
   function closeNodeWidgetModal() {
+    nodeWidgetReqSeq++;
+    activeNodeWidgetKey = "";
     if (typeof nodeWidgetCleanup === "function") {
       try { nodeWidgetCleanup(); } catch (_) {}
     }
@@ -3967,87 +3979,102 @@
 
   function collectOwnedPushCandidates(extra) {
     const pubId = getPublicAiLinkId();
+    const localId = typeof window !== "undefined" ? getOrCreateLocalLinkId() : "";
     const nameHint = extractPushNodeNameHint(extra);
     const exactId = String((extra && extra.node_link_id) || "").trim();
     const byId = new Map();
 
-    const addCand = (linkId, name = "", priority = 50, forceOwner = true) => {
+    const addCand = (linkId, name = "", basePriority = 30, forceOwner = true) => {
       const id = String(linkId || "").trim();
-      if (!id) return;
-      // Never treat the public AI node as an owned push candidate unless explicitly requested via node_link_id
-      // or explicitly registered in identity.devices
+      if (!id || (localId && id === localId)) return;
       const inIdentity = !!(identity && identity.devices && (identity.devices.has?.(id) || identity.devices.get?.(id)));
       if (pubId && id === pubId && id !== exactId && !inIdentity) return;
-      const cleanName = String(name || "").replace(/^\/+/, "").trim().toLowerCase();
-      let effPrio = priority;
-      if (id === exactId) effPrio = 0;
-      else if (nameHint && cleanName && cleanName === nameHint) effPrio = Math.min(effPrio, 5);
+
+      const regDev = deviceRegistry.get(id);
+      if (regDev && (regDev.local || regDev.type === "web" || regDev.type === "phone" || regDev.type === "mobile")) {
+        return;
+      }
+      const isLiveConnected = !!(regDev && (regDev.status === "connected" || regDev.drive?.isConnected));
+      const regName = regDev ? (regDev.name || regDev.rootName || regDev.prefix || "") : "";
+      const cleanName = String(name || regName || "").replace(/^\/+/, "").trim().toLowerCase();
+      const matchesName = !!(nameHint && cleanName && (cleanName === nameHint || cleanName.startsWith(nameHint + ".")));
+
+      // Strongly prioritize live-connected nodes in deviceRegistry so stale/offline GunDB entries
+      // (or older notifications carrying an inactive linkId for the same host) never stall ahead of an open tunnel.
+      let effPrio = basePriority;
+      if (id === exactId && isLiveConnected) effPrio = 0;
+      else if (matchesName && isLiveConnected) effPrio = 1;
+      else if (id === exactId) effPrio = 2;
+      else if (isLiveConnected && regDev && isChatCapableDevice(regDev)) effPrio = Math.min(effPrio, 4);
+      else if (matchesName) effPrio = Math.min(effPrio, 6);
+      else if (isLiveConnected) effPrio = Math.min(effPrio, 10);
+
       const prev = byId.get(id);
       if (!prev || effPrio < prev.priority) {
-        byId.set(id, { linkId: id, isOwner: forceOwner || inIdentity, priority: effPrio });
+        byId.set(id, {
+          linkId: id,
+          isOwner: forceOwner || inIdentity,
+          isConnected: isLiveConnected,
+          priority: effPrio
+        });
       }
     };
 
-    if (exactId) {
-      addCand(exactId, nameHint, 0, true);
-    }
-
-    // 1. Owned devices from DID (identity.devices) — available as soon as GunDB profile/devices load,
-    // even before WebRTC DataChannel finishes handshaking!
-    try {
-      if (identity && identity.devices) {
-        if (typeof identity.devices.entries === "function") {
-          for (const [k, meta] of identity.devices.entries()) {
-            if (!k || meta?.type === "web") continue;
-            addCand(k, meta?.name || "", 20, true);
-          }
-        } else {
-          for (const [k, meta] of Object.entries(identity.devices)) {
-            if (!k || meta?.type === "web") continue;
-            addCand(k, meta?.name || "", 20, true);
-          }
-        }
-      }
-    } catch (_) {}
-
-    // 2. Active deviceRegistry entries (excluding guest/public AI node)
+    // 1. Active deviceRegistry entries FIRST (already hydrated & live-connected when app is open)
     for (const d of deviceRegistry.list()) {
-      if (!d || !d.linkId || d.local || d.type === "web") continue;
+      if (!d || !d.linkId || d.local || d.type === "web" || d.type === "phone" || d.type === "mobile") continue;
       if (d.isAiNode && !d.isOwner) continue;
       const dName = d.name || d.rootName || d.prefix || "";
       const prio = isChatCapableDevice(d) ? 15 : 25;
       addCand(d.linkId, dName, prio, d.isOwner === true || d.drive?.authLevel === "admin");
     }
 
+    if (exactId) {
+      addCand(exactId, nameHint, 2, true);
+    }
+
+    // 2. Owned devices from DID (identity.devices) — skip web/mobile client entries
+    try {
+      if (identity && identity.devices) {
+        const iter = typeof identity.devices.entries === "function"
+          ? identity.devices.entries()
+          : Object.entries(identity.devices);
+        for (const [k, meta] of iter) {
+          if (!k || meta?.isLocal || meta?.type === "web" || meta?.type === "phone" || meta?.type === "mobile") continue;
+          addCand(k, meta?.name || "", 30, true);
+        }
+      }
+    } catch (_) {}
+
     // 3. Shared-to-me nodes
     for (const s of sharedToMeNodes || []) {
-      if (s && s.linkId) addCand(s.linkId, s.name || "", 35, true);
+      if (s && s.linkId) addCand(s.linkId, s.name || "", 40, true);
     }
 
     return Array.from(byId.values()).sort((a, b) => a.priority - b.priority);
   }
 
-  async function resolvePushNodeDrives(extra = {}, maxWaitMs = 12000) {
+  async function resolvePushNodeDrives(extra = {}, maxWaitMs = 6000) {
     const exactId = String((extra && extra.node_link_id) || "").trim();
     const nameHint = extractPushNodeNameHint(extra);
     const start = Date.now();
+    // When the app is already open and device discovery finished, never wait more than 1.2s for stragglers
+    const effectiveWaitMs = initialDeviceLoadDone ? Math.min(maxWaitMs, 1200) : maxWaitMs;
 
-    while (Date.now() - start < maxWaitMs) {
+    while (Date.now() - start < effectiveWaitMs) {
       const cands = collectOwnedPushCandidates(extra);
-      if (exactId && cands.length > 0) {
+      // Fast path (0ms): any live-connected match or chat-capable owned node, or explicit node_link_id
+      if (cands.some((c) => c.isConnected && c.priority <= 4) || (exactId && cands.length > 0)) {
         return cands.map((c) => getHttpDriveForDevice(c)).filter(Boolean);
       }
-      // If we have a storage hostname hint (e.g. "beelink" from "/beelink/OnMyChat"),
-      // wait until that specific device appears (or up to 5s before accepting other owned devices).
       if (nameHint) {
-        const hasExactNameMatch = cands.some((c) => c.priority <= 5);
-        if (hasExactNameMatch || (cands.length > 0 && Date.now() - start >= 5000)) {
+        if (cands.some((c) => c.priority <= 6)) {
           return cands.map((c) => getHttpDriveForDevice(c)).filter(Boolean);
         }
       } else if (cands.length > 0) {
         return cands.map((c) => getHttpDriveForDevice(c)).filter(Boolean);
       }
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 120));
     }
 
     // Final fallback after waiting: try any owned candidates, then chatTargetDevice / defaultChatTarget
@@ -4103,13 +4130,21 @@
 
     if (action === "open") {
       if (!isSafeNodeRelativePath(widgetUrl)) return;
+      const reqKey = `${widgetUrl}::${itemId}`;
+      // Deduplicate when foreground pushNotificationReceived already opened/started loading the exact same item
+      if (showNodeWidgetModal && activeNodeWidgetKey === reqKey && !nodeWidgetError) {
+        return;
+      }
       closeNodeWidgetModal();
+      const reqSeq = ++nodeWidgetReqSeq;
+      activeNodeWidgetKey = reqKey;
       showNodeWidgetModal = true;
       nodeWidgetLoading = true;
       nodeWidgetError = "";
 
       try {
-        const drives = await resolvePushNodeDrives(extra, 12000);
+        const drives = await resolvePushNodeDrives(extra, 6000);
+        if (reqSeq !== nodeWidgetReqSeq) return;
         const fetchCandidates = drives.length > 0
           ? drives.map((drv) => (p, opts) => drv.fetch(p, opts))
           : [(p, opts) => window.fetch(p, opts)];
@@ -4129,8 +4164,9 @@
         let activeFetchFn = fetchCandidates[0];
         let lastErrStatus = "timeout";
         for (const candFetch of fetchCandidates) {
+          if (reqSeq !== nodeWidgetReqSeq) return;
           try {
-            const candRes = await candFetch(targetWidgetPath);
+            const candRes = await candFetch(targetWidgetPath, { connectTimeoutMs: 6000, timeoutMs: 10000 });
             if (candRes && candRes.ok) {
               res = candRes;
               activeFetchFn = candFetch;
@@ -4145,13 +4181,15 @@
             lastErrStatus = e?.message || "network error";
           }
         }
+        if (reqSeq !== nodeWidgetReqSeq) return;
         if (!res || !res.ok) {
           throw new Error(`HTTP ${res ? res.status : lastErrStatus}`);
         }
         const scriptCode = await res.text();
+        if (reqSeq !== nodeWidgetReqSeq) return;
         nodeWidgetLoading = false;
         await new Promise((r) => setTimeout(r, 0));
-        if (!showNodeWidgetModal || !nodeWidgetHostEl) return;
+        if (!showNodeWidgetModal || !nodeWidgetHostEl || reqSeq !== nodeWidgetReqSeq) return;
 
         const runner = new Function("host", scriptCode);
         const maybeCleanup = await runner({
@@ -4173,6 +4211,7 @@
           nodeWidgetCleanup = maybeCleanup;
         }
       } catch (err) {
+        if (reqSeq !== nodeWidgetReqSeq) return;
         nodeWidgetLoading = false;
         nodeWidgetError = translate("push_widget_load_failed", { error: err?.message || err }, "Failed to load node widget: {error}");
       }
@@ -4183,7 +4222,7 @@
     if (!isSafeNodeRelativePath(actionUrl)) return;
     showNodePushToast(translate("push_sending_action", {}, "⏳ Sending action to node..."));
     try {
-      const drives = await resolvePushNodeDrives(extra, 12000);
+      const drives = await resolvePushNodeDrives(extra, 6000);
       const fetchCandidates = drives.length > 0
         ? drives.map((drv) => (p, opts) => drv.fetch(p, opts))
         : [(p, opts) => window.fetch(p, opts)];
@@ -4195,6 +4234,8 @@
           const candRes = await candFetch(actionUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            connectTimeoutMs: 6000,
+            timeoutMs: 12000,
             body: JSON.stringify({
               ...extra,
               item_id: itemId,
