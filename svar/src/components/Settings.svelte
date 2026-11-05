@@ -3628,7 +3628,7 @@
                         id="mcpKeyValInput"
                         class="omd-key-input"
                         type="password"
-                        placeholder={mcpSelectedPreset === "club_pass" ? "pass_... / key_..." : mcpSelectedPreset === "civitai" ? "civitai_api_token..." : mcpSelectedPreset === "plane" ? "plane_api_..." : "api_key_..."}
+                        placeholder={mcpSelectedPreset === "club_pass" ? "pass_... / muse_..." : mcpSelectedPreset === "civitai" ? "civitai_api_token..." : mcpSelectedPreset === "plane" ? "plane_api_..." : "api_key_..."}
                         bind:value={mcpKeyInput}
                         autocomplete="off"
                         spellcheck="false"

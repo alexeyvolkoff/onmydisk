@@ -28,8 +28,8 @@ const ALL_PRESET_MCP_APPS = [
     id: "club_pass",
     name: "Club Pass",
     url: "https://whop.com/onmychat/on-my-chat-creative-studio",
-    placeholder: "pass_... / key_...",
-    description: "On My Chat Creative Studio & Dedicated GPU Pass",
+    placeholder: "pass_... / muse_...",
+    description: "Creative Studio Club Pass or Muse Pass",
     badgeColor: "#8B5CF6",
   },
   {

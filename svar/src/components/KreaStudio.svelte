@@ -16,7 +16,7 @@
   import { issueConsent, getClientDeviceServer } from "../lib/client-device-server.js";
   import { getOrCreateLocalLinkId } from "../lib/local-client.js";
   import { mcpKeysStore, getMcpPayload, saveMcpAppKey } from "../lib/mcp-keys.js";
-  import { getClientPlatform, sanitizeExternalCheckoutText } from "../lib/platform.js";
+  import { getClientPlatform, isIosNative, sanitizeExternalCheckoutText } from "../lib/platform.js";
   import defaultKreaPresets from "../lib/krea_presets.json";
 
   let civitaiAccounts = [];
@@ -52,7 +52,36 @@
   export let sidebarOpen = true;
   export let defaultStorage = "";
   export let userName = "";
+  export let sdxlSupported = true;
   export let kreaSupported = true;
+
+  const isIosClientApp = isIosNative();
+
+  // Studio entitlement & quota state (resolved from /krea/status)
+  let studioTier = "owner"; // "owner" | "muse" | "member" | "guest"
+  let kreaAllowed = true;
+  let kreaDailyRemaining = null;
+  let kreaDailyLimit = null;
+  let memberCredits = null;
+  let kreaLockNotice = "";
+  let generationError = "";
+  let statusLoadedOnce = false;
+
+  function extractUrlFromText(txt) {
+    if (!txt || isIosClientApp) return "";
+    const m = String(txt).match(/https?:\/\/[^\s)>]+/);
+    return m ? m[0].replace(/[.,;!?]+$/, "") : "";
+  }
+
+  function stripUrlFromText(txt) {
+    if (!txt) return "";
+    return String(txt).replace(/https?:\/\/[^\s)>]+/g, "").replace(/[:—–\-]\s*$/, "").trim();
+  }
+
+  function openPassSettings() {
+    generationError = "";
+    dispatch("open-settings", { section: "security" });
+  }
 
   const dispatch = createEventDispatcher();
 
@@ -349,7 +378,9 @@
     : ((initialSavedSliders && initialSavedSliders.archetype) ? [initialSavedSliders.archetype] : []);
   const initPrimaryArchetype = initArchetypes.length > 0 ? initArchetypes[0] : null;
 
-  const initBaseModel = (initialSavedSliders && initialSavedSliders.base_model) || "anima";
+  const initBaseModel = !kreaSupported
+    ? "sdxl"
+    : ((initialSavedSliders && initialSavedSliders.base_model) || "realism");
 
   // Sliders state (restored from localStorage if available)
   let sliders = {
@@ -364,14 +395,42 @@
     archetype: initPrimaryArchetype,
     archetype_strength: (initialSavedSliders && typeof initialSavedSliders.archetype_strength === "number") ? initialSavedSliders.archetype_strength : 0.4,
     aspect: (initialSavedSliders && initialSavedSliders.aspect) || "896x1152",
-    steps: (initialSavedSliders && typeof initialSavedSliders.steps === "number") ? initialSavedSliders.steps : (initBaseModel === "anima" ? 25 : 12),
-    cfg: (initialSavedSliders && typeof initialSavedSliders.cfg === "number") ? initialSavedSliders.cfg : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0))
+    steps: (initialSavedSliders && typeof initialSavedSliders.steps === "number")
+      ? initialSavedSliders.steps
+      : (initBaseModel === "sdxl" ? 6 : (initBaseModel === "anima" ? 25 : 12)),
+    cfg: (initialSavedSliders && typeof initialSavedSliders.cfg === "number")
+      ? initialSavedSliders.cfg
+      : (initBaseModel === "sdxl" ? 1.0 : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0)))
   };
 
-  function setBaseModel(model) {
-    if (sliders.base_model === model) return;
+  function setBaseModel(model, force = false) {
+    if (model !== "sdxl" && !force && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
+      generationError = sanitizeExternalCheckoutText(
+        kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima доступны по Club Pass или Muse Pass.")
+      );
+      if (sliders.base_model !== "sdxl") {
+        sliders.base_model = "sdxl";
+        sliders.cfg = 1.0;
+        sliders.steps = 6;
+        sliders = { ...sliders };
+        saveLocalSliders(sliders);
+      }
+      return;
+    }
+    if (sliders.base_model === model) {
+      if (model === "sdxl") generationError = "";
+      return;
+    }
     sliders.base_model = model;
-    if (model === "realism") {
+    if (model === "sdxl") {
+      sliders.cfg = 1.0;
+      sliders.steps = 6;
+      generationError = "";
+      if (!sliders.styles || sliders.styles.length === 0) {
+        sliders.styles = ["sdxl_realistic"];
+        sliders.style = "sdxl_realistic";
+      }
+    } else if (model === "realism") {
       sliders.cfg = 1.5;
       sliders.steps = 12;
     } else if (model === "semi_realism") {
@@ -408,7 +467,10 @@
   }
 
   function resetAdvancedToModelDefaults() {
-    if (sliders.base_model === "realism") {
+    if (sliders.base_model === "sdxl") {
+      sliders.cfg = 1.0;
+      sliders.steps = 6;
+    } else if (sliders.base_model === "realism") {
       sliders.cfg = 1.5;
       sliders.steps = 12;
     } else if (sliders.base_model === "semi_realism") {
@@ -423,10 +485,10 @@
     saveLocalSliders(sliders);
   }
 
-  // 1. Art Styles & Archetypes from unified registry krea_presets.json
+  // 1. Art Styles & Archetypes from unified registry krea_presets.json + SDXL flow.json
   let kreaPresets = defaultKreaPresets;
 
-  $: currentBaseCategory = sliders.base_model === "anima" ? "anima" : "krea2";
+  $: currentBaseCategory = sliders.base_model === "sdxl" ? "sdxl" : (sliders.base_model === "anima" ? "anima" : "krea2");
 
   $: filteredArtStyles = (kreaPresets.art_styles || []).filter((s) => {
     if (!s.models || s.models.includes("all")) return true;
@@ -458,11 +520,11 @@
     strength: a.strength
   }));
 
-  // Auto-validate selections when base model changes
+  // Auto-validate selections when base model or presets change
   let prevBaseModel = sliders.base_model;
   $: if (sliders.base_model !== prevBaseModel) {
     prevBaseModel = sliders.base_model;
-    const cat = sliders.base_model === "anima" ? "anima" : "krea2";
+    const cat = sliders.base_model === "sdxl" ? "sdxl" : (sliders.base_model === "anima" ? "anima" : "krea2");
     const availableStyles = (kreaPresets.art_styles || [])
       .filter((s) => !s.models || s.models.includes("all") || s.models.includes(cat))
       .map((s) => s.id);
@@ -649,7 +711,7 @@
   let isAnalyzingFace = false;
   let avatarGenArchetype = "prompt";
 
-  $: personaModalEngineCat = personaFormBaseModel === "anima" ? "anima" : "krea2";
+  $: personaModalEngineCat = personaFormBaseModel === "sdxl" ? "sdxl" : (personaFormBaseModel === "anima" ? "anima" : "krea2");
   $: personaModalArchetypes = (kreaPresets.archetypes || []).filter((a) => !a.models || a.models.includes("all") || a.models.includes(personaModalEngineCat));
   $: personaModalStyles = (kreaPresets.art_styles || []).filter((s) => s.id !== "none" && (!s.models || s.models.includes("all") || s.models.includes(personaModalEngineCat)));
 
@@ -2429,6 +2491,14 @@
     if (!cleanPrompt && selectedPersonas.length === 0) return null;
     if (isGenerating) return null;
 
+    generationError = "";
+    if (sliders.base_model !== "sdxl" && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
+      generationError = sanitizeExternalCheckoutText(
+        kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima доступны по Club Pass или Muse Pass.")
+      );
+      return null;
+    }
+
     // Auto-extract if user pasted a CivitAI image/post URL directly into the main composer
     if (!isOverride && CIVITAI_URL_REGEX.test(cleanPrompt)) {
       isDirectorThinking = true;
@@ -2708,11 +2778,21 @@
 
       const filename = data.image || `krea_${Date.now()}.png`;
 
+      // Update live quota / entitlement state from server response
+      if (data.tier) studioTier = data.tier;
+      if (typeof data.krea_allowed === "boolean") kreaAllowed = data.krea_allowed;
+      if (typeof data.credits === "number") memberCredits = data.credits;
+      if (typeof data.krea_daily_remaining === "number") kreaDailyRemaining = data.krea_daily_remaining;
+      if (typeof data.krea_daily_limit === "number") kreaDailyLimit = data.krea_daily_limit;
+      if (typeof data.krea_notice === "string") kreaLockNotice = data.krea_notice;
+
       // GPU generation completed — now downloading chunk stream and saving!
       generatingStage = "saving";
-      isGpuWarm = true;
-      lastGenFinishedAt = Date.now();
-      gpuWarmUntil = lastGenFinishedAt + 290000;
+      if (sliders.base_model !== "sdxl") {
+        isGpuWarm = true;
+        lastGenFinishedAt = Date.now();
+        gpuWarmUntil = lastGenFinishedAt + 290000;
+      }
 
       const folder = getTargetFolder();
       const effectiveSub = data.subfolder || targetSubfolder || "";
@@ -2831,11 +2911,10 @@
       return newItem;
     } catch (err) {
       console.error("[KreaStudio] Generation error:", err);
-      if (err.name === "AbortError") {
-        alert($_("krea_err_timeout", {}, "Таймаут генерации (3 мин): сетевой туннель или нода не ответили вовремя."));
-      } else {
-        alert($_("krea_err_generation", { error: err.message }, `Ошибка генерации: ${err.message}`));
-      }
+      const rawErrMsg = err.name === "AbortError"
+        ? $_("krea_err_timeout", {}, "Таймаут генерации (3 мин): сетевой туннель или нода не ответили вовремя.")
+        : (err.message || String(err));
+      generationError = sanitizeExternalCheckoutText(rawErrMsg);
       return null;
     } finally {
       clearTimeout(timeoutHandle);
@@ -4332,42 +4411,7 @@
       }
     } catch (_) {}
 
-    try {
-      const fetchFn = getKreaFetch();
-      fetchFn("/krea/presets").then(async (res) => {
-        if (res && res.ok) {
-          const data = await res.json();
-          if (data && data.art_styles && data.archetypes) {
-            kreaPresets = data;
-          }
-        }
-      }).catch(() => {});
-      const mcpPayload = getMcpPayload();
-      fetchFn("/krea/status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-OMD-Platform": getClientPlatform() },
-        body: JSON.stringify({
-          omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
-          mcp_keys: mcpPayload,
-          settings: { platform: getClientPlatform(), mcp_keys: mcpPayload }
-        })
-      }).then(async (res) => {
-        if (res && res.ok) {
-          const data = await res.json();
-          if (data && Array.isArray(data.civitai_accounts)) {
-            civitaiAccounts = data.civitai_accounts;
-          }
-          if (data && data.gpu_warm) {
-            const remSec = typeof data.gpu_warm_remaining === "number" ? data.gpu_warm_remaining : 290;
-            gpuWarmUntil = Date.now() + remSec * 1000;
-            isGpuWarm = remSec > 0;
-          } else {
-            gpuWarmUntil = 0;
-            isGpuWarm = false;
-          }
-        }
-      }).catch(() => {});
-    } catch (_) {}
+    await refreshStudioStatusAndPresets();
 
     await loadPersonas();
     await loadCreations();
@@ -4377,6 +4421,89 @@
       resizeDirectorTextarea();
     });
   });
+
+  async function refreshStudioStatusAndPresets() {
+    try {
+      const fetchFn = getKreaFetch();
+      const mcpPayload = getMcpPayload();
+      const reqBody = JSON.stringify({
+        omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
+        mcp_keys: mcpPayload,
+        settings: { platform: getClientPlatform(), language: $locale || "ru", mcp_keys: mcpPayload }
+      });
+      const reqHeaders = {
+        ...buildAuthHeaders(),
+        "Content-Type": "application/json",
+        "X-OMD-Platform": getClientPlatform()
+      };
+
+      fetchFn("/krea/presets", {
+        method: "POST",
+        headers: reqHeaders,
+        body: reqBody
+      }).then(async (res) => {
+        if (res && res.ok) {
+          const data = await res.json();
+          if (data && data.art_styles && data.archetypes) {
+            kreaPresets = data;
+          }
+        }
+      }).catch(() => {});
+
+      const res = await fetchFn("/krea/status", {
+        method: "POST",
+        headers: reqHeaders,
+        body: reqBody
+      });
+      if (res && res.ok) {
+        const data = await res.json();
+        statusLoadedOnce = true;
+        if (data && data.tier) studioTier = data.tier;
+        if (data && typeof data.krea_allowed === "boolean") kreaAllowed = data.krea_allowed;
+        if (data && typeof data.credits === "number") memberCredits = data.credits;
+        else memberCredits = null;
+        if (data && typeof data.krea_daily_remaining === "number") kreaDailyRemaining = data.krea_daily_remaining;
+        else kreaDailyRemaining = null;
+        if (data && typeof data.krea_daily_limit === "number") kreaDailyLimit = data.krea_daily_limit;
+        else kreaDailyLimit = null;
+        kreaLockNotice = (data && data.krea_notice) || "";
+
+        if (data && Array.isArray(data.civitai_accounts)) {
+          civitaiAccounts = data.civitai_accounts;
+        }
+        if (data && data.gpu_warm) {
+          const remSec = typeof data.gpu_warm_remaining === "number" ? data.gpu_warm_remaining : 290;
+          gpuWarmUntil = Date.now() + remSec * 1000;
+          isGpuWarm = remSec > 0;
+        } else {
+          gpuWarmUntil = 0;
+          isGpuWarm = false;
+        }
+
+        if (!kreaSupported || data.tier === "guest" || data.krea_allowed === false) {
+          if (sliders.base_model !== "sdxl" && sdxlSupported !== false) {
+            setBaseModel("sdxl", true);
+          }
+        } else if (data.krea_allowed) {
+          generationError = "";
+        }
+      }
+    } catch (_) {}
+  }
+
+  let lastPassKeySignature = null;
+  $: {
+    const byApp = ($mcpKeysStore && $mcpKeysStore.byApp) || {};
+    const sig = ["club_pass", "muse_pass", "whop", "whop_key", "studio_pass"]
+      .map((k) => (byApp[k] && byApp[k].key) || "")
+      .join("|");
+    if (lastPassKeySignature === null) {
+      lastPassKeySignature = sig;
+    } else if (sig !== lastPassKeySignature) {
+      lastPassKeySignature = sig;
+      refreshStudioStatusAndPresets();
+    }
+  }
 
   onDestroy(() => {
     if (driveCleanup) {
@@ -4420,31 +4547,39 @@
       {/if}
 
       <div class="header-mode-toggle-group">
-        <div class="header-mode-toggle" role="tablist">
-          <button
-            type="button"
-            class="mode-toggle-btn"
-            title="CyberCraft (SDXL)"
-            on:click={handleSwitchToCreations}
-          >
-            <span class="mode-icon">✨</span>
-            <span class="mode-text mode-text-full">CyberCraft</span>
-            <span class="mode-text mode-text-short">Cyber</span>
-          </button>
-          <button
-            type="button"
-            class="mode-toggle-btn active"
-            title={$_("krea_studio", {}, "Creative Studio")}
-          >
-            <span class="mode-icon">⚡</span>
-            <span class="mode-text mode-text-full">{$_("krea_studio", {}, "Creative Studio")}</span>
-            <span class="mode-text mode-text-short">Creative</span>
-          </button>
+        <div class="studio-brand-pill" title={$_("krea_studio", {}, "Creative Studio")}>
+          <span class="mode-icon">⚡</span>
+          <span class="mode-text mode-text-full">{$_("krea_studio", {}, "Creative Studio")}</span>
+          <span class="mode-text mode-text-short">Studio</span>
         </div>
         {#if items.length > 0}
           <span class="header-count-pill" title={$_("generated", {}, "Creations")}>
             {items.length}
           </span>
+        {/if}
+        {#if studioTier === "muse" && kreaDailyRemaining !== null && kreaDailyLimit !== null}
+          <span
+            class="studio-tier-badge muse"
+            title="Muse Pass — SDXL ∞ + {kreaDailyRemaining}/{kreaDailyLimit} Krea/Anima кадров сегодня"
+          >
+            ✨ Muse · Krea {kreaDailyRemaining}/{kreaDailyLimit}
+          </span>
+        {:else if studioTier === "member" && memberCredits !== null}
+          <span
+            class="studio-tier-badge member"
+            title="Club Pass — SDXL ∞ + {memberCredits} Cloud GPU кредитов"
+          >
+            💎 {memberCredits}
+          </span>
+        {:else if studioTier === "guest" && !isIosClientApp && kreaSupported}
+          <button
+            type="button"
+            class="studio-tier-badge guest-pass-btn"
+            title={$_("enter_club_pass", {}, "Ввести Club Pass или Muse Pass")}
+            on:click={openPassSettings}
+          >
+            🔑 Pass
+          </button>
         {/if}
       </div>
     </div>
@@ -4914,6 +5049,29 @@
 
   <!-- Sticky Bottom Generation Composer with Sliders -->
   <footer class="studio-composer">
+    {#if generationError}
+      {@const errLink = extractUrlFromText(generationError)}
+      {@const errCleanText = stripUrlFromText(generationError)}
+      <div class="studio-notice-banner" transition:fade={{ duration: 120 }}>
+        <div class="studio-notice-text">{errCleanText || generationError}</div>
+        <div class="studio-notice-actions">
+          {#if errLink && !isIosClientApp}
+            <a href={errLink} target="_blank" rel="noopener noreferrer" class="studio-notice-cta">
+              ⚡ Creative Studio →
+            </a>
+          {/if}
+          {#if studioTier === "guest" && !isIosClientApp}
+            <button type="button" class="studio-notice-pass-btn" on:click={openPassSettings}>
+              🔑 {$_("enter_pass_btn", {}, "Ввести Pass")}
+            </button>
+          {/if}
+          <button type="button" class="studio-notice-close" on:click={() => (generationError = "")} aria-label="Close">
+            ✕
+          </button>
+        </div>
+      </div>
+    {/if}
+
     <!-- Selected Persona, Photo Ref & Controls Row -->
     <div class="composer-controls-row">
       <div class="composer-controls-left">
@@ -5148,7 +5306,7 @@
               </div>
 
               <div class="popup-menu-footer">
-                <span class="popup-count-hint">{$_("krea_model_label", {}, "Модель:")} {sliders.base_model === "anima" ? $_("krea_anima", {}, "Анима") : (sliders.base_model === "semi_realism" ? $_("krea_semi_realism", {}, "Полуреализм") : $_("krea_realism", {}, "Реализм"))}</span>
+                <span class="popup-count-hint">{$_("krea_model_label", {}, "Модель:")} {sliders.base_model === "sdxl" ? "SDXL DMD2" : (sliders.base_model === "anima" ? $_("krea_anima", {}, "Анима") : (sliders.base_model === "semi_realism" ? $_("krea_semi_realism", {}, "Полуреализм") : $_("krea_realism", {}, "Реализм")))}</span>
                 <button
                   type="button"
                   class="popup-done-btn"
@@ -5172,40 +5330,57 @@
             <div class="model-pill-header">
               <span>{$_("krea_base_model", {}, "Базовая модель")}</span>
               <span class="model-pill-hint">
-                {sliders.base_model === "anima" ? "Anima V1.1" : (sliders.base_model === "semi_realism" ? "Muse Yogi" : "CyberReal")}
+                {sliders.base_model === "sdxl" ? "SDXL DMD2" : (sliders.base_model === "anima" ? "Anima V1.1" : (sliders.base_model === "semi_realism" ? "Muse Yogi" : "CyberReal"))}
               </span>
             </div>
             <div class="pill-toggle-wrapper">
-              <button
-                type="button"
-                class="pill-btn"
-                class:active={sliders.base_model === "realism"}
-                on:click={() => setBaseModel("realism")}
-                title={$_("krea_realism_title", {}, "CyberRealistic Krea 2 — бескомпромиссный фотореализм")}
-              >
-                <span class="pill-icon">📸</span>
-                <span>{$_("krea_realism", {}, "Реализм")}</span>
-              </button>
-              <button
-                type="button"
-                class="pill-btn"
-                class:active={sliders.base_model === "semi_realism"}
-                on:click={() => setBaseModel("semi_realism")}
-                title={$_("krea_semi_realism_title", {}, "Muse by Stable Yogi — 2.5D / Semi-realism, мягкий киношный свет и комиксы")}
-              >
-                <span class="pill-icon">🎨</span>
-                <span>{$_("krea_semi_realism", {}, "Полуреализм")}</span>
-              </button>
-              <button
-                type="button"
-                class="pill-btn"
-                class:active={sliders.base_model === "anima"}
-                on:click={() => setBaseModel("anima")}
-                title={$_("krea_anima_title", {}, "Anima Aesthetic V1.1 — аутентичный аниме и традиционный 2D арт от CircleStone Labs & Comfy Org")}
-              >
-                <span class="pill-icon">🌸</span>
-                <span>{$_("krea_anima", {}, "Анима")}</span>
-              </button>
+              {#if sdxlSupported !== false}
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "sdxl"}
+                  on:click={() => setBaseModel("sdxl")}
+                  title={$_("krea_sdxl_title", {}, "SDXL DMD2 — мгновенная генерация (~3 сек) с чекпоинтами CyberRealistic XL / Pony / Illustrious и классическими LoRA")}
+                >
+                  <span class="pill-icon">⚡</span>
+                  <span>SDXL</span>
+                </button>
+              {/if}
+              {#if kreaSupported}
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "realism"}
+                  class:locked-pill={statusLoadedOnce && !kreaAllowed}
+                  on:click={() => setBaseModel("realism")}
+                  title={$_("krea_realism_title", {}, "CyberRealistic Krea 2 — бескомпромиссный фотореализм")}
+                >
+                  <span class="pill-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "📸"}</span>
+                  <span>{$_("krea_realism", {}, "Реализм")}</span>
+                </button>
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "semi_realism"}
+                  class:locked-pill={statusLoadedOnce && !kreaAllowed}
+                  on:click={() => setBaseModel("semi_realism")}
+                  title={$_("krea_semi_realism_title", {}, "Muse by Stable Yogi — 2.5D / Semi-realism, мягкий киношный свет и комиксы")}
+                >
+                  <span class="pill-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "🎨"}</span>
+                  <span>{$_("krea_semi_realism", {}, "Полуреализм")}</span>
+                </button>
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={sliders.base_model === "anima"}
+                  class:locked-pill={statusLoadedOnce && !kreaAllowed}
+                  on:click={() => setBaseModel("anima")}
+                  title={$_("krea_anima_title", {}, "Anima Aesthetic V1.1 — аутентичный аниме и традиционный 2D арт от CircleStone Labs & Comfy Org")}
+                >
+                  <span class="pill-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "🌸"}</span>
+                  <span>{$_("krea_anima", {}, "Анима")}</span>
+                </button>
+              {/if}
             </div>
           </div>
         </div>
@@ -6311,6 +6486,7 @@
                   <div>
                     <label for="p-base-model" style="font-size: 11.5px; opacity: 0.85;">{$_("krea_base_engine", {}, "Базовая модель:")}</label>
                     <select id="p-base-model" bind:value={personaFormBaseModel} class="select-styled modal-input">
+                      <option value="sdxl">⚡ SDXL (Fast Local)</option>
                       <option value="realism">Krea 2 Realism</option>
                       <option value="semi_realism">Muse Semi-Realism</option>
                       <option value="anima">Anima Aesthetic 2D</option>
@@ -12188,5 +12364,142 @@
     .director-resize-handle {
       display: none;
     }
+  }
+
+  .studio-brand-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    background: rgba(139, 92, 246, 0.14);
+    border: 1px solid rgba(139, 92, 246, 0.32);
+    color: inherit;
+  }
+
+  .studio-tier-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .studio-tier-badge.muse {
+    background: linear-gradient(135deg, rgba(236, 72, 153, 0.18), rgba(139, 92, 246, 0.22));
+    border: 1px solid rgba(236, 72, 153, 0.42);
+    color: #fbcfe8;
+  }
+
+  .krea-studio-root.light-theme .studio-tier-badge.muse {
+    background: #fdf2f8;
+    border-color: #f9a8d4;
+    color: #9d174d;
+  }
+
+  .studio-tier-badge.member {
+    background: rgba(59, 130, 246, 0.16);
+    border: 1px solid rgba(59, 130, 246, 0.38);
+    color: #bfdbfe;
+  }
+
+  .krea-studio-root.light-theme .studio-tier-badge.member {
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+  }
+
+  .studio-tier-badge.guest-pass-btn {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px dashed rgba(139, 92, 246, 0.5);
+    color: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .studio-tier-badge.guest-pass-btn:hover {
+    background: rgba(139, 92, 246, 0.18);
+    border-style: solid;
+  }
+
+  .pill-btn.locked-pill {
+    opacity: 0.68;
+  }
+
+  .studio-notice-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 12px;
+    margin-bottom: 8px;
+    border-radius: 10px;
+    background: rgba(139, 92, 246, 0.14);
+    border: 1px solid rgba(139, 92, 246, 0.38);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+
+  .krea-studio-root.light-theme .studio-notice-banner {
+    background: #f5f3ff;
+    border-color: #c4b5fd;
+    color: #3b0764;
+  }
+
+  .studio-notice-text {
+    flex: 1;
+    white-space: pre-line;
+  }
+
+  .studio-notice-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .studio-notice-cta {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 11px;
+    border-radius: 7px;
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    color: #fff !important;
+    font-weight: 600;
+    font-size: 12px;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .studio-notice-pass-btn {
+    padding: 5px 9px;
+    border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .krea-studio-root.light-theme .studio-notice-pass-btn {
+    border-color: #c4b5fd;
+    background: #fff;
+  }
+
+  .studio-notice-close {
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 5px;
   }
 </style>

@@ -6,7 +6,6 @@
   import { getChatStore, getChatIcon } from "../lib/chat-store.js";
   import { profileStore } from "../lib/profile-store.js";
   import Chat from "./Chat.svelte";
-  import Creations from "./Creations.svelte";
   import KreaStudio from "./KreaStudio.svelte";
   import MemoryCards from "./MemoryCards.svelte";
   import MemoryCardModal from "./MemoryCardModal.svelte";
@@ -1429,53 +1428,28 @@
           </div>
         </div>
       {:else if activeView === "creations"}
-        {#if kreaActive && kreaSupported}
-          <KreaStudio
-            httpDrive={drive}
-            deviceDrive={effectiveDeviceDrive}
-            targetDevice={userStorageDevice || targetDevice}
-            targetLinkId={(userStorageDevice && userStorageDevice.linkId) || targetLinkId || targetDevice?.linkId || ""}
-            isPrivateMode={computedPrivateMode}
-            {omdKey}
-            {chatStore}
-            {isDarkTheme}
-            {contentMode}
-            {isOverlayHeader}
-            {sidebarOpen}
-            {kreaSupported}
-            defaultStorage={$profileStore.defaultStorage || ""}
-            userName={$profileStore.name || $profileStore.user || ""}
-            on:count-change={(e) => (creationsCount = e.detail)}
-            on:toggle-sidebar={toggleSidebar}
-            on:close={closeApp}
-            on:switch-creations={() => setKreaActive(false)}
-            on:open-file={(e) => forwardOpenFile(e.detail)}
-            on:open-settings={(e) => dispatch("open-settings", e.detail)}
-          />
-        {:else}
-          <Creations
-            httpDrive={drive}
-            deviceDrive={effectiveDeviceDrive}
-            targetDevice={userStorageDevice || targetDevice}
-            targetLinkId={(userStorageDevice && userStorageDevice.linkId) || targetLinkId || targetDevice?.linkId || ""}
-            isPrivateMode={computedPrivateMode}
-            {omdKey}
-            {chatStore}
-            {isDarkTheme}
-            {contentMode}
-            {isOverlayHeader}
-            {sidebarOpen}
-            {kreaSupported}
-            defaultStorage={$profileStore.defaultStorage || ""}
-            userName={$profileStore.name || $profileStore.user || ""}
-            on:count-change={(e) => (creationsCount = e.detail)}
-            on:toggle-sidebar={toggleSidebar}
-            on:close={closeApp}
-            on:switch-krea={() => setKreaActive(true)}
-            on:open-file={(e) => forwardOpenFile(e.detail)}
-            on:open-settings={(e) => dispatch("open-settings", e.detail)}
-          />
-        {/if}
+        <KreaStudio
+          httpDrive={drive}
+          deviceDrive={effectiveDeviceDrive}
+          targetDevice={userStorageDevice || targetDevice}
+          targetLinkId={(userStorageDevice && userStorageDevice.linkId) || targetLinkId || targetDevice?.linkId || ""}
+          isPrivateMode={computedPrivateMode}
+          {omdKey}
+          {chatStore}
+          {isDarkTheme}
+          {contentMode}
+          {isOverlayHeader}
+          {sidebarOpen}
+          sdxlSupported={imageGenSupported}
+          {kreaSupported}
+          defaultStorage={$profileStore.defaultStorage || ""}
+          userName={$profileStore.name || $profileStore.user || ""}
+          on:count-change={(e) => (creationsCount = e.detail)}
+          on:toggle-sidebar={toggleSidebar}
+          on:close={closeApp}
+          on:open-file={(e) => forwardOpenFile(e.detail)}
+          on:open-settings={(e) => dispatch("open-settings", e.detail)}
+        />
       {:else if activeView === "memory"}
         <MemoryCards
           knowledgeList={allKnowledgeCards}
