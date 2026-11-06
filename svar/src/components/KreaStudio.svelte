@@ -60,12 +60,14 @@
   // Studio entitlement & quota state (resolved from /krea/status)
   let studioTier = "owner"; // "owner" | "muse" | "member" | "guest"
   let kreaAllowed = true;
+  let videoAllowed = true;
   let kreaDailyRemaining = null;
   let kreaDailyLimit = null;
   let memberCredits = null;
   let kreaLockNotice = "";
   let generationError = "";
   let statusLoadedOnce = false;
+  let activeVideoModalItem = null;
 
   function extractUrlFromText(txt) {
     if (!txt || isIosClientApp) return "";
@@ -368,10 +370,17 @@
   }
 
   const SDXL_BASE_MODELS = ["sdxl_realistic", "sdxl_perfect", "sdxl_fantasy", "sdxl_tooned"];
+  const VIDEO_BASE_MODELS = ["minimax_h3", "video", "h3"];
+  const videoExtRegex = /\.(mp4|webm|mov)$/i;
 
   function isSdxlModel(m) {
     const v = String(m || "").trim().toLowerCase();
     return v === "sdxl" || SDXL_BASE_MODELS.includes(v);
+  }
+
+  function isVideoModel(m) {
+    const v = String(m || "").trim().toLowerCase();
+    return VIDEO_BASE_MODELS.includes(v);
   }
 
   function normalizeSdxlModel(m) {
@@ -413,7 +422,11 @@
   let lastSdxlModel = isSdxlModel(initBaseModel)
     ? normalizeSdxlModel(initBaseModel)
     : (legacyCkptFromStyles || "sdxl_realistic");
-  let lastDitModel = !isSdxlModel(initBaseModel) ? initBaseModel : "realism";
+  let lastDitModel = (!isSdxlModel(initBaseModel) && !isVideoModel(initBaseModel)) ? initBaseModel : "realism";
+
+  let videoQuality = (initialSavedSliders && initialSavedSliders.video_quality === "fast") ? "fast" : "hd";
+  let videoDuration = (initialSavedSliders && Number(initialSavedSliders.video_duration) === 8) ? 8 : 5;
+  let videoAspect = (initialSavedSliders && initialSavedSliders.video_aspect) || "896x1152";
 
   const initRawSteps = (initialSavedSliders && typeof initialSavedSliders.steps === "number") ? initialSavedSliders.steps : null;
   const initRawCfg = (initialSavedSliders && typeof initialSavedSliders.cfg === "number") ? initialSavedSliders.cfg : null;
@@ -431,29 +444,64 @@
     archetype: initPrimaryArchetype,
     archetype_strength: (initialSavedSliders && typeof initialSavedSliders.archetype_strength === "number") ? initialSavedSliders.archetype_strength : 0.4,
     aspect: (initialSavedSliders && initialSavedSliders.aspect) || "896x1152",
-    steps: isSdxlModel(initBaseModel)
-      ? ((initRawSteps !== null && initRawSteps >= 4 && initRawSteps <= 12) ? initRawSteps : 6)
-      : (initRawSteps !== null ? initRawSteps : (initBaseModel === "anima" ? 25 : 12)),
-    cfg: isSdxlModel(initBaseModel)
-      ? ((initRawCfg !== null && initRawCfg >= 1.0 && initRawCfg <= 2.0) ? initRawCfg : 1.0)
-      : (initRawCfg !== null ? initRawCfg : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0)))
+    video_quality: videoQuality,
+    video_duration: videoDuration,
+    video_aspect: videoAspect,
+    steps: isVideoModel(initBaseModel)
+      ? (videoQuality === "fast" ? 4 : 8)
+      : (isSdxlModel(initBaseModel)
+          ? ((initRawSteps !== null && initRawSteps >= 4 && initRawSteps <= 12) ? initRawSteps : 6)
+          : (initRawSteps !== null ? initRawSteps : (initBaseModel === "anima" ? 25 : 12))),
+    cfg: isVideoModel(initBaseModel)
+      ? 1.0
+      : (isSdxlModel(initBaseModel)
+          ? ((initRawCfg !== null && initRawCfg >= 1.0 && initRawCfg <= 2.0) ? initRawCfg : 1.0)
+          : (initRawCfg !== null ? initRawCfg : (initBaseModel === "realism" ? 1.5 : (initBaseModel === "semi_realism" ? 2.0 : 3.0))))
   };
 
-  $: studioEngineMode = isSdxlModel(sliders.base_model) ? "sdxl" : "dit";
+  $: studioEngineMode = isVideoModel(sliders.base_model) ? "video" : (isSdxlModel(sliders.base_model) ? "sdxl" : "dit");
 
   function switchEngineMode(mode) {
     if (mode === "sdxl") {
       setBaseModel(lastSdxlModel || "sdxl_realistic");
+    } else if (mode === "video") {
+      setBaseModel("minimax_h3");
     } else {
       setBaseModel(lastDitModel || "realism");
     }
   }
 
+  function setVideoQuality(q) {
+    videoQuality = q === "fast" ? "fast" : "hd";
+    sliders.video_quality = videoQuality;
+    if (isVideoModel(sliders.base_model)) {
+      sliders.steps = videoQuality === "fast" ? 4 : 8;
+    }
+    sliders = { ...sliders };
+    saveLocalSliders(sliders);
+  }
+
+  function setVideoDuration(sec) {
+    videoDuration = Number(sec) === 8 ? 8 : 5;
+    sliders.video_duration = videoDuration;
+    sliders = { ...sliders };
+    saveLocalSliders(sliders);
+  }
+
+  function setVideoAspect(asp) {
+    videoAspect = asp;
+    sliders.video_aspect = asp;
+    sliders = { ...sliders };
+    saveLocalSliders(sliders);
+  }
+
   function setBaseModel(rawModel, force = false) {
     const model = rawModel === "sdxl" ? (lastSdxlModel || "sdxl_realistic") : rawModel;
-    if (!isSdxlModel(model) && !force && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
+    const requiresCloud = !isSdxlModel(model);
+    const cloudPermitted = isVideoModel(model) ? (kreaAllowed && videoAllowed) : kreaAllowed;
+    if (requiresCloud && !force && (!kreaSupported || (statusLoadedOnce && !cloudPermitted))) {
       generationError = sanitizeExternalCheckoutText(
-        kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima доступны по Club Pass или Muse Pass.")
+        kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima / MiniMax-H3 доступны по Club Pass или Muse Pass.")
       );
       if (!isSdxlModel(sliders.base_model)) {
         sliders.base_model = lastSdxlModel || "sdxl_realistic";
@@ -466,7 +514,7 @@
     }
     if (isSdxlModel(model)) {
       lastSdxlModel = normalizeSdxlModel(model);
-    } else {
+    } else if (!isVideoModel(model)) {
       lastDitModel = model;
     }
     if (sliders.base_model === model) {
@@ -478,6 +526,12 @@
           sliders = { ...sliders };
           saveLocalSliders(sliders);
         }
+      } else if (isVideoModel(model)) {
+        generationError = "";
+        sliders.steps = videoQuality === "fast" ? 4 : 8;
+        sliders.cfg = 1.0;
+        sliders = { ...sliders };
+        saveLocalSliders(sliders);
       }
       return;
     }
@@ -485,6 +539,10 @@
     if (isSdxlModel(model)) {
       sliders.cfg = 1.0;
       sliders.steps = 6;
+      generationError = "";
+    } else if (isVideoModel(model)) {
+      sliders.cfg = 1.0;
+      sliders.steps = videoQuality === "fast" ? 4 : 8;
       generationError = "";
     } else if (model === "realism") {
       sliders.cfg = 1.5;
@@ -1044,12 +1102,23 @@
     return null;
   }
 
+  function guessImageMime(filePath, currentType = "") {
+    if (currentType && currentType.startsWith("image/")) return currentType;
+    const lower = String(filePath || "").toLowerCase();
+    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+    if (lower.endsWith(".webp")) return "image/webp";
+    if (lower.endsWith(".gif")) return "image/gif";
+    return "image/png";
+  }
+
   async function readDriveBlobAsDataUrl(drive, filePath) {
     if (!drive || !filePath) return null;
     try {
       if (typeof drive.getFileContent === "function") {
-        const blob = await drive.getFileContent(filePath);
-        if (blob && blob.size > 0) {
+        const rawBlob = await drive.getFileContent(filePath);
+        if (rawBlob && rawBlob.size > 0) {
+          const mime = guessImageMime(filePath, rawBlob.type);
+          const blob = rawBlob.type === mime ? rawBlob : new Blob([rawBlob], { type: mime });
           return await new Promise((resolve) => {
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result || null);
@@ -1171,12 +1240,24 @@
     attachedReferences = attachedReferences.filter((_, i) => i !== idx);
   }
 
-  async function addGalleryItemAsReference(item) {
+  function swapReferences() {
     if (attachedReferences.length >= 2) {
-      alert($_("krea_err_max_attached", {}, "Уже прикреплено максимум 2 референса. Удалите один, чтобы добавить этот."));
-      return;
+      attachedReferences = [attachedReferences[1], attachedReferences[0]];
     }
-    const name = item.title || item.name || "Gallery image";
+  }
+
+  function getGalleryItemRefIndex(item, refs) {
+    if (!item || item.isVideo || !Array.isArray(refs) || refs.length === 0) return -1;
+    const itemPath = item.path || "";
+    const itemName = item.title || item.name || "";
+    return refs.findIndex((r) => {
+      if (!r) return false;
+      if (itemPath && r.path) return r.path === itemPath;
+      return Boolean(itemName && r.name === itemName);
+    });
+  }
+
+  async function resolveGalleryItemDataUrl(item) {
     let dataUrl = "";
     const drive = getTargetDrive();
     if (item.path && drive && (drive.isConnected || drive.status === "connected")) {
@@ -1187,12 +1268,16 @@
     if (!dataUrl) {
       const fullUrl = getFullImageUrl(item);
       try {
-        const fetchFn = (httpDrive && typeof httpDrive.fetch === "function")
-          ? (p, opts) => httpDrive.fetch(p, opts)
-          : (p, opts) => fetch(p, opts);
+        const fetchFn = (fullUrl.startsWith("/p2p/") || fullUrl.startsWith("blob:"))
+          ? (p, opts) => fetch(p, opts)
+          : ((httpDrive && typeof httpDrive.fetch === "function")
+              ? (p, opts) => httpDrive.fetch(p, opts)
+              : (p, opts) => fetch(p, opts));
         const res = await fetchFn(fullUrl);
         if (res.ok) {
-          const blob = await res.blob();
+          const rawBlob = await res.blob();
+          const mime = guessImageMime(item.path || item.name, rawBlob.type);
+          const blob = rawBlob.type === mime ? rawBlob : new Blob([rawBlob], { type: mime });
           const reader = new FileReader();
           dataUrl = await new Promise((resolve, reject) => {
             reader.onload = () => resolve(reader.result);
@@ -1202,19 +1287,92 @@
         }
       } catch (_) {}
     }
-    if (!dataUrl) {
-      dataUrl = getFullImageUrl(item);
+    return dataUrl || getFullImageUrl(item);
+  }
+
+  async function addGalleryItemAsReference(item) {
+    if (!item || item.isVideo) return;
+    const existingIdx = getGalleryItemRefIndex(item, attachedReferences);
+    if (existingIdx >= 0) {
+      removeReference(existingIdx);
+      return;
     }
-    attachedReferences = [
-      ...attachedReferences,
-      {
-        id: `ref_gallery_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        name,
-        path: item.path || "",
-        preview: dataUrl,
-        dataUrl: dataUrl
-      }
-    ];
+    const name = item.title || item.name || "Gallery image";
+    const dataUrl = await resolveGalleryItemDataUrl(item);
+    const newRef = {
+      id: `ref_gallery_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      path: item.path || "",
+      preview: dataUrl,
+      dataUrl
+    };
+    if (attachedReferences.length >= 2) {
+      attachedReferences = [attachedReferences[0], newRef];
+    } else {
+      attachedReferences = [...attachedReferences, newRef];
+    }
+  }
+
+  async function animateGalleryItem(item) {
+    if (!item || item.isVideo) return;
+    if (!kreaSupported || (statusLoadedOnce && !(kreaAllowed && videoAllowed))) {
+      generationError = sanitizeExternalCheckoutText(
+        kreaLockNotice || $_("krea_video_locked", {}, "Генерация видео со звуком MiniMax-H3 доступна по Club Pass или Muse Pass.")
+      );
+      return;
+    }
+
+    const existingIdx = getGalleryItemRefIndex(item, attachedReferences);
+    if (studioEngineMode === "video" && existingIdx >= 0) {
+      removeReference(existingIdx);
+      return;
+    }
+
+    const appendSecondKeyframe = studioEngineMode === "video" && attachedReferences.length >= 1;
+    const name = item.title || item.name || (appendSecondKeyframe ? "End frame" : "First frame");
+    const dataUrl = await resolveGalleryItemDataUrl(item);
+
+    // Auto-detect image aspect ratio to snap videoAspect when picking the primary #1 frame
+    if (!appendSecondKeyframe) {
+      try {
+        const dims = await new Promise((resolve) => {
+          const probe = new Image();
+          probe.onload = () => resolve({ w: probe.naturalWidth || 0, h: probe.naturalHeight || 0 });
+          probe.onerror = () => resolve(null);
+          probe.src = dataUrl;
+        });
+        if (dims && dims.w > 0 && dims.h > 0) {
+          const ratio = dims.w / dims.h;
+          if (ratio < 0.66) setVideoAspect("768x1344");
+          else if (ratio < 0.90) setVideoAspect("896x1152");
+          else if (ratio <= 1.12) setVideoAspect("1024x1024");
+          else if (ratio <= 1.55) setVideoAspect("1152x896");
+          else setVideoAspect("1344x768");
+        }
+      } catch (_) {}
+    }
+
+    const newRef = {
+      id: `ref_anim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      path: item.path || "",
+      preview: dataUrl,
+      dataUrl
+    };
+
+    if (appendSecondKeyframe) {
+      attachedReferences = [attachedReferences[0], newRef];
+    } else {
+      attachedReferences = [newRef];
+      switchEngineMode("video");
+    }
+
+    activeTab = "gallery";
+    await tick();
+    if (textareaEl) {
+      textareaEl.focus();
+      resizeTextarea();
+    }
   }
 
   $: displayFolder = getTargetFolder();
@@ -2116,7 +2274,7 @@
       console.error("[KreaStudio] Error scanning folder:", err);
     }
 
-    const imageExtRegex = /\.(jpe?g|png|webp|gif)$/i;
+    const imageExtRegex = /\.(jpe?g|png|webp|gif|mp4|webm|mov)$/i;
     const imageFiles = (rawList || []).filter((f) => {
       const name = f.name || f.value || "";
       if (!name) return false;
@@ -2132,16 +2290,19 @@
     const parsedItems = imageFiles.map((f) => {
       const name = f.name || f.value;
       const cleanPath = `${effectiveFolder}/${name}`.replace(/\/+/g, "/");
+      const isVid = videoExtRegex.test(name);
       let mtime = getItemTimestamp({ name, date: f.lastModified || f.date || (f.mtime ? f.mtime * 1000 : null) }) || Date.now();
       return {
         id: name,
         name,
         path: cleanPath,
+        isVideo: isVid,
         title: name.replace(/\.[^.]+$/, ""),
         description: "",
         prompt: localPromptCache[name] || "",
         blobUrl: imageBlobCache[cleanPath] || imageBlobCache[name] || null,
         thumbBlobUrl: thumbBlobCache[cleanPath] || thumbBlobCache[name] || null,
+        coverBlobUrl: isVid ? (thumbBlobCache[cleanPath + ":cover"] || null) : null,
         persona: "",
         date: mtime
       };
@@ -2249,8 +2410,8 @@
     deleteConfirmTarget = {
       type: "image",
       item: item,
-      title: $_("delete_creation", {}, "Удалить изображение"),
-      name: item.title || item.name || $_("krea_image", {}, "Изображение"),
+      title: item?.isVideo ? $_("delete_video", {}, "Удалить видео") : $_("delete_creation", {}, "Удалить изображение"),
+      name: item.title || item.name || (item?.isVideo ? $_("krea_video", {}, "Видео") : $_("krea_image", {}, "Изображение")),
       subtext: $_("delete_creation_subtext", {}, "Файл будет безвозвратно удалён из подключенного хранилища.")
     };
   }
@@ -2259,13 +2420,19 @@
     try {
       const fullPath = item.path;
       const readmePath = fullPath.replace(/\.[^/.]+$/, "") + ".Readme.md";
+      const coverPath = item.isVideo ? fullPath.replace(/\.[^/.]+$/, "") + ".cover.jpg" : "";
       const drive = getTargetDrive();
       if (drive && typeof drive.removeFile === "function") {
         await drive.removeFile(fullPath, true).catch(() => {});
         await drive.removeFile(readmePath, true).catch(() => {});
+        if (coverPath) await drive.removeFile(coverPath, true).catch(() => {});
       } else if (httpDrive && typeof httpDrive.fetch === "function") {
         await httpDrive.fetch(fullPath, { method: "DELETE" }).catch(() => {});
         await httpDrive.fetch(readmePath, { method: "DELETE" }).catch(() => {});
+        if (coverPath) await httpDrive.fetch(coverPath, { method: "DELETE" }).catch(() => {});
+      }
+      if (activeVideoModalItem && activeVideoModalItem.id === item.id) {
+        activeVideoModalItem = null;
       }
       items = items.filter((x) => x.id !== item.id);
       dispatch("count-change", items.length);
@@ -2277,6 +2444,10 @@
       if (thumbBlobCache[key]) {
         try { URL.revokeObjectURL(thumbBlobCache[key]); } catch (_) {}
         delete thumbBlobCache[key];
+      }
+      if (thumbBlobCache[key + ":cover"]) {
+        try { URL.revokeObjectURL(thumbBlobCache[key + ":cover"]); } catch (_) {}
+        delete thumbBlobCache[key + ":cover"];
       }
     } catch (err) {
       console.warn("[KreaStudio] Failed to delete creation:", err);
@@ -2418,6 +2589,18 @@
     return `/p2p/${dev}${encodeURI(cleanPath)}`;
   }
 
+  function getVideoPosterUrl(item) {
+    if (!item) return "";
+    const key = (item.path || item.name || "") + ":cover";
+    if (item.coverBlobUrl) return item.coverBlobUrl;
+    if (thumbBlobCache[key]) return thumbBlobCache[key];
+    if (item.thumbBlobUrl) return item.thumbBlobUrl;
+    const dev = activeDevSegment || getDevSegment();
+    const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
+    const coverPath = cleanPath.replace(/\.[^/.]+$/, "") + ".cover.jpg";
+    return `/p2p/${dev}${encodeURI(coverPath)}`;
+  }
+
   function getViewImageUrl(item) {
     if (!item) return "";
     if (item.blobUrl) return item.blobUrl;
@@ -2425,6 +2608,7 @@
     if (imageBlobCache[item.name]) return imageBlobCache[item.name];
     const dev = activeDevSegment || getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
+    if (item.isVideo) return `/p2p/${dev}${encodeURI(cleanPath)}`;
     const vs = getViewerSettings();
     const base = `/p2p/${dev}${encodeURI(cleanPath)}`;
     return vs.downscaleImages ? `${base}?resize=true&width=${vs.scaleTo}&height=${vs.scaleTo}` : base;
@@ -2438,7 +2622,15 @@
         const openRes = await drive.sendRPC("Open", { path: filePath, query });
         if (openRes && openRes.status === "ok" && openRes.result) {
           const totalSize = openRes.result.size || 0;
-          const mimeType = openRes.result.mimeType || (filePath.endsWith(".jpg") || filePath.endsWith(".jpeg") ? "image/jpeg" : "image/png");
+          const lowerFp = String(filePath || "").toLowerCase();
+          const fallbackMime = lowerFp.endsWith(".mp4")
+            ? "video/mp4"
+            : (lowerFp.endsWith(".webm")
+                ? "video/webm"
+                : (lowerFp.endsWith(".mov")
+                    ? "video/quicktime"
+                    : (lowerFp.endsWith(".jpg") || lowerFp.endsWith(".jpeg") ? "image/jpeg" : "image/png")));
+          const mimeType = openRes.result.mimeType || fallbackMime;
           const rawBlob = await drive.getFileContent(filePath, totalSize, null, 0, query);
           if (rawBlob && rawBlob.size > 0) {
             const typedBlob = new Blob([rawBlob], { type: mimeType });
@@ -2452,10 +2644,11 @@
     return null;
   }
 
-  async function fetchLargeImageBlob(fetchFn, url) {
+  async function fetchLargeImageBlob(fetchFn, url, defaultMime = "") {
     const CHUNK_SIZE = 128 * 1024; // 128 KB safe chunk size for WebRTC SCTP
     let offset = 0;
     let totalLength = null;
+    let detectedMime = defaultMime;
     const chunks = [];
 
     while (totalLength === null || offset < totalLength) {
@@ -2472,6 +2665,11 @@
         throw new Error(`Range fetch failed: HTTP ${resp.status}`);
       }
 
+      if (!detectedMime) {
+        const ct = (resp.headers.get("Content-Type") || resp.headers.get("content-type") || "").split(";")[0].trim();
+        if (ct && ct !== "application/octet-stream") detectedMime = ct;
+      }
+
       const cr = resp.headers.get("Content-Range") || resp.headers.get("content-range");
       if (cr) {
         const match = /\/(\d+)$/.exec(cr);
@@ -2485,7 +2683,9 @@
       }
     }
 
-    return new Blob(chunks, { type: "image/png" });
+    const lowerUrl = String(url || "").toLowerCase();
+    const finalMime = detectedMime || (lowerUrl.includes(".mp4") ? "video/mp4" : (lowerUrl.includes(".jpg") || lowerUrl.includes(".jpeg") ? "image/jpeg" : "image/png"));
+    return new Blob(chunks, { type: finalMime });
   }
 
   async function handleImageError(item, e) {
@@ -2631,16 +2831,23 @@
 
   async function runGeneration(overrideOpts = null) {
     const isOverride = overrideOpts && typeof overrideOpts === "object" && !(overrideOpts instanceof Event);
+    const isVideoGen = isVideoModel(sliders.base_model);
     let cleanPrompt = isOverride && typeof overrideOpts.prompt === "string"
       ? overrideOpts.prompt.trim()
       : promptText.trim();
+    if (!cleanPrompt && isVideoGen && attachedReferences.length > 0) {
+      cleanPrompt = attachedReferences.length >= 2
+        ? "<Picture 1> smoothly transitions into <Picture 2> with natural cinematic movement, fluid camera motion, and realistic lighting.\nAudio: Natural ambient environmental atmosphere and subtle realistic foley in crisp stereo."
+        : "<Picture 1> comes alive with natural subtle movement, gentle breathing, realistic camera micro-motion, and cinematic lighting.\nAudio: Natural ambient room tone and subtle realistic environmental foley in crisp stereo.";
+    }
     if (!cleanPrompt && selectedPersonas.length === 0) return null;
     if (isGenerating) return null;
 
     generationError = "";
-    if (!isSdxlModel(sliders.base_model) && (!kreaSupported || (statusLoadedOnce && !kreaAllowed))) {
+    const cloudPermitted = isVideoGen ? (kreaAllowed && videoAllowed) : kreaAllowed;
+    if (!isSdxlModel(sliders.base_model) && (!kreaSupported || (statusLoadedOnce && !cloudPermitted))) {
       generationError = sanitizeExternalCheckoutText(
-        kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima доступны по Club Pass или Muse Pass.")
+        kreaLockNotice || $_("krea_cloud_locked", {}, "Движки Krea 2 / Muse / Anima / MiniMax-H3 доступны по Club Pass или Muse Pass.")
       );
       return null;
     }
@@ -2700,7 +2907,9 @@
     const targetPrefix = isOverride && overrideOpts.filenamePrefix ? String(overrideOpts.filenamePrefix).trim() : "";
     const customTitle = isOverride && overrideOpts.customTitle ? String(overrideOpts.customTitle).trim() : "";
     const customDescription = isOverride && overrideOpts.customDescription ? String(overrideOpts.customDescription).trim() : "";
-    const chosenAspect = (isOverride && overrideOpts.aspect) ? overrideOpts.aspect : sliders.aspect;
+    const chosenAspect = (isOverride && overrideOpts.aspect)
+      ? overrideOpts.aspect
+      : (isVideoGen ? videoAspect : sliders.aspect);
 
     // Save prompt to history
     if (cleanPrompt) {
@@ -2767,6 +2976,15 @@
     const baseStorage = getBaseStorage();
     const fetchFn = getKreaFetch();
 
+    const effectiveSteps = isVideoGen
+      ? (videoQuality === "fast" ? 4 : 8)
+      : (sliders.steps || (sliders.base_model === "anima" ? 25 : 12));
+    const effectiveCfg = isVideoGen
+      ? 1.0
+      : (sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0)));
+    const endpointPath = isVideoGen ? "/generate/krea/video" : "/generate/krea2";
+    const reqTimeoutMs = isVideoGen ? 540000 : 180000;
+
     const payload = {
       omd_key: omdKey || (typeof window !== "undefined" && window.__omdKey) || "",
       prompt: cleanPrompt,
@@ -2786,8 +3004,15 @@
         archetype: (sliders.archetypes && sliders.archetypes.length > 0) ? sliders.archetypes[0] : null,
         archetype_weights: sliders.archetype_weights || {},
         archetype_strength: sliders.archetype_strength,
-        steps: sliders.steps || (sliders.base_model === "anima" ? 25 : 12),
-        cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0)),
+        steps: effectiveSteps,
+        cfg: effectiveCfg,
+        ...(isVideoGen
+          ? {
+              video_quality: videoQuality,
+              video_duration: videoDuration,
+              video_aspect: chosenAspect
+            }
+          : {}),
         ...(isLocalSdxlGen && resolvedRefImages.length > 0
           ? {
               sdxl_ref_mode: sdxlRefMode || "faceswap",
@@ -2798,8 +3023,9 @@
       },
       width,
       height,
-      steps: sliders.steps || (sliders.base_model === "anima" ? 25 : 12),
-      cfg: sliders.cfg || (sliders.base_model === "realism" ? 1.5 : (sliders.base_model === "semi_realism" ? 2.0 : 3.0)),
+      steps: effectiveSteps,
+      cfg: effectiveCfg,
+      ...(isVideoGen ? { duration: videoDuration, quality: videoQuality, fps: 24 } : {}),
       subfolder: targetSubfolder || null,
       filename_prefix: targetPrefix || null,
       custom_title: customTitle || null,
@@ -2820,7 +3046,7 @@
     const abortCtrl = new AbortController();
     const timeoutHandle = setTimeout(() => {
       try { abortCtrl.abort(); } catch (_) {}
-    }, 180000);
+    }, reqTimeoutMs);
 
     try {
       let res = null;
@@ -2846,19 +3072,19 @@
       // 1. Via P2P tunnel to node (httpDrive)
       if (httpDrive && typeof httpDrive.fetch === "function") {
         try {
-          res = await httpDrive.fetch("/generate/krea2", {
+          res = await httpDrive.fetch(endpointPath, {
             method: "POST",
             headers: requestHeaders,
             body: JSON.stringify(payload),
             signal: abortCtrl.signal,
-            timeoutMs: 180000
+            timeoutMs: reqTimeoutMs
           });
         } catch (driveErr) {
           throw new Error($_("krea_err_p2p_node", { err: driveErr.message || driveErr }, `P2P node connection error: ${driveErr.message || driveErr}. Please reload the page (F5).`));
         }
       } else {
         // 2. Direct HTTP request (fallback when running without P2P drive)
-        res = await fetch("/generate/krea2", {
+        res = await fetch(endpointPath, {
           method: "POST",
           headers: requestHeaders,
           body: JSON.stringify(payload),
@@ -2936,11 +3162,13 @@
         data = await res.json();
       }
 
-      const filename = data.image || `krea_${Date.now()}.png`;
+      const filename = data.video || data.image || (isVideoGen ? `H3_${Date.now()}.mp4` : `krea_${Date.now()}.png`);
+      const itemIsVideo = isVideoGen || Boolean(data.is_video) || videoExtRegex.test(filename);
 
       // Update live quota / entitlement state from server response
       if (data.tier) studioTier = data.tier;
       if (typeof data.krea_allowed === "boolean") kreaAllowed = data.krea_allowed;
+      if (typeof data.video_allowed === "boolean") videoAllowed = data.video_allowed;
       if (typeof data.credits === "number") memberCredits = data.credits;
       if (typeof data.krea_daily_remaining === "number") kreaDailyRemaining = data.krea_daily_remaining;
       if (typeof data.krea_daily_limit === "number") kreaDailyLimit = data.krea_daily_limit;
@@ -2966,7 +3194,7 @@
       let imageBlob = null;
       if (data.url) {
         try {
-          imageBlob = await fetchLargeImageBlob(fetchFn, data.url);
+          imageBlob = await fetchLargeImageBlob(fetchFn, data.url, itemIsVideo ? "video/mp4" : "image/png");
           if (imageBlob && imageBlob.size > 0) {
             localBlobUrl = URL.createObjectURL(imageBlob);
             imageBlobCache[fullImagePath] = localBlobUrl;
@@ -2975,6 +3203,22 @@
           }
         } catch (fetchErr) {
           console.warn("[KreaStudio] Preload/save error:", fetchErr);
+        }
+      }
+
+      let localCoverBlobUrl = null;
+      let coverBlob = null;
+      if (itemIsVideo && data.cover_url) {
+        try {
+          coverBlob = await fetchLargeImageBlob(fetchFn, data.cover_url, "image/jpeg");
+          if (coverBlob && coverBlob.size > 0) {
+            localCoverBlobUrl = URL.createObjectURL(coverBlob);
+            thumbBlobCache[fullImagePath + ":cover"] = localCoverBlobUrl;
+            thumbBlobCache[filename + ":cover"] = localCoverBlobUrl;
+            thumbBlobCache = { ...thumbBlobCache };
+          }
+        } catch (coverErr) {
+          console.warn("[KreaStudio] Video cover preload warning:", coverErr);
         }
       }
 
@@ -2994,11 +3238,14 @@
         id: filename,
         name: filename,
         path: fullImagePath,
+        isVideo: itemIsVideo,
+        duration: data.duration || (itemIsVideo ? videoDuration : null),
         subfolder: effectiveSub,
         title: resolvedTitle || resolvedDesc || cleanPrompt.slice(0, 48),
         description: resolvedDesc,
         prompt: cleanPrompt,
         blobUrl: localBlobUrl,
+        coverBlobUrl: localCoverBlobUrl,
         imageBlob,
         persona: selectedPersonas.map((p) => p.name).join(", ") || "",
         date: Date.now(),
@@ -3036,16 +3283,13 @@
               console.warn("[KreaStudio] Connect targetDrive error:", connErr);
             }
           }
-          const reader = new FileReader();
-          const base64Promise = new Promise((resolve) => {
-            reader.onloadend = () => {
-              const b64 = (reader.result || "").split(",")[1] || "";
-              resolve(b64);
-            };
+          const blobToBase64 = (bl) => new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve((reader.result || "").split(",")[1] || "");
             reader.onerror = () => resolve(null);
+            reader.readAsDataURL(bl);
           });
-          reader.readAsDataURL(imageBlob);
-          const imageBase64 = await base64Promise;
+          const imageBase64 = await blobToBase64(imageBlob);
 
           if (imageBase64) {
             try {
@@ -3061,6 +3305,13 @@
 
               await writeDriveFile(targetDrive, fullImagePath, imageBase64);
               await writeDriveText(targetDrive, fullReadmePath, readmeContent);
+              if (itemIsVideo && coverBlob) {
+                const coverB64 = await blobToBase64(coverBlob);
+                if (coverB64) {
+                  const coverFilename = data.cover || (filename.replace(/\.[^/.]+$/, "") + ".cover.jpg");
+                  await writeDriveFile(targetDrive, `${destFolder}/${coverFilename}`, coverB64).catch(() => {});
+                }
+              }
               console.log("[KreaStudio] Successfully saved creation and companion Readme to drive:", fullImagePath);
             } catch (driveErr) {
               console.warn("[KreaStudio] Direct save to targetDrive warning:", driveErr);
@@ -3072,7 +3323,9 @@
     } catch (err) {
       console.error("[KreaStudio] Generation error:", err);
       const rawErrMsg = err.name === "AbortError"
-        ? $_("krea_err_timeout", {}, "Таймаут генерации (3 мин): сетевой туннель или нода не ответили вовремя.")
+        ? (isVideoGen
+            ? $_("krea_err_video_timeout", {}, "Таймаут генерации видео (9 мин): сетевой туннель или GPU-воркер не ответили вовремя.")
+            : $_("krea_err_timeout", {}, "Таймаут генерации (3 мин): сетевой туннель или нода не ответили вовремя."))
         : (err.message || String(err));
       generationError = sanitizeExternalCheckoutText(rawErrMsg);
       return null;
@@ -3278,6 +3531,9 @@
 
   function handleKeydown(e) {
     if (e.key === "Escape") {
+      if (activeVideoModalItem) {
+        activeVideoModalItem = null;
+      }
       if (deleteConfirmTarget) {
         deleteConfirmTarget = null;
       }
@@ -3301,7 +3557,7 @@
     const src = item.blobUrl || `${getFullImageUrl(item)}?download=true`;
     const a = document.createElement("a");
     a.href = src;
-    a.download = item.name || "creation.png";
+    a.download = item.name || (item.isVideo ? "creation.mp4" : "creation.png");
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -3309,13 +3565,23 @@
 
   function shareImage(item) {
     if (!item) return;
+    const dev = resolveDevice();
     dispatch("open-file", {
       source: {
         path: item.path,
         fullPath: item.path,
         name: item.name,
+        title: item.title || item.name,
+        description: item.description || item.prompt || "",
+        customAttributes: {
+          title: item.title || item.name,
+          description: item.description || item.prompt || ""
+        },
         isDir: false,
-        type: "image"
+        type: item.isVideo ? "video" : "image",
+        mimeType: item.isVideo ? "video/mp4" : "image/png",
+        linkId: dev?.linkId || targetLinkId || "",
+        targetDevice: dev || targetDevice || null
       }
     });
   }
@@ -3414,7 +3680,7 @@
     civitaiPubItems = [item];
     civitaiPubTitle = (item.title && item.title !== cleanStem) ? item.title : "";
     civitaiPubDetail = (item.description && item.description !== item.prompt) ? item.description : "";
-    civitaiPubTags = "";
+    civitaiPubTags = item.isVideo ? "video, minimax h3, comfyui" : "";
     civitaiPubPersonaId = item.persona || (selectedPersona && selectedPersona.id !== "none" ? selectedPersona.id : "") || "";
     civitaiPubAccountId = resolveDefaultCivitaiAccount(civitaiPubPersonaId);
     civitaiPubCustomToken = "";
@@ -3652,7 +3918,13 @@
   }
 
   async function openGallery(activeItem) {
-    const validItems = items.filter((it) => it && (it.blobUrl || it.url || it.path || it.id));
+    if (activeItem && activeItem.isVideo) {
+      await ensureItemPromptAndTitle(activeItem);
+      shareImage(activeItem);
+      return;
+    }
+
+    const validItems = items.filter((it) => it && !it.isVideo && (it.blobUrl || it.url || it.path || it.id));
     if (!validItems.length) return;
 
     if (activeItem) {
@@ -4642,6 +4914,8 @@
         statusLoadedOnce = true;
         if (data && data.tier) studioTier = data.tier;
         if (data && typeof data.krea_allowed === "boolean") kreaAllowed = data.krea_allowed;
+        if (data && typeof data.video_allowed === "boolean") videoAllowed = data.video_allowed;
+        else videoAllowed = kreaAllowed;
         if (data && typeof data.credits === "number") memberCredits = data.credits;
         else memberCredits = null;
         if (data && typeof data.krea_daily_remaining === "number") kreaDailyRemaining = data.krea_daily_remaining;
@@ -4755,8 +5029,21 @@
               title={$_("studio_mode_studio_hint", {}, "Studio (DiT: Krea 2 / Muse / Anima) — next-gen cinematic rendering")}
               on:click={() => switchEngineMode("dit")}
             >
-              <span class="mode-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "🎬"}</span>
+              <span class="mode-icon">{statusLoadedOnce && !kreaAllowed ? "🔒" : "✨"}</span>
               <span>{$_("studio_mode_studio", {}, "Studio")}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={studioEngineMode === "video"}
+              class="mode-toggle-btn"
+              class:active={studioEngineMode === "video"}
+              class:locked={statusLoadedOnce && !(kreaAllowed && videoAllowed)}
+              title={$_("studio_mode_video_hint", {}, "Video + Stereo Audio (MiniMax-H3) — 24fps omni-modal video & sound generation")}
+              on:click={() => switchEngineMode("video")}
+            >
+              <span class="mode-icon">{statusLoadedOnce && !(kreaAllowed && videoAllowed) ? "🔒" : "🎬"}</span>
+              <span>{$_("studio_mode_video", {}, "Video")}</span>
             </button>
           </div>
         {:else}
@@ -5068,7 +5355,7 @@
               <div class="gallery-card placeholder-card">
                 <div
                   class="placeholder-preview"
-                  style={`aspect-ratio: ${sliders.aspect.replace('x', ' / ')};`}
+                  style={`aspect-ratio: ${(studioEngineMode === "video" ? videoAspect : sliders.aspect).replace('x', ' / ')};`}
                 >
                   <div class="shimmer-mesh"></div>
                   <div class="glow-orb"></div>
@@ -5125,24 +5412,55 @@
               </div>
             {/if}
             {#each items as item (item.id)}
-              <div class="gallery-card">
+              {@const itemRefIdx = getGalleryItemRefIndex(item, attachedReferences)}
+              <div class="gallery-card" class:is-attached-ref={itemRefIdx >= 0}>
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
                 <!-- svelte-ignore a11y-no-static-element-interactions -->
                 <div
                   class="gallery-card-thumb-wrap"
+                  class:thumb-ready={item.isVideo}
                   role="button"
                   tabindex="0"
                   on:click={() => openGallery(item)}
                   on:keydown={(e) => e.key === "Enter" && openGallery(item)}
                 >
-                  <img
-                    src=""
-                    alt={item.title || item.prompt}
-                    use:lazyLoad={getThumbnailUrl(item)}
-                    class="gallery-thumb"
-                    loading="lazy"
-                    on:error={(e) => handleImageError(item, e)}
-                  />
+                  {#if item.isVideo}
+                    <video
+                      src={getFullImageUrl(item)}
+                      poster={getVideoPosterUrl(item)}
+                      muted
+                      loop
+                      playsinline
+                      preload="metadata"
+                      class="gallery-thumb gallery-video-thumb thumb-loaded"
+                      on:mouseenter={(e) => e.currentTarget.play().catch(() => {})}
+                      on:mouseleave={(e) => { try { e.currentTarget.pause(); } catch (_) {} }}
+                    ></video>
+                    <div class="video-card-badge" title={$_("krea_video_stereo_badge", {}, "Видео со стереозвуком MiniMax-H3 (клик для просмотра со звуком)")}>
+                      <span>🎬 MP4 · 🔊</span>
+                      {#if item.duration}
+                        <span>{item.duration}s</span>
+                      {/if}
+                    </div>
+                  {:else}
+                    <img
+                      src=""
+                      alt={item.title || item.prompt}
+                      use:lazyLoad={getThumbnailUrl(item)}
+                      class="gallery-thumb"
+                      loading="lazy"
+                      on:error={(e) => handleImageError(item, e)}
+                    />
+                    {#if itemRefIdx >= 0}
+                      <div class="attached-ref-card-badge">
+                        {studioEngineMode === "video"
+                          ? (itemRefIdx === 0
+                              ? $_("krea_card_keyframe_start", {}, "🎬 #1 Старт")
+                              : $_("krea_card_keyframe_end", {}, "🎬 #2 Финал"))
+                          : `📎 #${itemRefIdx + 1}`}
+                      </div>
+                    {/if}
+                  {/if}
                   {#if item.persona || item.totalTime}
                     <div class="card-thumb-badges">
                       {#if item.persona}
@@ -5246,17 +5564,45 @@
                       </button>
                     {/if}
 
-                    <button
-                      type="button"
-                      class="toolbar-btn card-ref-btn"
-                      title={$_("krea_use_as_ref", {}, "Использовать как референс")}
-                      on:click|stopPropagation={() => addGalleryItemAsReference(item)}
-                    >
-                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                        <circle cx="12" cy="13" r="4" />
-                      </svg>
-                    </button>
+                    {#if !item.isVideo}
+                      <button
+                        type="button"
+                        class="toolbar-btn card-animate-btn"
+                        class:active={studioEngineMode === "video" && itemRefIdx >= 0}
+                        title={studioEngineMode === "video" && itemRefIdx >= 0
+                          ? $_("krea_remove_video_keyframe", { idx: itemRefIdx + 1 }, `Убрать опорный кадр #${itemRefIdx + 1}`)
+                          : (studioEngineMode === "video" && attachedReferences.length === 1
+                              ? $_("krea_add_second_keyframe", {}, "Добавить как #2 финальный кадр перехода (<Picture 2>)")
+                              : (studioEngineMode === "video" && attachedReferences.length >= 2
+                                  ? $_("krea_replace_second_keyframe", {}, "Заменить #2 финальный кадр перехода (<Picture 2>)")
+                                  : $_("krea_animate_with_sound", {}, "Оживить кадр со звуком — задать #1 старт (MiniMax-H3)")))}
+                        on:click|stopPropagation={() => animateGalleryItem(item)}
+                      >
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+                          <polygon points="10 9 15 12 10 15 10 9" fill="currentColor" stroke="none" />
+                        </svg>
+                      </button>
+
+                      <button
+                        type="button"
+                        class="toolbar-btn card-ref-btn"
+                        class:active={itemRefIdx >= 0}
+                        title={itemRefIdx >= 0
+                          ? $_("krea_remove_ref_idx", { idx: itemRefIdx + 1 }, `Убрать референс #${itemRefIdx + 1}`)
+                          : (attachedReferences.length === 1
+                              ? $_("krea_use_as_second_ref", {}, "Добавить как референс #2")
+                              : (attachedReferences.length >= 2
+                                  ? $_("krea_replace_second_ref", {}, "Заменить референс #2")
+                                  : $_("krea_use_as_ref", {}, "Использовать как референс")))}
+                        on:click|stopPropagation={() => addGalleryItemAsReference(item)}
+                      >
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                          <circle cx="12" cy="13" r="4" />
+                        </svg>
+                      </button>
+                    {/if}
                     <button
                       type="button"
                       class="toolbar-btn card-delete-btn"
@@ -5606,7 +5952,126 @@
 
     <!-- Sliders and Style Presets Panel -->
     {#if showSlidersPanel}
-      <div class="sliders-panel" in:fade={{ duration: 120 }}>
+      <div class="sliders-panel" class:video-sliders-panel={studioEngineMode === "video"} in:fade={{ duration: 120 }}>
+        {#if studioEngineMode === "video"}
+          <!-- Video Card 1: Quality & Turbo Steps -->
+          <div class="param-card model-card">
+            <div class="model-pill-control">
+              <div class="model-pill-header">
+                <span>{$_("krea_video_engine", {}, "Движок и качество")}</span>
+                <span class="model-pill-hint">MiniMax-H3 · 🔊 Stereo</span>
+              </div>
+              <div class="pill-toggle-wrapper">
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={videoQuality === "fast"}
+                  on:click={() => setVideoQuality("fast")}
+                  title={$_("krea_video_fast_hint", {}, "Fast 480p (4 шага LightX2V Turbo) — быстрый черновой рендер со стереозвуком")}
+                >
+                  <span class="pill-icon">⚡</span>
+                  <span>Fast 480p</span>
+                </button>
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={videoQuality === "hd"}
+                  on:click={() => setVideoQuality("hd")}
+                  title={$_("krea_video_hd_hint", {}, "HD 768p (8 шагов LightX2V) — кинематографичная чёткость и синхронный стереозвук")}
+                >
+                  <span class="pill-icon">🎬</span>
+                  <span>HD 768p</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video Card 2: Duration (5s vs 8s @ 24fps + Audio) -->
+          <div class="param-card video-duration-card">
+            <div class="model-pill-control">
+              <div class="model-pill-header">
+                <span>{$_("krea_video_duration", {}, "Длительность")}</span>
+                <span class="model-pill-hint">{videoDuration === 8 ? "192 к. · 24fps" : "124 к. · 24fps"}</span>
+              </div>
+              <div class="pill-toggle-wrapper">
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={videoDuration === 5}
+                  on:click={() => setVideoDuration(5)}
+                  title={$_("krea_video_5s_hint", {}, "5 секунд (124 кадра @ 24fps + синхронная стереодорожка)")}
+                >
+                  <span class="pill-icon">⏱</span>
+                  <span>5 {$_("krea_sec_short", {}, "сек")}</span>
+                </button>
+                <button
+                  type="button"
+                  class="pill-btn"
+                  class:active={videoDuration === 8}
+                  on:click={() => setVideoDuration(8)}
+                  title={$_("krea_video_8s_hint", {}, "8 секунд (192 кадра @ 24fps + расширенная стереосцена)")}
+                >
+                  <span class="pill-icon">🎞</span>
+                  <span>8 {$_("krea_sec_short", {}, "сек")}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video Card 3: Video Aspect Ratio -->
+          <div class="param-card aspect-settings-card">
+            <div class="card-header-row">
+              <span class="select-label">{$_("krea_video_aspect", {}, "Формат видео:")}</span>
+            </div>
+            <div class="aspect-chips">
+              <button
+                type="button"
+                class="aspect-chip"
+                class:active={videoAspect === "768x1344"}
+                on:click={() => setVideoAspect("768x1344")}
+                title={$_("krea_video_aspect_9_16", {}, "9:16 Вертикальное / Reels / Shorts")}
+              >
+                📱 9:16
+              </button>
+              <button
+                type="button"
+                class="aspect-chip"
+                class:active={videoAspect === "896x1152"}
+                on:click={() => setVideoAspect("896x1152")}
+                title={$_("krea_video_aspect_3_4", {}, "3:4 Портрет (родной формат Studio)")}
+              >
+                🖼 3:4
+              </button>
+              <button
+                type="button"
+                class="aspect-chip"
+                class:active={videoAspect === "1024x1024"}
+                on:click={() => setVideoAspect("1024x1024")}
+                title={$_("krea_video_aspect_1_1", {}, "1:1 Квадратное видео")}
+              >
+                ⏹ 1:1
+              </button>
+              <button
+                type="button"
+                class="aspect-chip"
+                class:active={videoAspect === "1152x896"}
+                on:click={() => setVideoAspect("1152x896")}
+                title={$_("krea_video_aspect_4_3", {}, "4:3 Альбомное (родной формат Studio)")}
+              >
+                🖥 4:3
+              </button>
+              <button
+                type="button"
+                class="aspect-chip"
+                class:active={videoAspect === "1344x768"}
+                on:click={() => setVideoAspect("1344x768")}
+                title={$_("krea_video_aspect_16_9", {}, "16:9 Киноширокоформатное")}
+              >
+                🎬 16:9
+              </button>
+            </div>
+          </div>
+        {:else}
         <!-- Card 1: Base Model (Mode-dependent: SDXL Express vs DiT Studio) -->
         <div class="param-card model-card">
           <div class="model-pill-control">
@@ -5988,6 +6453,7 @@
             </button>
           </div>
         </div>
+        {/if}
       </div>
     {/if}
 
@@ -6153,11 +6619,21 @@
     <!-- Attached Reference Images Bar -->
     {#if attachedReferences.length > 0}
       <div class="attached-refs-bar">
-        <span class="refs-label">{$_("krea_refs_count", { count: attachedReferences.length }, `Референсы (${attachedReferences.length}/2):`)}</span>
+        <span class="refs-label">
+          {studioEngineMode === "video"
+            ? $_("krea_video_keyframes_count", { count: attachedReferences.length }, `Опорные кадры (${attachedReferences.length}/2):`)
+            : $_("krea_refs_count", { count: attachedReferences.length }, `Референсы (${attachedReferences.length}/2):`)}
+        </span>
         <div class="refs-list">
           {#each attachedReferences as ref, idx}
             <div class="ref-chip">
-              <span class="ref-chip-idx">#{idx + 1}</span>
+              <span class="ref-chip-idx">
+                {studioEngineMode === "video"
+                  ? (idx === 0
+                      ? $_("krea_keyframe_idx_start", {}, "#1 Старт")
+                      : $_("krea_keyframe_idx_end", {}, "#2 Финал"))
+                  : `#${idx + 1}`}
+              </span>
               <img src={ref.preview} alt={$_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)} class="ref-chip-img" />
               <span class="ref-chip-title" title={ref.name || $_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)}>{ref.name || $_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)}</span>
               <button
@@ -6167,19 +6643,37 @@
                 on:click={() => removeReference(idx)}
               >✕</button>
             </div>
+            {#if idx === 0 && attachedReferences.length >= 2}
+              <button
+                type="button"
+                class="swap-refs-btn"
+                title={studioEngineMode === "video"
+                  ? $_("krea_swap_keyframes_hint", {}, "Поменять местами #1 Старт ↔ #2 Финал")
+                  : $_("krea_swap_refs_hint", {}, "Поменять местами референсы #1 ↔ #2")}
+                on:click={swapReferences}
+              >⇄</button>
+            {/if}
           {/each}
           {#if attachedReferences.length < 2}
             <button
               type="button"
               class="add-ref-mini-btn"
-              title={$_("krea_add_more_refs", {}, "Добавить ещё референс")}
+              title={studioEngineMode === "video" ? $_("krea_add_end_keyframe", {}, "Загрузить файл или кликните 🎬 на второй карточке в галерее") : $_("krea_add_more_refs", {}, "Добавить ещё референс")}
               on:click={() => refFileInputEl?.click()}
             >
-              {$_("krea_add_ref_btn", {}, "+ Ещё картинка")}
+              {studioEngineMode === "video" ? $_("krea_add_end_frame_btn", {}, "+ Финальный кадр") : $_("krea_add_ref_btn", {}, "+ Ещё картинка")}
             </button>
           {/if}
         </div>
-        {#if studioEngineMode === "sdxl"}
+        {#if studioEngineMode === "video"}
+          <div class="sdxl-ref-controls">
+            <span class="sdxl-duo-hint" title={$_("krea_video_keyframes_hint", {}, "MiniMax-H3 FL2VA: #1 задаёт стартовый кадр (<Picture 1>), а #2 (опционально) — финальный кадр плавного перехода (<Picture 2>)")}>
+              {attachedReferences.length >= 2
+                ? $_("krea_video_fl2va_badge", {}, "🎬 #1 Старт (<Picture 1>) → #2 Финал (<Picture 2>)")
+                : $_("krea_video_i2va_badge_pick2", {}, "🎬 Кликните 🎬 на 2-й карточке для перехода в #2 Финал (<Picture 2>)")}
+            </span>
+          </div>
+        {:else if studioEngineMode === "sdxl"}
           <div class="sdxl-ref-controls">
             <div class="sdxl-ref-mode-group" role="tablist" aria-label={$_("krea_sdxl_ref_mode_aria", {}, "Reference mode")}>
               <button
@@ -6280,13 +6774,17 @@
       <textarea
         bind:this={textareaEl}
         bind:value={promptText}
-        placeholder={studioEngineMode === "sdxl" && attachedReferences.length > 0 && sdxlRefMode === "inpaint"
-          ? (sdxlInpaintTarget === "background"
-            ? $_("krea_sdxl_inpaint_bg_placeholder", {}, "Describe the new background & lighting (person and outfit stay intact)...")
-            : (sdxlInpaintTarget === "person"
-              ? $_("krea_sdxl_inpaint_person_placeholder", {}, "Describe the new character in this scene...")
-              : $_("krea_sdxl_inpaint_outfit_placeholder", {}, "Describe the new outfit / look (face, hands & background stay intact)...")))
-          : $_("krea_prompt_placeholder", {}, "Describe the image...")}
+        placeholder={studioEngineMode === "video"
+          ? (attachedReferences.length > 0
+              ? $_("krea_video_i2v_placeholder", {}, "Опишите движение <Picture 1>, камеру и стереозвук (Audio: ...) — или сразу нажмите Снять видео...")
+              : $_("krea_video_t2v_placeholder", {}, "Опишите видеосцену, движение камеры и звук (Audio: ...) — или попросите Режиссёра 🎬..."))
+          : (studioEngineMode === "sdxl" && attachedReferences.length > 0 && sdxlRefMode === "inpaint"
+              ? (sdxlInpaintTarget === "background"
+                ? $_("krea_sdxl_inpaint_bg_placeholder", {}, "Describe the new background & lighting (person and outfit stay intact)...")
+                : (sdxlInpaintTarget === "person"
+                  ? $_("krea_sdxl_inpaint_person_placeholder", {}, "Describe the new character in this scene...")
+                  : $_("krea_sdxl_inpaint_outfit_placeholder", {}, "Describe the new outfit / look (face, hands & background stay intact)...")))
+              : $_("krea_prompt_placeholder", {}, "Describe the image..."))}
         rows="1"
         class="prompt-textarea"
         on:input={resizeTextarea}
@@ -6302,7 +6800,7 @@
         <button
           class="generate-submit-btn"
           class:busy={isGenerating}
-          disabled={isGenerating || (!promptText.trim() && selectedPersonas.length === 0)}
+          disabled={isGenerating || (!promptText.trim() && selectedPersonas.length === 0 && !(studioEngineMode === "video" && attachedReferences.length > 0))}
           on:click={() => runGeneration()}
         >
           {#if isGenerating}
@@ -6317,8 +6815,8 @@
               </span>
             {/if}
           {:else}
-            <span class="btn-sparkle">✨</span>
-            <span>{$_("krea_generate_btn", {}, "Сгенерировать")}</span>
+            <span class="btn-sparkle">{studioEngineMode === "video" ? "🎬" : "✨"}</span>
+            <span>{studioEngineMode === "video" ? $_("krea_generate_video_btn", {}, "Снять видео") : $_("krea_generate_btn", {}, "Сгенерировать")}</span>
           {/if}
         </button>
       </div>
@@ -8224,9 +8722,9 @@
   .card-toolbar {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 1px;
     flex-shrink: 0;
-    margin-left: 7px;
+    margin-left: 5px;
   }
 
   @media (hover: hover) {
@@ -8241,7 +8739,7 @@
     .gallery-card:hover .card-toolbar,
     .gallery-card:focus-within .card-toolbar {
       max-width: 240px;
-      margin-left: 7px;
+      margin-left: 4px;
       opacity: 1;
       pointer-events: auto;
     }
@@ -8265,8 +8763,8 @@
     background: transparent;
     border: none;
     color: #94a3b8;
-    width: 23px;
-    height: 24px;
+    width: 21px;
+    height: 23px;
     border-radius: 5px;
     display: flex;
     align-items: center;
@@ -8275,7 +8773,8 @@
     transition: all 0.15s ease;
     padding: 0;
     font-size: 11px;
-    opacity: 0.75;
+    opacity: 0.78;
+    flex-shrink: 0;
   }
 
   .gallery-card:hover .card-toolbar .toolbar-btn {
@@ -13118,5 +13617,131 @@
     cursor: pointer;
     font-size: 14px;
     padding: 2px 5px;
+  }
+
+  /* Video Mode Card & Controls Styles */
+  .sliders-panel.video-sliders-panel {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.9fr) minmax(0, 1.35fr);
+  }
+
+  @media (max-width: 900px) {
+    .sliders-panel.video-sliders-panel {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .gallery-video-thumb {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    background: #0b0f17;
+  }
+
+  .video-card-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: #f8fafc;
+    background: rgba(15, 23, 42, 0.76);
+    border: 1px solid rgba(139, 92, 246, 0.45);
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .toolbar-btn.card-animate-btn:hover,
+  .toolbar-btn.card-animate-btn.active {
+    color: #c4b5fd;
+    background: rgba(139, 92, 246, 0.24);
+    opacity: 1;
+  }
+
+  .card-toolbar .card-ref-btn.active {
+    color: #ede9fe;
+    background: rgba(139, 92, 246, 0.28);
+    opacity: 1;
+  }
+
+  .krea-studio-root.light-theme .toolbar-btn.card-animate-btn.active,
+  .krea-studio-root.light-theme .card-toolbar .card-ref-btn.active {
+    color: #6d28d9;
+    background: rgba(124, 58, 237, 0.16);
+    opacity: 1;
+  }
+
+  .gallery-card.is-attached-ref {
+    border-color: rgba(139, 92, 246, 0.75);
+    box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.45), 0 8px 22px rgba(139, 92, 246, 0.18);
+  }
+
+  .krea-studio-root.light-theme .gallery-card.is-attached-ref {
+    border-color: #7c3aed;
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.22), 0 6px 18px rgba(124, 58, 237, 0.14);
+  }
+
+  .attached-ref-card-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: #ffffff;
+    background: linear-gradient(135deg, rgba(124, 58, 237, 0.92), rgba(99, 102, 241, 0.92));
+    border: 1px solid rgba(221, 214, 254, 0.55);
+    box-shadow: 0 3px 10px rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .swap-refs-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    border: 1px solid rgba(139, 92, 246, 0.42);
+    background: rgba(139, 92, 246, 0.16);
+    color: #ddd6fe;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.16s ease;
+    padding: 0;
+  }
+
+  .swap-refs-btn:hover {
+    background: rgba(139, 92, 246, 0.34);
+    border-color: #a78bfa;
+    color: #ffffff;
+    transform: scale(1.06);
+  }
+
+  .krea-studio-root.light-theme .swap-refs-btn {
+    background: #f5f3ff;
+    border-color: #c4b5fd;
+    color: #6d28d9;
+  }
+
+  .krea-studio-root.light-theme .swap-refs-btn:hover {
+    background: #ede9fe;
+    border-color: #7c3aed;
+    color: #5b21b6;
   }
 </style>
