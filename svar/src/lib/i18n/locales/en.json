@@ -1809,5 +1809,19 @@
   "invalid_keyfile_json": "Invalid keyfile: could not parse JSON.",
   "invalid_keyfile_format": "Invalid DID keyfile format.",
   "invalid_keyfile_missing_pub": "Keyfile does not contain a valid DID keypair.",
-  "invalid_keyfile_missing_priv": "Keyfile is missing private key material."
+  "invalid_keyfile_missing_priv": "Keyfile is missing private key material.",
+  "krea_ref_tune_hint": "Click to adjust likeness or redraw strength",
+  "krea_ref_face_only_short": "face",
+  "krea_ref_raw_short": "raw",
+  "krea_ref_popover_face_title": "Identity Transfer",
+  "krea_ref_popover_inpaint_title": "Retouch Strength",
+  "krea_ref_reset_btn": "Reset",
+  "krea_ref_ipa_weight_label": "Likeness & Hair",
+  "krea_ref_face_only_badge": "Face only",
+  "krea_ref_ipa_weight_hint": "0 — free hairstyle change via prompt · 0.65 — balanced · 0.90 — strict photo likeness",
+  "krea_ref_restore_label": "Skin Smoothing",
+  "krea_ref_off_badge": "Off",
+  "krea_ref_restore_hint": "Lower (0.15–0.30) preserves authentic facial traits · Higher smooths blurry photos",
+  "krea_ref_inpaint_denoise_label": "Redraw Strength",
+  "krea_ref_inpaint_denoise_hint": "0.55 — subtle fabric & lighting tweak · 0.94 — full outfit or background replacement"
 }

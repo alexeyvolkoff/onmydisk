@@ -318,6 +318,9 @@
         archetype: primaryArchetype,
         archetype_strength: typeof s.archetype_strength === "number" ? s.archetype_strength : 0.4,
         aspect: s.aspect || "896x1152",
+        ipadapter_weight: typeof s.ipadapter_weight === "number" ? s.ipadapter_weight : 0.65,
+        face_restore_visibility: typeof s.face_restore_visibility === "number" ? s.face_restore_visibility : 0.30,
+        inpaint_denoise: typeof s.inpaint_denoise === "number" ? s.inpaint_denoise : 0.94,
         steps: typeof s.steps === "number" ? s.steps : (isSdxlModel(s.base_model) ? 6 : (s.base_model === "anima" ? 25 : 12)),
         cfg: typeof s.cfg === "number" ? s.cfg : (isSdxlModel(s.base_model) ? 1.0 : (s.base_model === "realism" ? 1.5 : (s.base_model === "semi_realism" ? 2.0 : 3.0)))
       };
@@ -446,6 +449,9 @@
     archetype: initPrimaryArchetype,
     archetype_strength: (initialSavedSliders && typeof initialSavedSliders.archetype_strength === "number") ? initialSavedSliders.archetype_strength : 0.4,
     aspect: (initialSavedSliders && initialSavedSliders.aspect) || "896x1152",
+    ipadapter_weight: (initialSavedSliders && typeof initialSavedSliders.ipadapter_weight === "number") ? initialSavedSliders.ipadapter_weight : 0.65,
+    face_restore_visibility: (initialSavedSliders && typeof initialSavedSliders.face_restore_visibility === "number") ? initialSavedSliders.face_restore_visibility : 0.30,
+    inpaint_denoise: (initialSavedSliders && typeof initialSavedSliders.inpaint_denoise === "number") ? initialSavedSliders.inpaint_denoise : 0.94,
     video_quality: videoQuality,
     video_duration: videoDuration,
     video_aspect: videoAspect,
@@ -759,6 +765,7 @@
   let sdxlRefMode = "faceswap"; // "faceswap" | "inpaint"
   let sdxlFaceTarget = "auto"; // "auto" | "left" | "right" | "second"
   let sdxlInpaintTarget = "outfit"; // "outfit" | "background" | "person"
+  let activeRefPopoverIdx = null;
 
   // Prompt History
   let showPromptsPopup = false;
@@ -1240,6 +1247,21 @@
 
   function removeReference(idx) {
     attachedReferences = attachedReferences.filter((_, i) => i !== idx);
+    activeRefPopoverIdx = null;
+  }
+
+  function toggleRefPopover(idx) {
+    if (studioEngineMode !== "sdxl") return;
+    if (sdxlRefMode === "inpaint" && idx === 1 && sdxlInpaintTarget !== "person") return;
+    activeRefPopoverIdx = activeRefPopoverIdx === idx ? null : idx;
+  }
+
+  function resetRefStrengths(mode = "face") {
+    if (mode === "inpaint") {
+      sliders = { ...sliders, inpaint_denoise: 0.94 };
+    } else {
+      sliders = { ...sliders, ipadapter_weight: 0.65, face_restore_visibility: 0.30 };
+    }
   }
 
   function swapReferences() {
@@ -3098,7 +3120,10 @@
           ? {
               sdxl_ref_mode: sdxlRefMode || "faceswap",
               sdxl_face_target: sdxlFaceTarget || "auto",
-              sdxl_inpaint_target: sdxlInpaintTarget || "outfit"
+              sdxl_inpaint_target: sdxlInpaintTarget || "outfit",
+              ipadapter_weight: typeof sliders.ipadapter_weight === "number" ? sliders.ipadapter_weight : 0.65,
+              face_restore_visibility: typeof sliders.face_restore_visibility === "number" ? sliders.face_restore_visibility : 0.30,
+              inpaint_denoise: typeof sliders.inpaint_denoise === "number" ? sliders.inpaint_denoise : 0.94
             }
           : {})
       },
@@ -3608,10 +3633,16 @@
     if (showAdvancedSettings && !e.target.closest(".advanced-settings-control")) {
       closeAdvancedSettings();
     }
+    if (activeRefPopoverIdx !== null && !e.target.closest(".ref-chip-wrap")) {
+      activeRefPopoverIdx = null;
+    }
   }
 
   function handleKeydown(e) {
     if (e.key === "Escape") {
+      if (activeRefPopoverIdx !== null) {
+        activeRefPopoverIdx = null;
+      }
       if (activeVideoModalItem) {
         activeVideoModalItem = null;
       }
@@ -6728,22 +6759,150 @@
         </span>
         <div class="refs-list">
           {#each attachedReferences as ref, idx}
-            <div class="ref-chip">
-              <span class="ref-chip-idx">
-                {studioEngineMode === "video"
-                  ? (idx === 0
-                      ? $_("krea_keyframe_idx_start", {}, "#1 Старт")
-                      : $_("krea_keyframe_idx_end", {}, "#2 Финал"))
-                  : `#${idx + 1}`}
-              </span>
-              <img src={ref.preview} alt={$_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)} class="ref-chip-img" />
-              <span class="ref-chip-title" title={ref.name || $_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)}>{ref.name || $_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)}</span>
-              <button
-                type="button"
-                class="ref-chip-del"
-                title={$_("krea_delete_ref", {}, "Удалить референс")}
-                on:click={() => removeReference(idx)}
-              >✕</button>
+            {@const isInpaintSceneChip = studioEngineMode === "sdxl" && sdxlRefMode === "inpaint" && idx === 0}
+            {@const isInactiveInpaintSecond = studioEngineMode === "sdxl" && sdxlRefMode === "inpaint" && idx === 1 && sdxlInpaintTarget !== "person"}
+            {@const canTuneRef = studioEngineMode === "sdxl" && !isInactiveInpaintSecond}
+            <div class="ref-chip-wrap">
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
+              <div
+                class="ref-chip"
+                class:interactive={canTuneRef}
+                class:open={activeRefPopoverIdx === idx && canTuneRef}
+                title={canTuneRef
+                  ? $_("krea_ref_tune_hint", {}, "Нажмите, чтобы настроить силу сходства или перерисовки")
+                  : (ref.name || $_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`))}
+                on:click|stopPropagation={() => { if (canTuneRef) toggleRefPopover(idx); }}
+              >
+                <span class="ref-chip-idx">
+                  {studioEngineMode === "video"
+                    ? (idx === 0
+                        ? $_("krea_keyframe_idx_start", {}, "#1 Старт")
+                        : $_("krea_keyframe_idx_end", {}, "#2 Финал"))
+                    : `#${idx + 1}`}
+                </span>
+                <img src={ref.preview} alt={$_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)} class="ref-chip-img" />
+                <span class="ref-chip-title">{ref.name || $_("krea_ref_img", { idx: idx + 1 }, `Картинка ${idx + 1}`)}</span>
+                {#if canTuneRef}
+                  <span class="ref-chip-weight">
+                    {#if isInpaintSceneChip}
+                      {(sliders.inpaint_denoise ?? 0.94).toFixed(2)}
+                    {:else if attachedReferences.length >= 2 && sdxlRefMode === "faceswap"}
+                      {(sliders.face_restore_visibility ?? 0.30) <= 0.02
+                        ? $_("krea_ref_raw_short", {}, "raw")
+                        : (sliders.face_restore_visibility ?? 0.30).toFixed(2)}
+                    {:else}
+                      {(sliders.ipadapter_weight ?? 0.65) <= 0.02
+                        ? $_("krea_ref_face_only_short", {}, "лицо")
+                        : (sliders.ipadapter_weight ?? 0.65).toFixed(2)}
+                    {/if}
+                  </span>
+                {/if}
+                <button
+                  type="button"
+                  class="ref-chip-del"
+                  title={$_("krea_delete_ref", {}, "Удалить референс")}
+                  on:click|stopPropagation={() => removeReference(idx)}
+                >✕</button>
+              </div>
+
+              {#if activeRefPopoverIdx === idx && canTuneRef}
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
+                <div class="ref-weight-popover" on:click|stopPropagation>
+                  <div class="ref-popover-header">
+                    <span class="ref-popover-title">
+                      {isInpaintSceneChip
+                        ? $_("krea_ref_popover_inpaint_title", {}, "Сила ретуши")
+                        : $_("krea_ref_popover_face_title", {}, "Перенос образа")}
+                    </span>
+                    <div class="ref-popover-actions">
+                      {#if isInpaintSceneChip ? Math.abs((sliders.inpaint_denoise ?? 0.94) - 0.94) > 0.005 : (Math.abs((sliders.ipadapter_weight ?? 0.65) - 0.65) > 0.005 || Math.abs((sliders.face_restore_visibility ?? 0.30) - 0.30) > 0.005)}
+                        <button
+                          type="button"
+                          class="ref-popover-reset"
+                          on:click={() => resetRefStrengths(isInpaintSceneChip ? "inpaint" : "face")}
+                        >{$_("krea_ref_reset_btn", {}, "Сброс")}</button>
+                      {/if}
+                      <button
+                        type="button"
+                        class="ref-popover-close"
+                        aria-label="Close"
+                        on:click={() => (activeRefPopoverIdx = null)}
+                      >✕</button>
+                    </div>
+                  </div>
+
+                  {#if isInpaintSceneChip}
+                    <div class="ref-popover-row">
+                      <div class="ref-popover-label-row">
+                        <span class="setting-name">{$_("krea_ref_inpaint_denoise_label", {}, "Сила перерисовки")}</span>
+                        <span class="setting-val-badge">{(sliders.inpaint_denoise ?? 0.94).toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.50"
+                        max="0.98"
+                        step="0.02"
+                        class="advanced-slider"
+                        value={sliders.inpaint_denoise ?? 0.94}
+                        on:input={(e) => { sliders = { ...sliders, inpaint_denoise: parseFloat(e.currentTarget.value) }; }}
+                      />
+                      <div class="setting-subtext">
+                        {$_("krea_ref_inpaint_denoise_hint", {}, "0.55 — деликатная правка ткани и света · 0.94 — полная замена одежды или фона")}
+                      </div>
+                    </div>
+                  {:else}
+                    {#if !(attachedReferences.length >= 2 && sdxlRefMode === "faceswap")}
+                      <div class="ref-popover-row">
+                        <div class="ref-popover-label-row">
+                          <span class="setting-name">{$_("krea_ref_ipa_weight_label", {}, "Образ и причёска")}</span>
+                          <span class="setting-val-badge">
+                            {(sliders.ipadapter_weight ?? 0.65) <= 0.02
+                              ? $_("krea_ref_face_only_badge", {}, "Только лицо")
+                              : (sliders.ipadapter_weight ?? 0.65).toFixed(2)}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="0.95"
+                          step="0.05"
+                          class="advanced-slider"
+                          value={sliders.ipadapter_weight ?? 0.65}
+                          on:input={(e) => { sliders = { ...sliders, ipadapter_weight: parseFloat(e.currentTarget.value) }; }}
+                        />
+                        <div class="setting-subtext">
+                          {$_("krea_ref_ipa_weight_hint", {}, "0 — свободная смена волос по промпту · 0.65 — баланс · 0.90 — макс. сходство с фото")}
+                        </div>
+                      </div>
+                    {/if}
+
+                    <div class="ref-popover-row">
+                      <div class="ref-popover-label-row">
+                        <span class="setting-name">{$_("krea_ref_restore_label", {}, "Сглаживание кожи")}</span>
+                        <span class="setting-val-badge">
+                          {(sliders.face_restore_visibility ?? 0.30) <= 0.02
+                            ? $_("krea_ref_off_badge", {}, "Выкл")
+                            : (sliders.face_restore_visibility ?? 0.30).toFixed(2)}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="0.85"
+                        step="0.05"
+                        class="advanced-slider"
+                        value={sliders.face_restore_visibility ?? 0.30}
+                        on:input={(e) => { sliders = { ...sliders, face_restore_visibility: parseFloat(e.currentTarget.value) }; }}
+                      />
+                      <div class="setting-subtext">
+                        {$_("krea_ref_restore_hint", {}, "Ниже (0.15–0.30) — точнее живые черты · Выше — бьюти-фильтр для размытых исходников")}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </div>
             {#if idx === 0 && attachedReferences.length >= 2}
               <button
@@ -6787,7 +6946,11 @@
                 title={$_("krea_sdxl_mode_face_hint", {}, "Transfer face from reference into a brand-new scene (ReActor HyperSwap 256)")}
                 on:click={() => (sdxlRefMode = "faceswap")}
               >
-                🎭 {$_("krea_sdxl_mode_face", {}, "Face")}
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M5 20a7 7 0 0 1 14 0" />
+                </svg>
+                <span>{$_("krea_sdxl_mode_face", {}, "Face")}</span>
               </button>
               <button
                 type="button"
@@ -6798,7 +6961,12 @@
                 title={$_("krea_sdxl_mode_inpaint_hint", {}, "Auto-Inpaint: replace outfit, background, or person on photo #1 while preserving unmasked pixels")}
                 on:click={() => (sdxlRefMode = "inpaint")}
               >
-                👗 {$_("krea_sdxl_mode_inpaint", {}, "Retouch")}
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 4V2" /><path d="M15 16v-2" /><path d="M8 9h2" /><path d="M20 9h2" />
+                  <path d="M17.8 11.8 19 13" /><path d="M15 9h.01" /><path d="M17.8 6.2 19 5" />
+                  <path d="m3 21 9-9" /><path d="M12.2 6.2 11 5" />
+                </svg>
+                <span>{$_("krea_sdxl_mode_inpaint", {}, "Retouch")}</span>
               </button>
             </div>
             {#if sdxlRefMode === "inpaint"}
@@ -11331,6 +11499,48 @@
     border-color: #cbd5e1;
     color: #1e293b;
   }
+  .krea-studio-root.light-theme .ref-chip.interactive:hover,
+  .krea-studio-root.light-theme .ref-chip.open {
+    background: #f5f3ff;
+    border-color: #8b5cf6;
+  }
+  .krea-studio-root.light-theme .ref-chip-weight {
+    background: #ede9fe;
+    color: #6d28d9;
+    border-color: #c4b5fd;
+  }
+  .krea-studio-root.light-theme .ref-weight-popover {
+    background: #ffffff;
+    border-color: #e2e8f0;
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.04);
+  }
+  .krea-studio-root.light-theme .ref-popover-header {
+    border-bottom-color: #f1f5f9;
+  }
+  .krea-studio-root.light-theme .ref-popover-title {
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .ref-popover-close {
+    color: #64748b;
+  }
+  .krea-studio-root.light-theme .ref-popover-close:hover {
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .ref-weight-popover .setting-name {
+    color: #1e293b;
+  }
+  .krea-studio-root.light-theme .ref-weight-popover .setting-val-badge {
+    color: #6d28d9;
+    background: #ede9fe;
+    border-color: #c4b5fd;
+  }
+  .krea-studio-root.light-theme .ref-weight-popover .setting-subtext {
+    color: #64748b;
+  }
+  .krea-studio-root.light-theme .ref-weight-popover .advanced-slider {
+    background: #cbd5e1;
+    accent-color: #7c3aed;
+  }
   .krea-studio-root.light-theme .add-ref-mini-btn {
     background: #ffffff;
     border-color: #cbd5e1;
@@ -11345,6 +11555,21 @@
     background: #f5f3ff;
     border-color: #ddd6fe;
     color: #6d28d9;
+  }
+  .krea-studio-root.light-theme .sdxl-ref-mode-group {
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+  }
+  .krea-studio-root.light-theme .sdxl-mode-pill {
+    color: #475569;
+  }
+  .krea-studio-root.light-theme .sdxl-mode-pill:hover {
+    color: #0f172a;
+  }
+  .krea-studio-root.light-theme .sdxl-mode-pill.active {
+    background: #ffffff;
+    color: #6d28d9;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
   }
   .krea-studio-root.light-theme .sdxl-face-target-group {
     background: #f1f5f9;
@@ -11682,6 +11907,12 @@
     flex-wrap: wrap;
   }
 
+  .ref-chip-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
   .ref-chip {
     display: flex;
     align-items: center;
@@ -11692,6 +11923,107 @@
     border-radius: 20px;
     font-size: 0.78rem;
     color: #f1f5f9;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .ref-chip.interactive {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .ref-chip.interactive:hover,
+  .ref-chip.open {
+    border-color: #8b5cf6;
+    background: rgba(46, 16, 101, 0.45);
+  }
+
+  .ref-chip-weight {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 9px;
+    background: rgba(139, 92, 246, 0.2);
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    color: #ddd6fe;
+    line-height: 1.25;
+  }
+
+  .ref-weight-popover {
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: 0;
+    width: 280px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgba(15, 23, 42, 0.96);
+    border: 1px solid rgba(139, 92, 246, 0.32);
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(16px);
+    z-index: 95;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .ref-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .ref-popover-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #f8fafc;
+  }
+
+  .ref-popover-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ref-popover-reset {
+    border: none;
+    background: transparent;
+    color: #8b5cf6;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .ref-popover-reset:hover {
+    text-decoration: underline;
+  }
+
+  .ref-popover-close {
+    border: none;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 0.82rem;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+  }
+
+  .ref-popover-close:hover {
+    color: #f8fafc;
+  }
+
+  .ref-popover-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .ref-popover-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
 
   .ref-chip-idx {
@@ -11764,20 +12096,23 @@
     gap: 2px;
     padding: 2px;
     border-radius: 14px;
-    background: rgba(15, 23, 42, 0.85);
-    border: 1px solid rgba(139, 92, 246, 0.35);
+    background: rgba(30, 41, 59, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
   }
 
   .sdxl-mode-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     border: none;
     background: transparent;
     color: #94a3b8;
     font-size: 0.72rem;
     font-weight: 600;
-    padding: 2px 9px;
+    padding: 3px 9px;
     border-radius: 11px;
     cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
     white-space: nowrap;
   }
 
@@ -11786,9 +12121,8 @@
   }
 
   .sdxl-mode-pill.active {
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.45), rgba(99, 102, 241, 0.45));
+    background: rgba(139, 92, 246, 0.35);
     color: #ffffff;
-    box-shadow: 0 1px 4px rgba(139, 92, 246, 0.25);
   }
 
   .sdxl-face-target-group {

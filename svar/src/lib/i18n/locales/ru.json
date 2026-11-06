@@ -1809,5 +1809,19 @@
   "invalid_keyfile_json": "Некорректный файл ключа: ошибка чтения JSON.",
   "invalid_keyfile_format": "Неверный формат файла ключа DID.",
   "invalid_keyfile_missing_pub": "В файле отсутствует публичный ключ DID.",
-  "invalid_keyfile_missing_priv": "В файле отсутствуют приватные ключи."
+  "invalid_keyfile_missing_priv": "В файле отсутствуют приватные ключи.",
+  "krea_ref_tune_hint": "Нажмите, чтобы настроить силу сходства или перерисовки",
+  "krea_ref_face_only_short": "лицо",
+  "krea_ref_raw_short": "raw",
+  "krea_ref_popover_face_title": "Перенос образа",
+  "krea_ref_popover_inpaint_title": "Сила ретуши",
+  "krea_ref_reset_btn": "Сброс",
+  "krea_ref_ipa_weight_label": "Образ и причёска",
+  "krea_ref_face_only_badge": "Только лицо",
+  "krea_ref_ipa_weight_hint": "0 — свободная смена волос по промпту · 0.65 — баланс · 0.90 — макс. сходство с фото",
+  "krea_ref_restore_label": "Сглаживание кожи",
+  "krea_ref_off_badge": "Выкл",
+  "krea_ref_restore_hint": "Ниже (0.15–0.30) — точнее живые черты · Выше — бьюти-фильтр для размытых исходников",
+  "krea_ref_inpaint_denoise_label": "Сила перерисовки",
+  "krea_ref_inpaint_denoise_hint": "0.55 — деликатная правка ткани и света · 0.94 — полная замена одежды или фона"
 }
