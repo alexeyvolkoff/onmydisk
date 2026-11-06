@@ -7315,7 +7315,7 @@ async function blobToBase64(blob) {
             <form on:submit|preventDefault={passwordLogin}>
               <div class="mb-3">
                 <label class="form-label" for="login-user">{$_("nickname_or_did", {}, "Nickname or DID")}</label>
-                <input class="form-control" id="login-user" type="text" placeholder={$_("enter_nickname_or_did_placeholder", {}, "Nickname (e.g. Alice), Name#tag, or did:gun:...")} bind:value={legacyUser} autocapitalize="none" autocorrect="off" spellcheck="false" autofocus />
+                <input class="form-control" id="login-user" type="text" placeholder={$_("enter_nickname_or_did_placeholder", {}, "Nickname (e.g. Judith), Name#tag, or did:gun:...")} bind:value={legacyUser} autocapitalize="none" autocorrect="off" spellcheck="false" autofocus />
               </div>
 
               <div class="mb-3">
@@ -7387,7 +7387,7 @@ async function blobToBase64(blob) {
 
               <div class="mb-3">
                 <label class="form-label" for="reg-user">{$_("display_nickname_label", {}, "Nickname / Display Name")}</label>
-                <input class="form-control" id="reg-user" type="text" placeholder={$_("choose_nickname_placeholder", {}, "Any display name (e.g. Alice)")} bind:value={regUser} autocorrect="off" spellcheck="false" autofocus />
+                <input class="form-control" id="reg-user" type="text" placeholder={$_("choose_nickname_placeholder", {}, "Any display name (e.g. Judith)")} bind:value={regUser} autocorrect="off" spellcheck="false" autofocus />
                 <small class="text-secondary" style="display: block; margin-top: 5px; font-size: 11.5px; line-height: 1.35;">
                   {$_("decentralized_nickname_hint", {}, "Doesn't need to be unique — your identity is a cryptographic keypair (DID), not a central server account.")}
                 </small>
