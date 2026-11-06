@@ -2388,7 +2388,7 @@
                   <form class="auth-tab-pane" on:submit|preventDefault={handlePasswordSignin}>
                     <div class="form-group">
                       <label class="form-label" for="sett-user">{$_("nickname_or_did", {}, "Nickname or DID")}</label>
-                      <input class="text-input" id="sett-user" type="text" placeholder={$_("enter_nickname_or_did_placeholder", {}, "Nickname (e.g. Judith), Name#tag, or did:gun:...")} bind:value={signinUser} />
+                      <input class="text-input" id="sett-user" type="text" placeholder={$_("enter_nickname_or_did_placeholder", {}, "Nickname (e.g. Alice), Name#tag, or did:gun:...")} bind:value={signinUser} />
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="sett-pass">{$_("password", {}, "Password")}</label>
@@ -2440,7 +2440,7 @@
 
                     <div class="form-group">
                       <label class="form-label" for="sett-reg-user">{$_("display_nickname_label", {}, "Nickname / Display Name")}</label>
-                      <input class="text-input" id="sett-reg-user" type="text" placeholder={$_("choose_nickname_placeholder", {}, "Any display name (e.g. Judith)")} bind:value={regUser} disabled={authLoading} />
+                      <input class="text-input" id="sett-reg-user" type="text" placeholder={$_("choose_nickname_placeholder", {}, "Any display name (e.g. Alice)")} bind:value={regUser} disabled={authLoading} />
                       <span class="row-sub" style="display: block; margin-top: 4px;">
                         {$_("decentralized_nickname_hint", {}, "Doesn't need to be unique — your identity is a cryptographic keypair (DID), not a central server account.")}
                       </span>
