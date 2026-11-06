@@ -42,13 +42,21 @@ void P2PTunnel::setTurnServer(const QString &url, const QString &user, const QSt
 
 bool P2PTunnel::start()
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (m_started)
-        return true;
+    QStringList stunList;
+    QString turnUrl, turnUser, turnPass;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_started)
+            return true;
+        stunList = m_stun;
+        turnUrl = m_turnUrl;
+        turnUser = m_turnUser;
+        turnPass = m_turnPass;
+    }
 
     auto config = std::make_shared<rtc::Configuration>();
     config->maxMessageSize = 16 * 1024 * 1024; // 16 MB max message size
-    for (const QString &url : m_stun)
+    for (const QString &url : stunList)
     {
         if (url.isEmpty())
             continue;
@@ -83,9 +91,9 @@ bool P2PTunnel::start()
         }
     }
 
-    if (!m_turnUrl.isEmpty())
+    if (!turnUrl.isEmpty())
     {
-        QString fullTurn = m_turnUrl;
+        QString fullTurn = turnUrl;
         try
         {
             int startIdx = fullTurn.indexOf(QLatin1String("turn:"));
@@ -112,27 +120,27 @@ bool P2PTunnel::start()
 
             if (port == 0) port = 3478;
 
-            rtc::IceServer turnUdp(host, port, m_turnUser.toStdString(), m_turnPass.toStdString(), rtc::IceServer::RelayType::TurnUdp);
+            rtc::IceServer turnUdp(host, port, turnUser.toStdString(), turnPass.toStdString(), rtc::IceServer::RelayType::TurnUdp);
             config->iceServers.push_back(turnUdp);
-            rtc::IceServer turnTcp(host, port, m_turnUser.toStdString(), m_turnPass.toStdString(), rtc::IceServer::RelayType::TurnTcp);
+            rtc::IceServer turnTcp(host, port, turnUser.toStdString(), turnPass.toStdString(), rtc::IceServer::RelayType::TurnTcp);
             config->iceServers.push_back(turnTcp);
 
 
         }
         catch (const std::exception &e)
         {
-            qWarning() << "P2PTunnel: std::exception adding TURN" << m_turnUrl << e.what();
+            qWarning() << "P2PTunnel: std::exception adding TURN" << turnUrl << e.what();
         }
         catch (...)
         {
-            qWarning() << "P2PTunnel: unknown exception adding TURN" << m_turnUrl;
+            qWarning() << "P2PTunnel: unknown exception adding TURN" << turnUrl;
         }
     }
 
-
+    std::shared_ptr<rtc::PeerConnection> pc;
     try
     {
-        m_pc = std::make_shared<rtc::PeerConnection>(*config);
+        pc = std::make_shared<rtc::PeerConnection>(*config);
     }
     catch (const std::exception &e)
     {
@@ -145,51 +153,68 @@ bool P2PTunnel::start()
         return false;
     }
 
-    m_pc->onLocalDescription([this](rtc::Description description) {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_pc = pc;
+        m_started = true;
+    }
+
+    pc->onLocalDescription([this](rtc::Description description) {
         const QString kind = kindForType(description.type());
         std::string s = description;
         const QByteArray payload(s.data(), static_cast<int>(s.size()));
         emit signalReady(kind, payload);
     });
 
-    m_pc->onLocalCandidate([this](rtc::Candidate candidate) {
+    pc->onLocalCandidate([this](rtc::Candidate candidate) {
         std::string s = candidate;
         const QByteArray payload(s.data(), static_cast<int>(s.size()));
         emit signalReady(QStringLiteral("candidate"), payload);
     });
 
-    m_pc->onGatheringStateChange([this](rtc::PeerConnection::GatheringState state) {
+    pc->onGatheringStateChange([this](rtc::PeerConnection::GatheringState state) {
         if (state == rtc::PeerConnection::GatheringState::Complete)
             emit signalReady(QStringLiteral("done"), QByteArray());
     });
 
-    m_pc->onStateChange([this](rtc::PeerConnection::State state) {
+    pc->onStateChange([this](rtc::PeerConnection::State state) {
         if (state == rtc::PeerConnection::State::Failed)
             emit failed(QStringLiteral("ICE connection failed"));
     });
 
     if (m_role == Role::Offerer)
     {
+        std::shared_ptr<rtc::DataChannel> dc;
         try
         {
-            m_dc = m_pc->createDataChannel("omd");
+            dc = pc->createDataChannel("omd");
         }
         catch (const std::exception &e)
         {
             qWarning() << "P2PTunnel: DataChannel error:" << e.what();
             return false;
         }
-        setupCallbacks(m_dc);
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_started)
+                return false;
+            m_dc = dc;
+        }
+        setupCallbacks(dc);
     }
     else
     {
-        m_pc->onDataChannel([this](std::shared_ptr<rtc::DataChannel> dc) {
-            m_dc = dc;
+        pc->onDataChannel([this](std::shared_ptr<rtc::DataChannel> dc) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (!m_started)
+                    return;
+                m_dc = dc;
+            }
             setupCallbacks(dc);
         });
     }
 
-    m_started = true;
     return true;
 }
 
@@ -213,37 +238,44 @@ void P2PTunnel::setupCallbacks(const std::shared_ptr<rtc::DataChannel> &dc)
     if (!dc)
         return;
     dc->onOpen([this]() {
-        QString pairInfo;
+        std::shared_ptr<rtc::PeerConnection> pc;
+        std::shared_ptr<rtc::DataChannel> chan;
         {
-            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_started)
+                return;
             m_open = true;
-            if (m_pc)
-            {
-                try {
-                    rtc::Candidate loc, rem;
-                    if (m_pc->getSelectedCandidatePair(&loc, &rem)) {
-                        std::string lStr = loc;
-                        std::string rStr = rem;
-                        pairInfo = QStringLiteral("%1 <-> %2").arg(formatCandPairStr(lStr), formatCandPairStr(rStr));
-                    }
-                } catch (...) {}
-            }
+            pc = m_pc;
+            chan = m_dc;
+        }
+        QString pairInfo;
+        if (pc)
+        {
+            try {
+                rtc::Candidate loc, rem;
+                if (pc->getSelectedCandidatePair(&loc, &rem)) {
+                    std::string lStr = loc;
+                    std::string rStr = rem;
+                    pairInfo = QStringLiteral("%1 <-> %2").arg(formatCandPairStr(lStr), formatCandPairStr(rStr));
+                }
+            } catch (...) {}
         }
         startKeepalive();
         // Signal readiness so the offerer can start sending RPCs. Without
         // this, the first RPC (AuthInfo) can be sent before this side's
         // onMessage callback is connected and gets lost.
-        try {
-            std::lock_guard<std::recursive_mutex> lock(m_mutex);
-            if (m_dc && m_open) {
-                m_dc->send(std::string("__ready__"));
-            }
-        } catch (...) {}
+        if (chan)
+        {
+            try {
+                std::lock_guard<std::mutex> sendLock(m_sendMutex);
+                chan->send(std::string("__ready__"));
+            } catch (...) {}
+        }
         emit opened(pairInfo);
     });
     dc->onClosed([this]() {
         {
-            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(m_mutex);
             m_open = false;
         }
         stopKeepalive();
@@ -262,12 +294,18 @@ void P2PTunnel::setupCallbacks(const std::shared_ptr<rtc::DataChannel> &dc)
         // Keepalive: respond to __ping__ with __pong__
         const QByteArray trimmed = msg.trimmed();
         if (trimmed == "__ping__") {
-            try {
-                std::lock_guard<std::recursive_mutex> lock(m_mutex);
-                if (m_dc && m_open) {
-                    m_dc->send(std::string("__pong__"));
-                }
-            } catch (...) {}
+            std::shared_ptr<rtc::DataChannel> chan;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_open)
+                    chan = m_dc;
+            }
+            if (chan) {
+                try {
+                    std::lock_guard<std::mutex> sendLock(m_sendMutex);
+                    chan->send(std::string("__pong__"));
+                } catch (...) {}
+            }
             m_keepaliveMissed = 0;
             return;
         }
@@ -288,41 +326,52 @@ void P2PTunnel::setupCallbacks(const std::shared_ptr<rtc::DataChannel> &dc)
 
 void P2PTunnel::handleSignaling(const QString &kind, const QByteArray &payload)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_pc)
+    std::lock_guard<std::mutex> sigLock(m_signalingMutex);
+    std::shared_ptr<rtc::PeerConnection> pc;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        pc = m_pc;
+    }
+    if (!pc)
         return;
     try
     {
         if (kind == QLatin1String("offer") || kind == QLatin1String("answer"))
         {
             rtc::Description desc(std::string(payload.constData(), static_cast<size_t>(payload.size())));
-            m_pc->setRemoteDescription(desc);
+            pc->setRemoteDescription(desc);
 
+            std::vector<rtc::Candidate> buffered;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                buffered.swap(m_pendingCandidates);
+            }
             // Apply any ICE candidates that arrived before the remote description
-            for (const auto &cand : m_pendingCandidates)
+            for (const auto &cand : buffered)
             {
                 try
                 {
-                    m_pc->addRemoteCandidate(cand);
+                    pc->addRemoteCandidate(cand);
                 }
                 catch (const std::exception &ce)
                 {
                     qWarning() << "P2PTunnel: error applying buffered candidate:" << ce.what();
                 }
             }
-            m_pendingCandidates.clear();
         }
         else if (kind == QLatin1String("candidate"))
         {
             std::string candStr(payload.constData(), static_cast<size_t>(payload.size()));
             rtc::Candidate cand(candStr, "0");
-            if (m_pc->remoteDescription().has_value())
+            if (pc->remoteDescription().has_value())
             {
-                m_pc->addRemoteCandidate(cand);
+                pc->addRemoteCandidate(cand);
             }
             else
             {
-                m_pendingCandidates.push_back(cand);
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_started)
+                    m_pendingCandidates.push_back(cand);
             }
         }
 
@@ -335,24 +384,29 @@ void P2PTunnel::handleSignaling(const QString &kind, const QByteArray &payload)
 
 bool P2PTunnel::isOpen() const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_open && m_dc != nullptr;
 }
 
 void P2PTunnel::sendData(const QByteArray &data)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_open || !m_dc)
-        return;
+    std::shared_ptr<rtc::DataChannel> chan;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_open || !m_dc)
+            return;
+        chan = m_dc;
+    }
+    std::lock_guard<std::mutex> sendLock(m_sendMutex);
     try {
-        size_t maxChunk = m_dc->maxMessageSize();
+        size_t maxChunk = chan->maxMessageSize();
         if (maxChunk == 0 || maxChunk > 64 * 1024)
             maxChunk = 64 * 1024;
 
         if (static_cast<size_t>(data.size()) <= maxChunk) {
             rtc::binary bin(reinterpret_cast<const std::byte*>(data.constData()),
                             reinterpret_cast<const std::byte*>(data.constData() + data.size()));
-            m_dc->send(bin);
+            chan->send(bin);
         } else {
             const char *ptr = data.constData();
             size_t remaining = static_cast<size_t>(data.size());
@@ -360,7 +414,7 @@ void P2PTunnel::sendData(const QByteArray &data)
                 size_t len = std::min(remaining, maxChunk);
                 rtc::binary bin(reinterpret_cast<const std::byte*>(ptr),
                                 reinterpret_cast<const std::byte*>(ptr + len));
-                m_dc->send(bin);
+                chan->send(bin);
                 ptr += len;
                 remaining -= len;
             }
@@ -374,21 +428,26 @@ void P2PTunnel::sendData(const QByteArray &data)
 
 void P2PTunnel::sendText(const QByteArray &data)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_open || !m_dc)
-        return;
+    std::shared_ptr<rtc::DataChannel> chan;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_open || !m_dc)
+            return;
+        chan = m_dc;
+    }
+    std::lock_guard<std::mutex> sendLock(m_sendMutex);
     try {
         // Send as a WebRTC string frame so the browser receives event.data
         // as a DOMString (not ArrayBuffer). This is required for JSON-RPC
         // responses: large directories fragment into multiple SCTP chunks,
         // and the JS TextDecoder cannot reassemble them across binary frames.
-        size_t maxChunk = m_dc->maxMessageSize();
+        size_t maxChunk = chan->maxMessageSize();
         if (maxChunk == 0 || maxChunk > 64 * 1024)
             maxChunk = 64 * 1024; // Safe SCTP slice size: 64KB
 
         if (static_cast<size_t>(data.size()) <= maxChunk) {
             const std::string s(data.constData(), static_cast<size_t>(data.size()));
-            m_dc->send(s);
+            chan->send(s);
         } else {
             const char *ptr = data.constData();
             size_t remaining = static_cast<size_t>(data.size());
@@ -403,7 +462,7 @@ void P2PTunnel::sendText(const QByteArray &data)
                     }
                 }
                 const std::string s(ptr, len);
-                m_dc->send(s);
+                chan->send(s);
                 ptr += len;
                 remaining -= len;
             }
@@ -417,15 +476,32 @@ void P2PTunnel::sendText(const QByteArray &data)
 
 void P2PTunnel::close()
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    // Swap shared_ptrs out under m_mutex and release m_mutex BEFORE calling
+    // resetCallbacks() / close() / shared_ptr destructors: libdatachannel's
+    // synchronized_callback holds its own mutex while invoking onClosed /
+    // onOpen / onMessage, so holding m_mutex across resetCallbacks() causes
+    // an AB-BA deadlock when wake-up / ICE failure triggers both sides at once.
+    std::shared_ptr<rtc::DataChannel> dc;
+    std::shared_ptr<rtc::PeerConnection> pc;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_open = false;
+        m_started = false;
+        m_pendingCandidates.clear();
+        dc.swap(m_dc);
+        pc.swap(m_pc);
+    }
     stopKeepalive();
-    if (m_pc)
-        m_pc->resetCallbacks();
-    m_dc.reset();
-    m_pc.reset();
-    m_pendingCandidates.clear();
-    m_open = false;
-    m_started = false;
+    if (dc) {
+        dc->resetCallbacks();
+        try { dc->close(); } catch (...) {}
+    }
+    if (pc) {
+        pc->resetCallbacks();
+        try { pc->close(); } catch (...) {}
+    }
+    dc.reset();
+    pc.reset();
 }
 
 void P2PTunnel::startKeepalive()
@@ -440,22 +516,31 @@ void P2PTunnel::startKeepalive()
     if (!m_keepaliveConnected) {
         m_keepaliveConnected = true;
         connect(&m_keepaliveTimer, &QTimer::timeout, this, [this]() {
-            if (!m_open || !m_dc) {
+            std::shared_ptr<rtc::DataChannel> chan;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_open)
+                    chan = m_dc;
+            }
+            if (!chan) {
                 stopKeepalive();
                 return;
             }
             try {
-                std::lock_guard<std::recursive_mutex> lock(m_mutex);
-                if (m_dc && m_open) {
-                    m_dc->send(std::string("__ping__"));
-                    m_keepaliveMissed++;
-                    if (m_keepaliveMissed > KEEPALIVE_MAX_MISSED) {
-                        qWarning() << "P2PTunnel: keepalive timeout —" << m_keepaliveMissed << "pings unanswered";
-                        stopKeepalive();
+                {
+                    std::lock_guard<std::mutex> sendLock(m_sendMutex);
+                    chan->send(std::string("__ping__"));
+                }
+                const int missed = ++m_keepaliveMissed;
+                if (missed > KEEPALIVE_MAX_MISSED) {
+                    qWarning() << "P2PTunnel: keepalive timeout —" << missed << "pings unanswered";
+                    {
+                        std::lock_guard<std::mutex> lock(m_mutex);
                         m_open = false;
-                        emit failed(QStringLiteral("keepalive timeout"));
-                        return;
                     }
+                    stopKeepalive();
+                    emit failed(QStringLiteral("keepalive timeout"));
+                    return;
                 }
             } catch (const std::exception &e) {
                 qWarning() << "P2PTunnel: keepalive send error:" << e.what();

@@ -213,6 +213,7 @@ private:
     QEventLoop m_loop;
     QTimer m_pingResponseTimer;
     int m_pingMisses = 0;
+    qint64 m_lastPingTickMs = 0;
     QTimer m_ragReindexTimer;
     QTimer m_ragFlushTimer;
     QTimer m_ragStartupTimer;

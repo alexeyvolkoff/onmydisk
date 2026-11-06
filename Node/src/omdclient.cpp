@@ -115,6 +115,8 @@ OnMyDiskClient::OnMyDiskClient(QSettings *settings, HostResource *hostResource, 
     #else
     m_keyLogin = m_settings->value("Network/keyLogin", false).toBool();
     #endif
+    #elif defined(EMBEDDED)
+    m_keyLogin = m_settings->value("Network/keyLogin", true).toBool();
     #else
     m_keyLogin = false;
     #endif
@@ -791,12 +793,12 @@ void OnMyDiskClient::pkiError(QString errorMessage)
 
 void OnMyDiskClient::sslError(QList<QSslError> errorList, bool &ignore)
 {
-    //ignore all ssl errors except NoSslSupport
+    //ignore all ssl errors except NoSslSupport / definitive certificate rejection
     Q_FOREACH(QSslError error, errorList)
     {
         if (error == QSslError::NoSslSupport || error == QSslError::CertificateExpired ||
             error == QSslError::CertificateRejected || error == QSslError::CertificateRevoked ||
-            error == QSslError::CertificateSignatureFailed || error == QSslError::UnspecifiedError )
+            error == QSslError::CertificateSignatureFailed)
         {
             m_needReconnect = false;
             break;

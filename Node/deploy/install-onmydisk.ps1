@@ -126,12 +126,40 @@ $OpenVbs  = Join-Path $InstallDir "open-node.vbs"
 $StopVbs  = Join-Path $InstallDir "stop-node.vbs"
 
 $startVbsCode = @"
+Function IsHttpTimedOut()
+    On Error Resume Next
+    Dim req
+    Set req = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+    If Err.Number <> 0 Then
+        Err.Clear
+        IsHttpTimedOut = False
+        Exit Function
+    End If
+    req.setTimeouts 3000, 3000, 3000, 4000
+    req.Open "GET", "http://127.0.0.1:8081/", False
+    req.Send
+    If Err.Number = -2147012894 Then
+        IsHttpTimedOut = True
+    Else
+        IsHttpTimedOut = False
+    End If
+    Err.Clear
+End Function
+
 Set sh = CreateObject("WScript.Shell")
 Set wmi = GetObject("winmgmts:\\.\root\cimv2")
 Set procs = wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE Name = 'onmydisk.exe'")
 If procs.Count = 0 Then
     sh.CurrentDirectory = "$BinDir"
     sh.Run Chr(34) & "$NodeExe" & Chr(34), 0, False
+ElseIf IsHttpTimedOut() Then
+    WScript.Sleep 3000
+    If IsHttpTimedOut() Then
+        sh.Run "taskkill.exe /F /IM onmydisk.exe", 0, True
+        WScript.Sleep 1000
+        sh.CurrentDirectory = "$BinDir"
+        sh.Run Chr(34) & "$NodeExe" & Chr(34), 0, False
+    End If
 End If
 "@
 Set-Content -Path $StartVbs -Value $startVbsCode -Encoding ASCII
@@ -159,14 +187,26 @@ Set-Content -Path $StopVbs -Value $stopVbsCode -Encoding ASCII
 $WscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
 Set-ItemProperty -Path $RunKeyPath -Name $RunValue -Value ("`"$WscriptExe`" //B //Nologo `"$StartVbs`"")
 
-# 2) Autostart via Windows Task Scheduler (survives laptop battery mode & auto-restarts on failure)
+# 2) Autostart & watchdog via Windows Task Scheduler (logon + 5-min healthcheck + wake from sleep/Modern Standby)
 try {
-    $taskAction   = New-ScheduledTaskAction -Execute $WscriptExe -Argument "//B //Nologo `"$StartVbs`"" -WorkingDirectory $BinDir
-    $taskTrigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                        -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName "OnMyDiskNode" -Action $taskAction -Trigger $taskTrigger `
-        -Settings $taskSettings -Description "On My Disk P2P Node background daemon" -Force | Out-Null
+    $taskAction    = New-ScheduledTaskAction -Execute $WscriptExe -Argument "//B //Nologo `"$StartVbs`"" -WorkingDirectory $BinDir
+    $logonTrigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $watchTrigger  = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) `
+                         -RepetitionInterval (New-TimeSpan -Minutes 5) `
+                         -RepetitionDuration (New-TimeSpan -Days 3650)
+    $triggers      = @($logonTrigger, $watchTrigger)
+    try {
+        $cimTriggerClass = Get-CimClass -Namespace Root/Microsoft/Windows/TaskScheduler -ClassName MSFT_TaskEventTrigger -ErrorAction Stop
+        $wakeTrigger = New-CimInstance -CimClass $cimTriggerClass -ClientOnly
+        $wakeTrigger.Enabled = $true
+        $wakeTrigger.Delay = "PT8S"
+        $wakeTrigger.Subscription = "<QueryList><Query Id='0' Path='System'><Select Path='System'>*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]] or *[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=507]]</Select></Query></QueryList>"
+        $triggers += $wakeTrigger
+    } catch {}
+    $taskSettings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                         -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName "OnMyDiskNode" -Action $taskAction -Trigger $triggers `
+        -Settings $taskSettings -Description "On My Disk P2P Node background daemon and watchdog" -Force | Out-Null
 } catch {
     Write-Warning "Could not register Scheduled Task OnMyDiskNode (HKCU Run fallback active): $_"
 }

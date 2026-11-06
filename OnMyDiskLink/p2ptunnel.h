@@ -7,6 +7,7 @@
 #include <QByteArray>
 #include <QStringList>
 #include <QTimer>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -69,10 +70,16 @@ private:
     std::shared_ptr<rtc::PeerConnection> m_pc;
     std::shared_ptr<rtc::DataChannel> m_dc;
     std::vector<rtc::Candidate> m_pendingCandidates;
-    mutable std::recursive_mutex m_mutex;
+    // Leaf mutex guarding state fields (m_started, m_open, m_pc, m_dc, m_pendingCandidates).
+    // Never hold m_mutex while calling into libdatachannel (send / close / resetCallbacks)
+    // to prevent AB-BA deadlocks with rtc::synchronized_callback::mutex.
+    mutable std::mutex m_mutex;
+    // Serializes multi-chunk DataChannel writes across worker threads without holding m_mutex.
+    mutable std::mutex m_sendMutex;
+    std::mutex m_signalingMutex;
     QTimer m_keepaliveTimer;
     bool m_keepaliveConnected = false;
-    int m_keepaliveMissed = 0;
+    std::atomic<int> m_keepaliveMissed{0};
 };
 
 #endif // P2P_ENABLED

@@ -388,6 +388,7 @@ void OnMyDiskLinkClient::connectToCloud()
 			if (serviceSocket)
 			{
                 disconnect(serviceSocket, nullptr, nullptr, nullptr);
+                serviceSocket->stopPingTimer();
 				serviceSocket->abort();
                 serviceSocket->deleteLater();
                 serviceSocket = nullptr;
@@ -457,18 +458,36 @@ void OnMyDiskLinkClient::connectToCloud()
 
 void OnMyDiskLinkClient::disconnectFromCloud()
 {
-    if (serviceSocket)
+    LinkSocket *s = nullptr;
     {
+        QMutexLocker locker(&m_connectionStateMutex);
+        if (!serviceSocket)
+            return;
         qWarning() << "[LinkClient] disconnectFromCloud called, aborting serviceSocket";
-        LinkSocket* s = serviceSocket;
+        s = serviceSocket;
         disconnect(s, nullptr, nullptr, nullptr);
+        s->stopPingTimer();
         s->abort();
         s->deleteLater();
         serviceSocket = nullptr;
         m_pingResponseTimer.stop();
+        m_pingMisses = 0;
+        m_lastPingTickMs = 0;
         m_linkStatus = Disconnected;
-        emit linkDisconnected();
+        m_connectedDataSockets = 0;
+
+        Q_FOREACH(QTcpSocket* tcpSocket, m_tunnels)
+        {
+            tcpSocket->disconnectFromHost();
+            tcpSocket->deleteLater();
+        }
+        m_tunnels.clear();
+
+        const QStringList p2pIds = m_p2pTunnels.keys();
+        Q_FOREACH(const QString &p2pID, p2pIds)
+            cleanupP2PTunnel(p2pID);
     }
+    emit linkDisconnected();
 }
 
 
@@ -480,9 +499,13 @@ void OnMyDiskLinkClient::removeDeviceKey()
     requestUrl.setHost(m_omdSettings.server());
 
 	QNetworkRequest request(requestUrl);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    request.setTransferTimeout(15000);
+#endif
 
 	request.setRawHeader("authorization", QString("device:" + m_deviceId).toUtf8());
 	this->post(request, QByteArray(""));
+    QTimer::singleShot(20000, &m_loop, &QEventLoop::quit);
     m_loop.exec();
 }
 
@@ -823,6 +846,16 @@ void OnMyDiskLinkClient::timeToPing()
        return;
    }
 
+   const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+   if (m_lastPingTickMs > 0 && (nowMs - m_lastPingTickMs) > 35000)
+   {
+       qWarning() << "Ping: system sleep/wake jump detected (" << (nowMs - m_lastPingTickMs)
+                  << "ms), cycling control socket and stale P2P tunnels";
+       disconnectFromCloud();
+       return;
+   }
+   m_lastPingTickMs = nowMs;
+
    m_pingResponseTimer.start(PING_TIMEOUT);
    LinkMessage message;
    message.setMessageType(LinkMessage::Ping);
@@ -906,6 +939,7 @@ void OnMyDiskLinkClient::handleConnectDataSockets(const LinkMessage &message)
             emit linkConnected();
 
             //Start ping timer
+            m_lastPingTickMs = QDateTime::currentMSecsSinceEpoch();
             serviceSocket->startPingTimer(PING_INTERVAL);
 
             //Register share
@@ -3346,6 +3380,7 @@ void OnMyDiskLinkClient::cleanupP2PTunnel(const QString &ID)
     m_tunnelHttpStream.remove(ID);
 #ifdef P2P_ENABLED
     P2PTunnel *p2p = nullptr;
+    bool finalizeNow = false;
     {
         QMutexLocker locker(&m_p2pMutex);
         p2p = m_p2pTunnels.take(ID);
@@ -3353,9 +3388,10 @@ void OnMyDiskLinkClient::cleanupP2PTunnel(const QString &ID)
         {
             m_p2pSessions.remove(p2p);
             m_p2pDying.insert(p2p);
+            finalizeNow = (m_p2pBusy.value(p2p, 0) == 0);
         }
     }
-    if (p2p && m_p2pBusy.value(p2p, 0) == 0)
+    if (finalizeNow)
         finalizeP2PTunnel(p2p);
 #else
     Q_UNUSED(ID)
@@ -3609,10 +3645,14 @@ bool OnMyDiskLinkClient::fetchCA()
 	//qWarning() << "URL" << requestUrl;
 
     QNetworkRequest request(requestUrl);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    request.setTransferTimeout(15000);
+#endif
 
     request.setRawHeader("authorization", QString("device:" + m_deviceId).toUtf8());
 
     this->post(request, QByteArray(""));
+    QTimer::singleShot(20000, &m_loop, &QEventLoop::quit);
     m_loop.exec();
     return m_responseResult;
 }
@@ -3644,6 +3684,9 @@ bool OnMyDiskLinkClient::fetchCert(QByteArray CSR)
     postData.append("--"+boundary+"--\r\n");
 
     QNetworkRequest request(requestUrl);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    request.setTransferTimeout(15000);
+#endif
 
     request.setRawHeader("authorization", QString("device:" + m_deviceId).toUtf8());
     request.setRawHeader("content-type", "application/x-www-form-urlencoded");
@@ -3654,6 +3697,7 @@ bool OnMyDiskLinkClient::fetchCert(QByteArray CSR)
             QByteArray::number(postData.length()));
 
     this->post(request, postData);
+    QTimer::singleShot(20000, &m_loop, &QEventLoop::quit);
     m_loop.exec();
 
     return m_responseResult;
@@ -3833,26 +3877,31 @@ void OnMyDiskLinkClient::onSslErrors(QNetworkReply *reply, const QList<QSslError
 void OnMyDiskLinkClient::onConnectionError(QAbstractSocket::SocketError socketError)
 {
     QSslSocket * socket = static_cast<QSslSocket *>(sender());
+    const QSslCertificate localCert = sslConfiguration.localCertificate();
+    const bool hasValidCert = !localCert.isNull() &&
+        (!localCert.expiryDate().isValid() || QDateTime::currentDateTime() < localCert.expiryDate());
 
     switch (socketError) {
     case QAbstractSocket::SslHandshakeFailedError:
-        emit privateKeyError(tr("Login is required"));
-        qDebug() << "SSL connection failed, certificate outdated or invalid CA";
+        if (!hasValidCert)
+            emit privateKeyError(tr("Login is required"));
+        qWarning() << "SSL handshake failed (valid local cert:" << hasValidCert << "):" << (socket ? socket->errorString() : QString());
         break;
     case QAbstractSocket::ProxyConnectionRefusedError:
-        emit privateKeyError(tr("Login is required"));
-        qDebug() << "SSL connection failed, certificate outdated or invalid CA";
+        qWarning() << "Proxy connection refused:" << (socket ? socket->errorString() : QString());
         break;
     case QAbstractSocket::SslInternalError:
-        emit privateKeyError(tr("Login is required"));
-        qCritical() << "SslInternalError";
+        if (!hasValidCert)
+            emit privateKeyError(tr("Login is required"));
+        qCritical() << "SslInternalError (valid local cert:" << hasValidCert << ")";
         break;
     case QAbstractSocket::SslInvalidUserDataError:
          qCritical() << "SslInvalidUserDataError";
         emit privateKeyError(tr("Login is required"));
         break;
     default:
-        qCritical() << qPrintable(socket->errorString());
+        if (socket)
+            qCritical() << qPrintable(socket->errorString());
         break;
     }
 
@@ -3972,6 +4021,8 @@ void OnMyDiskLinkClient::socketDisconnected()
             serviceSocket->deleteLater();
             serviceSocket = nullptr;
             m_pingResponseTimer.stop();
+            m_pingMisses = 0;
+            m_lastPingTickMs = 0;
 
             m_linkStatus = Disconnected;
 
@@ -4000,6 +4051,7 @@ void OnMyDiskLinkClient::socketConnected()
 {
     qDebug() << "Command socket connected";
     LinkSocket* socket = static_cast<LinkSocket*>( sender());
+    m_lastPingTickMs = QDateTime::currentMSecsSinceEpoch();
     socket->startPingTimer(PING_INTERVAL);
     m_pingResponseTimer.stop();
     m_pingMisses = 0;
