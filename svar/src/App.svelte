@@ -8762,7 +8762,7 @@ async function blobToBase64(blob) {
     top: 0 !important;
     left: 0 !important;
     right: 0 !important;
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0.65) 0%, rgba(0, 0, 0, 0) 100%) !important;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.42) 0%, rgba(0, 0, 0, 0) 100%) !important;
     padding-top: calc(8px + env(safe-area-inset-top, 0px)) !important;
     padding-bottom: 8px !important;
     padding-left: calc(16px + env(safe-area-inset-left, 0px)) !important;
@@ -8891,14 +8891,14 @@ async function blobToBase64(blob) {
     left: 50%;
     transform: translateX(-50%);
     width: min(360px, calc(100vw - 32px));
-    background: rgba(255, 255, 255, 0.94);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(15, 23, 42, 0.14);
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.5);
     border-radius: 12px;
     padding: 8px 14px 10px 14px;
     z-index: 2080;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16);
     color: #0f172a;
     box-sizing: border-box;
     pointer-events: none;
@@ -8907,9 +8907,9 @@ async function blobToBase64(blob) {
     transition: opacity 0.3s cubic-bezier(0.25, 1, 0.5, 1) !important;
   }
   :global(.dark-theme .omd-gallery-download-toast) {
-    background: rgba(15, 23, 42, 0.85);
-    border-color: rgba(255, 255, 255, 0.14);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    background: rgba(15, 23, 42, 0.62);
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     color: #f8fafc;
   }
   :global(.omd-gallery-download-toast.is-hidden) {
@@ -9115,11 +9115,11 @@ async function blobToBase64(blob) {
      (kept in sync by App.svelte with prefers-color-scheme). */
   :global(.omd-gallery-bottom-bar) {
     /* Light theme tokens */
-    --omd-pill-bg: rgba(255, 255, 255, 0.78);
-    --omd-pill-border: rgba(15, 23, 42, 0.14);
-    --omd-pill-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
-    --omd-pill-btn-bg: rgba(15, 23, 42, 0.06);
-    --omd-pill-btn-fg: #334155;
+    --omd-pill-bg: rgba(255, 255, 255, 0.56);
+    --omd-pill-border: rgba(255, 255, 255, 0.52);
+    --omd-pill-shadow: 0 8px 28px rgba(15, 23, 42, 0.15);
+    --omd-pill-btn-bg: rgba(15, 23, 42, 0.08);
+    --omd-pill-btn-fg: #1e293b;
     --omd-pill-hover-bg: rgba(41, 150, 204, 0.9);
     --omd-pill-hover-fg: #ffffff;
     --omd-dot-bg: rgba(15, 23, 42, 0.3);
@@ -9140,8 +9140,8 @@ async function blobToBase64(blob) {
     gap: 0;
     padding: 5px 12px;
     background: var(--omd-pill-bg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
     border: 1px solid var(--omd-pill-border);
     border-radius: 9999px;
     z-index: 1080;
@@ -9157,9 +9157,9 @@ async function blobToBase64(blob) {
   }
   :global(.dark-theme .omd-gallery-bottom-bar) {
     /* Dark theme tokens */
-    --omd-pill-bg: rgba(15, 23, 42, 0.62);
-    --omd-pill-border: rgba(255, 255, 255, 0.14);
-    --omd-pill-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    --omd-pill-bg: rgba(15, 23, 42, 0.46);
+    --omd-pill-border: rgba(255, 255, 255, 0.16);
+    --omd-pill-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
     --omd-pill-btn-bg: rgba(255, 255, 255, 0.08);
     --omd-pill-btn-fg: #f8fafc;
     --omd-pill-hover-bg: rgba(56, 189, 248, 0.9);
@@ -9296,14 +9296,14 @@ async function blobToBase64(blob) {
     width: min(340px, calc(100vw - 40px));
     max-height: 42vh;
     overflow-y: auto;
-    background: rgba(255, 255, 255, 0.94);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(15, 23, 42, 0.14);
+    background: rgba(255, 255, 255, 0.68);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.52);
     border-radius: 14px;
     padding: 10px 12px 12px 14px;
     z-index: 1080;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 8px 28px rgba(15, 23, 42, 0.16);
     color: #0f172a;
     box-sizing: border-box;
     user-select: text;
@@ -9393,9 +9393,9 @@ async function blobToBase64(blob) {
 
   /* Dark theme (system / app toggle via html.dark-theme) */
   :global(.dark-theme .omd-gallery-info-plate) {
-    background: rgba(15, 23, 42, 0.85);
-    border-color: rgba(255, 255, 255, 0.14);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    background: rgba(15, 23, 42, 0.6);
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
     color: #f8fafc;
     scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
   }

@@ -2672,13 +2672,14 @@
     background-color: rgba(10, 15, 20, 0.9) !important;
   }
   :global(.light-theme .lg-toolbar) {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0) 100%) !important;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.52) 0%, rgba(255, 255, 255, 0) 100%) !important;
   }
   :global(.light-theme .lg-toolbar .lg-icon),
   :global(.light-theme .lg-toolbar .omd-gallery-fs-btn) {
     color: #0f172a !important;
-    background: rgba(15, 23, 42, 0.08) !important;
-    border-color: rgba(15, 23, 42, 0.12) !important;
+    background: rgba(255, 255, 255, 0.48) !important;
+    border-color: rgba(255, 255, 255, 0.55) !important;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.1) !important;
     filter: none !important;
   }
   :global(.light-theme .lg-toolbar .omd-gallery-fs-btn svg) {

@@ -3833,6 +3833,21 @@
     tick().then(resizeDirectorTextarea);
   }
 
+  function scrollDirectorFeedToBottom() {
+    tick().then(() => {
+      if (directorFeedEl) {
+        directorFeedEl.scrollTop = directorFeedEl.scrollHeight;
+      }
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => {
+          if (directorFeedEl) {
+            directorFeedEl.scrollTop = directorFeedEl.scrollHeight;
+          }
+        });
+      }
+    });
+  }
+
   function toggleDirectorPanel() {
     showDirectorPanel = !showDirectorPanel;
     try {
@@ -3840,6 +3855,7 @@
     } catch (_) {}
     if (showDirectorPanel) {
       loadSavedStories().catch(() => {});
+      scrollDirectorFeedToBottom();
       tick().then(() => {
         resizeDirectorTextarea();
         if (directorTab === "prompt" && directorInputEl) directorInputEl.focus();
@@ -4550,6 +4566,9 @@
       }
       const savedMsgs = JSON.parse(sessionStorage.getItem("krea_director_msgs_v1") || "[]");
       if (Array.isArray(savedMsgs)) directorMessages = savedMsgs;
+      if (showDirectorPanel && directorMessages.length > 0) {
+        scrollDirectorFeedToBottom();
+      }
       const savedPresets = JSON.parse(localStorage.getItem("krea_saved_settings_v1") || "[]");
       if (Array.isArray(savedPresets)) savedSettingPresets = savedPresets;
       const savedDraft = JSON.parse(localStorage.getItem("krea_active_story_draft_v1") || "null");
@@ -4578,6 +4597,7 @@
     await loadPersonas();
     await loadCreations();
     loadSavedStories().catch(() => {});
+    scrollDirectorFeedToBottom();
     tick().then(() => {
       resizeTextarea();
       resizeDirectorTextarea();
@@ -5106,36 +5126,45 @@
             {/if}
             {#each items as item (item.id)}
               <div class="gallery-card">
-                <div class="gallery-card-media">
-                  <!-- svelte-ignore a11y-click-events-have-key-events -->
-                  <!-- svelte-ignore a11y-no-static-element-interactions -->
-                  <div
-                    class="gallery-card-thumb-wrap"
-                    role="button"
-                    tabindex="0"
-                    on:click={() => openGallery(item)}
-                    on:keydown={(e) => e.key === "Enter" && openGallery(item)}
-                  >
-                    <img
-                      src=""
-                      alt={item.title || item.prompt}
-                      use:lazyLoad={getThumbnailUrl(item)}
-                      class="gallery-thumb"
-                      loading="lazy"
-                      on:error={(e) => handleImageError(item, e)}
-                    />
-                    {#if item.persona || item.totalTime}
-                      <div class="card-thumb-badges">
-                        {#if item.persona}
-                          <span class="persona-tag">👤 {item.persona}</span>
-                        {/if}
-                        {#if item.totalTime}
-                          <span class="card-time-tag" title={$_("krea_total_time", { total: item.totalTime, gpu: item.gpuTime ? `, GPU: ${item.gpuTime}s` : "" }, `Полное время: ${item.totalTime}s${item.gpuTime ? `, генерация GPU: ${item.gpuTime}s` : ""}`)}>
-                            ⚡ {item.totalTime}s{#if item.gpuTime}<span class="gpu-sub">({item.gpuTime}s)</span>{/if}
-                          </span>
-                        {/if}
-                      </div>
-                    {/if}
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
+                <div
+                  class="gallery-card-thumb-wrap"
+                  role="button"
+                  tabindex="0"
+                  on:click={() => openGallery(item)}
+                  on:keydown={(e) => e.key === "Enter" && openGallery(item)}
+                >
+                  <img
+                    src=""
+                    alt={item.title || item.prompt}
+                    use:lazyLoad={getThumbnailUrl(item)}
+                    class="gallery-thumb"
+                    loading="lazy"
+                    on:error={(e) => handleImageError(item, e)}
+                  />
+                  {#if item.persona || item.totalTime}
+                    <div class="card-thumb-badges">
+                      {#if item.persona}
+                        <span class="persona-tag">👤 {item.persona}</span>
+                      {/if}
+                      {#if item.totalTime}
+                        <span class="card-time-tag" title={$_("krea_total_time", { total: item.totalTime, gpu: item.gpuTime ? `, GPU: ${item.gpuTime}s` : "" }, `Полное время: ${item.totalTime}s${item.gpuTime ? `, генерация GPU: ${item.gpuTime}s` : ""}`)}>
+                          ⚡ {item.totalTime}s{#if item.gpuTime}<span class="gpu-sub">({item.gpuTime}s)</span>{/if}
+                        </span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+
+                <div class="card-footer-info">
+                  <div class="card-meta">
+                    <span
+                      class="card-title"
+                      title={item.description && item.title && item.description !== item.title ? `${item.title} — ${item.description}` : (item.description || item.title || item.prompt)}
+                    >
+                      {item.title && !isJustFileName(item.title, item.name, item.path) ? item.title : (item.description || item.prompt || item.title)}
+                    </span>
                   </div>
 
                   <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -5239,17 +5268,6 @@
                         <line x1="6" y1="6" x2="18" y2="18" />
                       </svg>
                     </button>
-                  </div>
-                </div>
-
-                <div class="card-footer-info">
-                  <div class="card-meta">
-                    <span
-                      class="card-title"
-                      title={item.description && item.title && item.description !== item.title ? `${item.title} — ${item.description}` : (item.description || item.title || item.prompt)}
-                    >
-                      {item.title && !isJustFileName(item.title, item.name, item.path) ? item.title : (item.description || item.prompt || item.title)}
-                    </span>
                   </div>
                 </div>
               </div>
@@ -6340,7 +6358,7 @@
           type="button"
           class="director-tab-btn"
           class:active={directorTab === "prompt"}
-          on:click={() => (directorTab = "prompt")}
+          on:click={() => { directorTab = "prompt"; scrollDirectorFeedToBottom(); }}
         >
           ✍️ {$_("krea_dir_tab_prompt", {}, "Prompt Co-Pilot")}
         </button>
@@ -8127,12 +8145,12 @@
   }
 
   .card-footer-info {
-    padding: 8px 10px;
+    padding: 8px 8px 8px 10px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     font-size: 12px;
-    gap: 6px;
+    gap: 0;
     min-height: 40px;
     position: relative;
     overflow: hidden;
@@ -8158,10 +8176,6 @@
     min-width: 0;
   }
 
-  .gallery-card-media {
-    position: relative;
-  }
-
   .card-thumb-badges {
     position: absolute;
     left: 7px;
@@ -8173,7 +8187,6 @@
     flex-wrap: wrap;
     pointer-events: none;
     z-index: 2;
-    transition: opacity 0.16s ease;
   }
 
   .persona-tag {
@@ -8213,69 +8226,48 @@
     align-items: center;
     gap: 2px;
     flex-shrink: 0;
+    margin-left: 7px;
   }
 
   @media (hover: hover) {
     .gallery-card .card-toolbar {
-      position: absolute;
-      left: 50%;
-      bottom: 8px;
-      z-index: 4;
-      width: max-content;
-      max-width: calc(100% - 12px);
-      justify-content: center;
-      padding: 4px 6px;
-      border-radius: 9px;
-      background: rgba(15, 23, 42, 0.9);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+      max-width: 0;
+      margin-left: 0;
+      overflow: hidden;
       opacity: 0;
-      transform: translate(-50%, 5px);
       pointer-events: none;
-      transition: opacity 0.16s ease, transform 0.16s ease;
+      transition: opacity 0.16s ease;
     }
     .gallery-card:hover .card-toolbar,
     .gallery-card:focus-within .card-toolbar {
+      max-width: 240px;
+      margin-left: 7px;
       opacity: 1;
-      transform: translate(-50%, 0);
       pointer-events: auto;
     }
-    .gallery-card:hover .card-thumb-badges,
-    .gallery-card:focus-within .card-thumb-badges {
-      opacity: 0;
-    }
-    .krea-studio-root.light-theme .gallery-card .card-toolbar {
-      background: rgba(255, 255, 255, 0.95);
-      border-color: rgba(15, 23, 42, 0.12);
-      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+    .gallery-card:hover .card-title,
+    .gallery-card:focus-within .card-title {
+      text-overflow: clip;
+      -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 16px), transparent 100%);
+      mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 16px), transparent 100%);
     }
   }
 
   @media (hover: none) {
-    .gallery-card-media {
-      display: contents;
-    }
-    .gallery-card .card-footer-info {
-      padding: 8px 10px 3px;
-      min-height: 0;
-    }
-    .gallery-card .card-toolbar {
-      order: 3;
-      padding: 2px 8px 7px;
-      justify-content: flex-end;
-      gap: 4px;
+    .gallery-card .card-title {
+      text-overflow: clip;
+      -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 16px), transparent 100%);
+      mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 16px), transparent 100%);
     }
   }
 
   .card-toolbar .toolbar-btn {
     background: transparent;
     border: none;
-    color: #cbd5e1;
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
+    color: #94a3b8;
+    width: 23px;
+    height: 24px;
+    border-radius: 5px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -8283,15 +8275,15 @@
     transition: all 0.15s ease;
     padding: 0;
     font-size: 11px;
-    opacity: 0.88;
+    opacity: 0.75;
   }
 
   .gallery-card:hover .card-toolbar .toolbar-btn {
-    opacity: 0.95;
+    opacity: 0.92;
   }
 
   .card-toolbar .toolbar-btn:hover {
-    background: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.12);
     color: #ffffff;
     opacity: 1;
   }
@@ -10321,10 +10313,10 @@
     border-top: 1px solid #f1f5f9;
   }
   .krea-studio-root.light-theme .card-toolbar .toolbar-btn {
-    color: #334155;
+    color: #64748b;
   }
   .krea-studio-root.light-theme .card-toolbar .toolbar-btn:hover {
-    background: rgba(99, 102, 241, 0.12);
+    background: rgba(99, 102, 241, 0.1);
     color: #4f46e5;
   }
   .krea-studio-root.light-theme .card-toolbar .card-delete-btn:hover {
