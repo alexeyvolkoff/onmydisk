@@ -81,6 +81,8 @@
 				item.id === "/chats"
 			) {
 				name = _("chats");
+			} else if (item.mimeType === "application/x-web-app" && item.customAttributes?.appName) {
+				name = item.customAttributes.appName;
 			} else {
 				name = item.name;
 			}

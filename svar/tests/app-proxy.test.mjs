@@ -74,7 +74,7 @@ async function testLiveAutopilotOverHttpDrive() {
     const merged = mergeAppsIntoRootItems('/beelink', baseRoot, [item]);
     assert.equal(merged.length, 4);
     assert.equal(merged[3].name, 'Autopilot');
-    assert.equal(merged[3].id, '/beelink/__app_autopilot');
+    assert.equal(merged[3].id, '/beelink/Autopilot');
 
     // 3. Tunnel GET /autopilot HTML & GET /autopilot/api/state over HttpDrive
     const htmlResp = await drive.fetch('/autopilot', {
@@ -150,3 +150,4 @@ async function testHeadAndEmptyPostFraming() {
     console.error('APP-PROXY TEST FAILURE:', e);
     process.exit(1);
 });
+

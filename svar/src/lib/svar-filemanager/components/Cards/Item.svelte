@@ -29,6 +29,9 @@
 			return _("terminal");
 		if (isSharedToMe) return _("shared-to-me");
 		if (isSharedByMe) return _("shared-by-me");
+		if (item.mimeType === "application/x-web-app" && item.customAttributes?.appName) {
+			return item.customAttributes.appName;
+		}
 		return item.name;
 	});
 	let [nameStart, nameTail] = $derived(splitFileName(displayName));

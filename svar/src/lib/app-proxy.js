@@ -487,8 +487,9 @@ export function initAppProxyServiceWorkerBridge() {
 export function appDefToFileItem(linkId, appDef) {
     const registered = registerProxiedApp(linkId, appDef);
     if (!registered) return null;
+    const safeDisplayName = registered.name.replace(/\//g, '-');
     return {
-        id: `/__app_${registered.slug}`,
+        id: `/${safeDisplayName}`,
         value: registered.name,
         name: registered.name,
         type: 'code',
@@ -502,6 +503,7 @@ export function appDefToFileItem(linkId, appDef) {
         customAttributes: {
             uiAction: 'web-app',
             appSlug: registered.slug,
+            appName: registered.name,
             port: registered.port,
             entryPath: registered.entryPath,
             icon: registered.icon,
@@ -574,9 +576,13 @@ export function mergeAppsIntoRootItems(devicePrefix, rootItems, appItems) {
         const slug = String(appItem.customAttributes?.appSlug || '').toLowerCase();
         if (!slug || existingSlugs.has(slug)) continue;
         existingSlugs.add(slug);
+        let candidateId = cleanPrefix + appItem.id;
+        if (base.some((f) => f && f.id === candidateId && f.mimeType !== APP_PROXY_MIME)) {
+            candidateId = `${cleanPrefix}${appItem.id} (App)`;
+        }
         toInsert.push({
             ...appItem,
-            id: cleanPrefix + appItem.id,
+            id: candidateId,
             parent: cleanPrefix || '/'
         });
     }

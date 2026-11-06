@@ -22,6 +22,9 @@
 			row.id === "subapp:terminal"
 		)
 			return _("terminal");
+		if (row.mimeType === "application/x-web-app" && row.customAttributes?.appName) {
+			return row.customAttributes.appName;
+		}
 		return row.name;
 	});
 

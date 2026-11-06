@@ -210,6 +210,10 @@
 
 <style>
   .app-proxy-shell {
+    position: absolute;
+    inset: 0;
+    flex: 1 1 0%;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -311,17 +315,19 @@
   }
   .app-proxy-stage {
     position: relative;
-    flex: 1 1 auto;
+    flex: 1 1 0%;
+    min-height: 0;
     width: 100%;
-    height: calc(100% - 42px);
     overflow: hidden;
   }
   .app-proxy-iframe {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     border: 0;
     display: block;
-    background: #ffffff;
+    background: #0f141b;
   }
   .app-proxy-state {
     display: flex;

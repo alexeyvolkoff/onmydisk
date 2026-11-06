@@ -5505,7 +5505,7 @@ async function blobToBase64(blob) {
         const attrs = file.customAttributes || {};
         openProxiedWebApp(device, {
           slug: attrs.appSlug || fileName.toLowerCase(),
-          name: fileName || attrs.appSlug,
+          name: attrs.appName || fileName || attrs.appSlug,
           port: attrs.port || 0,
           entryPath: attrs.entryPath || "/",
           icon: attrs.icon || attrs.appSlug || ""
