@@ -194,3 +194,13 @@ export function canSwitchMainApp() {
   if (typeof window === "undefined") return false;
   return Capacitor.isNativePlatform() && getAppModeSource() !== "url";
 }
+
+export function isOnMyChatDomain() {
+  if (typeof window === "undefined") return false;
+  const host = String(window.location?.hostname || "").toLowerCase();
+  return host === "onmychat.com" || host.endsWith(".onmychat.com");
+}
+
+export function getDomainBrandTitle() {
+  return isOnMyChatDomain() ? "On My Chat" : "On My Disk";
+}

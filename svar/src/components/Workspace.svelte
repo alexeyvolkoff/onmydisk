@@ -3,6 +3,7 @@
   import { deviceRegistry } from '../lib/device-registry.js';
   import { unifiedDiff } from '../lib/unified-diff.js';
   import { getLanguageFromFilename } from '../lib/lang.js';
+  import { getDomainBrandTitle } from '../lib/app-mode.js';
   import Terminal from './Terminal.svelte';
   import Editor from './Editor.svelte';
   import ReviewDiff from './ReviewDiff.svelte';
@@ -337,7 +338,7 @@
 
     if (tabs.length === 0) {
       if (typeof document !== 'undefined') {
-        try { document.title = 'On My Disk'; } catch (e) {}
+        try { document.title = getDomainBrandTitle(); } catch (e) {}
       }
       dispatch('close');
       return;
@@ -452,7 +453,7 @@
 
   onDestroy(() => {
     if (typeof document !== 'undefined') {
-      try { document.title = 'On My Disk'; } catch (e) {}
+      try { document.title = getDomainBrandTitle(); } catch (e) {}
     }
   });
 

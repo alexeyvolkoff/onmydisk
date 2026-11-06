@@ -9,6 +9,7 @@
   import { SshClient } from '../lib/ssh-client.js';
   import { deviceRegistry } from '../lib/device-registry.js';
   import { getSshCredential, saveSshCredential } from '../lib/identity/ssh-credentials.js';
+  import { getDomainBrandTitle } from '../lib/app-mode.js';
 
   export let targetLinkId = "";
   export let port = 22;
@@ -634,7 +635,7 @@
     alive = false;
     if (typeof document !== "undefined") {
       try {
-        document.title = (prevDocTitle && prevDocTitle !== "~" && !prevDocTitle.startsWith("~")) ? prevDocTitle : "On My Disk";
+        document.title = (prevDocTitle && prevDocTitle !== "~" && !prevDocTitle.startsWith("~")) ? prevDocTitle : getDomainBrandTitle();
       } catch (e) {}
     }
     if (onClose) onClose();
@@ -662,7 +663,7 @@
     }
     if (typeof document !== "undefined") {
       try {
-        document.title = (prevDocTitle && prevDocTitle !== "~" && !prevDocTitle.startsWith("~")) ? prevDocTitle : "On My Disk";
+        document.title = (prevDocTitle && prevDocTitle !== "~" && !prevDocTitle.startsWith("~")) ? prevDocTitle : getDomainBrandTitle();
       } catch (e) {}
     }
   });

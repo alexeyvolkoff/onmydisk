@@ -43,7 +43,7 @@
   import OnboardingModal from "./components/OnboardingModal.svelte";
   import { resolveShare, loadSharedByMe, subscribeSharedByMe, loadSharedToMe, subscribeSharedToMe, addSharedToMe, removeSharedToMe, revokeShare } from "./lib/sharing.js";
   import { publicOrigin, sharedLinkUrl, sanitizeShareUrl } from "./lib/public-origin.js";
-  import { resolveAppMode, APP_MODE_CHAT } from "./lib/app-mode.js";
+  import { resolveAppMode, APP_MODE_CHAT, getDomainBrandTitle } from "./lib/app-mode.js";
   import { fetchNearbyDevices } from "./lib/local-discovery.js";
   import { checkForOtaUpdate } from "./lib/ota-updater.js";
   import { cameraSyncManager } from "./lib/camera-sync.js";
@@ -133,7 +133,7 @@
     ? (isDarkTheme ? "/customtheme/logo-chat.svg" : "/customtheme/logo-chat-dark.svg")
     : (isDarkTheme ? "/img/logo.svg" : "/img/logo-dark.svg");
   $: if (typeof document !== "undefined" && !isSharedRoute) {
-    document.title = brandName;
+    document.title = getDomainBrandTitle();
   }
 
   // Device-namespaced id of the folder currently shown in the filemanager,
@@ -4395,11 +4395,12 @@
 
   function updateOpenGraphMeta(res) {
     if (typeof document === "undefined" || !res) return;
+    const brandTitle = getDomainBrandTitle();
     const shareTitle = res.title || res.customAttributes?.title || res.name || "Shared Content";
-    const shareDescr = res.description || res.customAttributes?.description || `Shared ${res.isDir ? 'folder' : 'file'} "${shareTitle}" via On My Disk P2P storage`;
-    const ownerName = res.ownerName || res.owner || "On My Disk User";
+    const shareDescr = res.description || res.customAttributes?.description || `Shared ${res.isDir ? 'folder' : 'file'} "${shareTitle}" via ${brandTitle} P2P storage`;
+    const ownerName = res.ownerName || res.owner || `${brandTitle} User`;
     
-    document.title = `${shareTitle} - On My Disk`;
+    document.title = `${shareTitle} - ${brandTitle}`;
 
     const setMeta = (attrName, attrVal, content) => {
       let el = document.querySelector(`meta[${attrName}="${attrVal}"]`);
@@ -4418,14 +4419,14 @@
     setMeta("name", "twitter:card", "summary_large_image");
     setMeta("name", "twitter:title", shareTitle);
     setMeta("name", "twitter:description", shareDescr);
-    setMeta("name", "twitter:site", "On My Disk");
+    setMeta("name", "twitter:site", brandTitle);
 
     // Open Graph data
     setMeta("property", "og:type", "website");
     setMeta("property", "og:title", shareTitle);
     setMeta("property", "og:url", window.location.href);
     setMeta("property", "og:description", shareDescr);
-    setMeta("property", "og:site_name", "On My Disk");
+    setMeta("property", "og:site_name", brandTitle);
     setMeta("property", "og:author", "@" + ownerName);
 
     if (res.linkId && res.path) {
@@ -6618,7 +6619,7 @@ async function blobToBase64(blob) {
               currentApp = previousApp || "filemanager";
               previousApp = null;
               if (typeof document !== "undefined") {
-                try { document.title = "On My Disk"; } catch (e) {}
+                try { document.title = getDomainBrandTitle(); } catch (e) {}
               }
               let returnFolder = isRealFileManagerFolder(currentFolderId) ? currentFolderId : lastFileManagerFolderId;
               if (!isRealFileManagerFolder(returnFolder)) returnFolder = "/";

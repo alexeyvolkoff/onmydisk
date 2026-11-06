@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "On My Disk Direct",
-  "short_name": "On My Disk",
-  "description": "P2P WebRTC Direct File Manager & Remote Terminal",
+  "name": "{APPTITLE}",
+  "short_name": "{APPTITLE}",
+  "description": "{SLOGAN}",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

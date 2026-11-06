@@ -1,3 +1,5 @@
+import { getDomainBrandTitle } from './lib/app-mode.js';
+
 // Clean any unparsed server template macros from DOM (e.g. Capacitor/static client loads)
 if (typeof document !== 'undefined') {
   try {
@@ -12,8 +14,8 @@ if (typeof document !== 'undefined') {
     for (const n of nodesToRemove) {
       if (n.parentNode) n.parentNode.removeChild(n);
     }
-    if (document.title && document.title.includes('{TITLE}')) {
-      document.title = 'On My Disk';
+    if (!document.title || document.title.includes('{TITLE}') || document.title.includes('{APPTITLE}')) {
+      document.title = getDomainBrandTitle();
     }
   } catch (_) {}
 }

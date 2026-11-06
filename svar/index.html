@@ -7,7 +7,7 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="On My Disk" />
+    <meta name="apple-mobile-web-app-title" content="{APPTITLE}" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="shortcut icon" href="/customtheme/onmydisk.svg" />
     <link rel="apple-touch-icon" sizes="192x192" href="/customtheme/onmydisk.svg" />
@@ -17,7 +17,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <title>On My Disk</title>
+    <title>{TITLE}</title>
     <!--{if isShared}-->
     <meta name="author" content="{OWNER}" />
     <meta name="description" content="{DESCRIPTION}" />
@@ -53,6 +53,17 @@
       if (!window.__omdAppMode || window.__omdAppMode.indexOf("{") === 0) {
         window.__omdAppMode = "";
       }
+      (function () {
+        var h = String((window.location && window.location.hostname) || "").toLowerCase();
+        var fallbackBrand = (h === "onmychat.com" || h.endsWith(".onmychat.com")) ? "On My Chat" : "On My Disk";
+        if (!document.title || document.title.indexOf("{") !== -1) {
+          document.title = fallbackBrand;
+        }
+        var appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+        if (appleTitle && (!appleTitle.content || appleTitle.content.indexOf("{") !== -1)) {
+          appleTitle.content = fallbackBrand;
+        }
+      })();
     </script>
     <style>
       *::-webkit-scrollbar-corner,

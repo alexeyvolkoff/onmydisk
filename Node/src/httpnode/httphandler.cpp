@@ -5733,10 +5733,13 @@ void HttpHandler::handleGet(bool asHead)
                             if (reply) reply->deleteLater();
                         }
 
-                        QString appTitle = TemplateParser::instance().staticVar("FILES_APPTITLE").toString();
-                        if (appTitle.isEmpty()) appTitle = QStringLiteral("On My Disk");
+                        QString appTitle = isChat
+                            ? TemplateParser::instance().staticVar("CHATS_APPTITLE").toString()
+                            : TemplateParser::instance().staticVar("FILES_APPTITLE").toString();
+                        if (appTitle.isEmpty()) appTitle = isChat ? QStringLiteral("On My Chat") : QStringLiteral("On My Disk");
 
                         if (title.isEmpty()) title = appTitle;
+                        else title = QStringLiteral("%1 - %2").arg(title, appTitle);
                         if (ownerName.isEmpty()) ownerName = QStringLiteral("OMD User");
 
                         indexTemplate.setVariable("TITLE", title);
