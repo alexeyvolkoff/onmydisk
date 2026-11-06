@@ -92,7 +92,12 @@
 				iconSrc = icon(item, "big");
 				previewSrc = "";
 			}
-			showDownloadIcon = item.type !== "folder";
+			const isAppItem =
+				item.mimeType === "application/x-terminal" ||
+				item.mimeType === "application/x-chat" ||
+				item.mimeType === "application/x-web-app" ||
+				item.itemType === "app";
+			showDownloadIcon = item.type !== "folder" && !isAppItem;
 		} else {
 			item = showDownloadIcon = null;
 			name = "";

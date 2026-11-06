@@ -3071,6 +3071,48 @@ void OnMyDiskLinkClient::processP2PFileCommand(P2PTunnel *p2p, const QJsonObject
                     aiItem["customAttributes"] = aiAttrs;
                     files.append(aiItem);
                 }
+
+                // Zero-config / user-configured local web apps ([Apps] in onmydisk.conf)
+                if (m_settings) {
+                    m_settings->beginGroup(QStringLiteral("Apps"));
+                    const QStringList appSlugs = m_settings->childKeys();
+                    for (const QString &rawSlug : appSlugs) {
+                        const QString slug = rawSlug.trimmed().toLower();
+                        const QString rawVal = m_settings->value(rawSlug).toString().trimmed();
+                        if (slug.isEmpty() || rawVal.isEmpty()) continue;
+                        const QStringList parts = rawVal.split(QLatin1Char('|'));
+                        QString appName = slug.left(1).toUpper() + slug.mid(1);
+                        int appPort = 0;
+                        QString entryPath = QStringLiteral("/");
+                        QString appIcon = slug;
+                        if (parts.size() == 1) {
+                            appPort = parts[0].trimmed().toInt();
+                        } else if (parts.size() >= 2) {
+                            if (!parts[0].trimmed().isEmpty()) appName = parts[0].trimmed();
+                            appPort = parts[1].trimmed().toInt();
+                            if (parts.size() >= 3 && !parts[2].trimmed().isEmpty()) entryPath = parts[2].trimmed();
+                            if (parts.size() >= 4 && !parts[3].trimmed().isEmpty()) appIcon = parts[3].trimmed();
+                        }
+                        if (appPort <= 0) continue;
+                        if (!entryPath.startsWith(QLatin1Char('/'))) entryPath.prepend(QLatin1Char('/'));
+
+                        QJsonObject appItem;
+                        appItem["name"] = appName;
+                        appItem["isDir"] = false;
+                        appItem["size"] = 0;
+                        appItem["lastModified"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+                        appItem["mimeType"] = "application/x-web-app";
+                        QJsonObject appAttrs;
+                        appAttrs["uiAction"] = "web-app";
+                        appAttrs["appSlug"] = slug;
+                        appAttrs["port"] = appPort;
+                        appAttrs["entryPath"] = entryPath;
+                        appAttrs["icon"] = appIcon;
+                        appItem["customAttributes"] = appAttrs;
+                        files.append(appItem);
+                    }
+                    m_settings->endGroup();
+                }
             }
 
             result["files"] = files;

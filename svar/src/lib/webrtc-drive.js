@@ -925,6 +925,8 @@ export class WebRTCDataChannelDrive {
             let fileType = f.isDir ? "folder" : "file";
             if (f.mimeType === "application/x-terminal") fileType = "code";
             if (f.mimeType === "application/x-chat") fileType = "image";
+            if (f.mimeType === "application/x-web-app") fileType = "code";
+            const isWebApp = f.mimeType === "application/x-web-app";
             
             // Extract file extension for SVAR icon resolution
             const ext = f.isDir ? "" : (fileName.includes(".") ? fileName.split(".").pop().toLowerCase() : "");
@@ -941,7 +943,7 @@ export class WebRTCDataChannelDrive {
                 value: fileName,
                 name: fileName,
                 type: fileType || "file",
-                itemType: isShared ? "shared" : undefined,
+                itemType: isShared ? "shared" : (isWebApp ? "app" : undefined),
                 isShared,
                 icon: folderIcon,
                 ext,

@@ -55,6 +55,196 @@ self.translate = function(key, clientId) {
 
 
 const CACHE_NAME = 'p2p-images-v11';
+const APP_CLIENT_CACHE = 'omd-app-clients-v1';
+const PRESERVED_CACHES = new Set([CACHE_NAME, 'omd-sites-v1', APP_CLIENT_CACHE]);
+
+// Zero-Config P2P App Proxy client tracking
+const hostClientIds = new Set();
+const nonAppClientIds = new Set();
+const appClients = new Map(); // clientId -> { linkId, appSlug }
+let appClientsHydrated = false;
+let appClientsHydratePromise = null;
+
+function hydrateAppClientsOnce() {
+    if (appClientsHydrated) return Promise.resolve();
+    if (appClientsHydratePromise) return appClientsHydratePromise;
+    appClientsHydratePromise = (async () => {
+        try {
+            const cache = await caches.open(APP_CLIENT_CACHE);
+            const keys = await cache.keys();
+            const prefix = `${self.location.origin}/__omd_app_client__/`;
+            await Promise.all(keys.map(async (req) => {
+                if (!req.url.startsWith(prefix)) return;
+                const cid = decodeURIComponent(req.url.slice(prefix.length));
+                if (!cid || hostClientIds.has(cid) || appClients.has(cid)) return;
+                const res = await cache.match(req);
+                if (!res) return;
+                const parsed = await res.json();
+                if (parsed && parsed.linkId && parsed.appSlug) {
+                    appClients.set(cid, { linkId: parsed.linkId, appSlug: parsed.appSlug });
+                }
+            }));
+        } catch (_) {}
+        appClientsHydrated = true;
+    })();
+    return appClientsHydratePromise;
+}
+
+function parseAppProxyPath(pathname) {
+    if (!pathname || !pathname.startsWith('/__app/')) return null;
+    const rest = pathname.slice('/__app/'.length);
+    const firstSlash = rest.indexOf('/');
+    if (firstSlash <= 0) return null;
+    const rawLink = rest.slice(0, firstSlash);
+    const afterLink = rest.slice(firstSlash + 1);
+    const secondSlash = afterLink.indexOf('/');
+    const rawSlug = secondSlash >= 0 ? afterLink.slice(0, secondSlash) : afterLink;
+    const realPath = secondSlash >= 0 ? afterLink.slice(secondSlash) : '/';
+    if (!rawLink || !rawSlug) return null;
+    try {
+        return {
+            linkId: decodeURIComponent(rawLink),
+            appSlug: decodeURIComponent(rawSlug),
+            realPath: realPath || '/'
+        };
+    } catch (_) {
+        return { linkId: rawLink, appSlug: rawSlug, realPath: realPath || '/' };
+    }
+}
+
+async function bindAppClient(clientId, binding) {
+    if (!clientId || !binding || !binding.linkId || !binding.appSlug) return;
+    nonAppClientIds.delete(clientId);
+    hostClientIds.delete(clientId);
+    appClients.set(clientId, { linkId: binding.linkId, appSlug: binding.appSlug });
+    try {
+        const cache = await caches.open(APP_CLIENT_CACHE);
+        await cache.put(
+            new Request(`${self.location.origin}/__omd_app_client__/${encodeURIComponent(clientId)}`),
+            new Response(JSON.stringify({ linkId: binding.linkId, appSlug: binding.appSlug, ts: Date.now() }), {
+                headers: { 'Content-Type': 'application/json' }
+            })
+        );
+    } catch (_) {}
+}
+
+async function getAppClientBinding(clientId) {
+    if (!clientId || hostClientIds.has(clientId) || nonAppClientIds.has(clientId)) return null;
+    const mem = appClients.get(clientId);
+    if (mem) return mem;
+    try {
+        const cache = await caches.open(APP_CLIENT_CACHE);
+        const res = await cache.match(`${self.location.origin}/__omd_app_client__/${encodeURIComponent(clientId)}`);
+        if (res) {
+            const parsed = await res.json();
+            if (parsed && parsed.linkId && parsed.appSlug) {
+                const binding = { linkId: parsed.linkId, appSlug: parsed.appSlug };
+                appClients.set(clientId, binding);
+                return binding;
+            }
+        }
+    } catch (_) {}
+    nonAppClientIds.add(clientId);
+    return null;
+}
+
+async function findHostWindowClient(excludeClientId) {
+    for (const hid of Array.from(hostClientIds)) {
+        if (hid === excludeClientId) continue;
+        try {
+            const c = await self.clients.get(hid);
+            if (c) return c;
+            hostClientIds.delete(hid);
+        } catch (_) {
+            hostClientIds.delete(hid);
+        }
+    }
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const candidates = all.filter((c) => {
+        if (!c || c.id === excludeClientId) return false;
+        if (appClients.has(c.id)) return false;
+        try {
+            const cu = new URL(c.url);
+            if (cu.pathname.startsWith('/__app/')) return false;
+        } catch (_) {}
+        return true;
+    });
+    return candidates.find((c) => c.focused) || candidates.find((c) => c.visibilityState === 'visible') || candidates[0] || null;
+}
+
+async function handleAppProxyFetch(event, linkId, appSlug, targetPathWithQuery) {
+    const hostClient = await findHostWindowClient(event.clientId);
+    if (!hostClient) {
+        return new Response('On My Disk P2P host window is not open. Please open this app from your node workspace.', {
+            status: 503,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        });
+    }
+
+    const req = event.request;
+    const method = (req.method || 'GET').toUpperCase();
+    let bodyBuffer = null;
+    if (method !== 'GET' && method !== 'HEAD') {
+        try {
+            bodyBuffer = await req.arrayBuffer();
+        } catch (_) {
+            bodyBuffer = null;
+        }
+    }
+
+    const headers = {};
+    req.headers.forEach((value, key) => {
+        headers[key] = value;
+    });
+
+    return new Promise((resolve) => {
+        const mc = new MessageChannel();
+        const timer = setTimeout(() => {
+            resolve(new Response('P2P App Proxy request timed out', { status: 504 }));
+        }, 125000);
+
+        mc.port1.onmessage = (msgEvent) => {
+            clearTimeout(timer);
+            const data = msgEvent.data || {};
+            if (data.error) {
+                resolve(new Response(String(data.error), {
+                    status: data.status || 502,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                }));
+                return;
+            }
+            if (data.redirectUrl && (data.status === 301 || data.status === 302 || data.status === 303 || data.status === 307 || data.status === 308)) {
+                const absRedirect = new URL(data.redirectUrl, self.location.origin).toString();
+                resolve(Response.redirect(absRedirect, data.status));
+                return;
+            }
+            const status = data.status || 200;
+            const resHeaders = new Headers(data.headers || {});
+            const nullBody = method === 'HEAD' || status === 204 || status === 205 || status === 304;
+            resolve(new Response(nullBody ? null : (data.bodyBuffer || new ArrayBuffer(0)), {
+                status,
+                statusText: data.statusText || '',
+                headers: resHeaders
+            }));
+        };
+
+        const transfer = [mc.port2];
+        if (bodyBuffer && bodyBuffer.byteLength > 0) {
+            transfer.push(bodyBuffer);
+        }
+        hostClient.postMessage({
+            type: 'APP_PROXY_FETCH',
+            linkId,
+            appSlug,
+            path: targetPathWithQuery,
+            method,
+            headers,
+            bodyBuffer,
+            mode: req.mode,
+            referrer: req.referrer || ''
+        }, transfer);
+    });
+}
 
 // Install Service Worker and activate immediately
 self.addEventListener('install', (event) => {
@@ -69,7 +259,7 @@ self.addEventListener('activate', (event) => {
         caches.keys().then(keys => {
             return Promise.all(
                 keys.map(key => {
-                    if (key !== CACHE_NAME) {
+                    if (!PRESERVED_CACHES.has(key)) {
                         console.log('[SW] Deleting stale cache:', key);
                         return caches.delete(key);
                     }
@@ -88,6 +278,61 @@ self.addEventListener('activate', (event) => {
 // Handle background push notifications & P2P Fetch
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
+
+    // Zero-Config P2P App Proxy: explicit /__app/<linkId>/<appSlug>/... routes
+    if (url.origin === self.location.origin && url.pathname.startsWith('/__app/')) {
+        const parsed = parseAppProxyPath(url.pathname);
+        if (parsed) {
+            event.respondWith((async () => {
+                if (event.resultingClientId) {
+                    await bindAppClient(event.resultingClientId, parsed);
+                } else if (event.clientId && !hostClientIds.has(event.clientId) && event.request.mode === 'navigate') {
+                    await bindAppClient(event.clientId, parsed);
+                }
+                return handleAppProxyFetch(event, parsed.linkId, parsed.appSlug, parsed.realPath + url.search);
+            })());
+            return;
+        }
+    }
+
+    // Zero-Config P2P App Proxy: root-relative subresources & sub-navigations inside a bound app iframe
+    if (
+        url.origin === self.location.origin &&
+        event.clientId &&
+        !hostClientIds.has(event.clientId) &&
+        !nonAppClientIds.has(event.clientId) &&
+        url.pathname !== '/service-worker.js' &&
+        !url.pathname.startsWith('/p2p/') &&
+        !url.pathname.startsWith('/sites/')
+    ) {
+        const syncBinding = appClients.get(event.clientId);
+        if (syncBinding) {
+            event.respondWith((async () => {
+                if (event.resultingClientId) {
+                    await bindAppClient(event.resultingClientId, syncBinding);
+                }
+                return handleAppProxyFetch(event, syncBinding.linkId, syncBinding.appSlug, url.pathname + url.search);
+            })());
+            return;
+        }
+        // Cold SW wake-up fallback: hydrate persistent CacheStorage client map once, otherwise fall back to network
+        if (!appClientsHydrated) {
+            event.respondWith((async () => {
+                await hydrateAppClientsOnce();
+                const restored = appClients.get(event.clientId);
+                if (restored) {
+                    if (event.resultingClientId) {
+                        await bindAppClient(event.resultingClientId, restored);
+                    }
+                    return handleAppProxyFetch(event, restored.linkId, restored.appSlug, url.pathname + url.search);
+                }
+                nonAppClientIds.add(event.clientId);
+                return fetch(event.request);
+            })());
+            return;
+        }
+        nonAppClientIds.add(event.clientId);
+    }
 
     //Static Jekyll sites: served P2P by the site loader page (site-view.html),
     //cached here. The loader reconnects the tunnel and refreshes the cache
@@ -321,6 +566,16 @@ self.addEventListener('message', function(event) {
                 event.source.postMessage({ type: 'claimed' });
             }
         });
+    } else if (event.data && event.data.type === 'REGISTER_APP_HOST') {
+        if (clientId) {
+            hostClientIds.add(clientId);
+            nonAppClientIds.add(clientId);
+            appClients.delete(clientId);
+        }
+    } else if (event.data && event.data.type === 'REGISTER_APP_CLIENT') {
+        if (clientId && event.data.linkId && event.data.appSlug) {
+            bindAppClient(clientId, { linkId: event.data.linkId, appSlug: event.data.appSlug });
+        }
     } else if (event.data && event.data.type === 'CLEAR_P2P_CACHE') {
         const urlPrefix = event.data.prefix || '';
         caches.keys().then(keys => {

@@ -29,7 +29,18 @@
   import DeckCraftEditor from "./components/DeckCraftEditor.svelte";
   import { isOfficeDocument, extractDocTextFromBlob, isBinaryResponseType, WC_DOC_EXTS, GC_SHEET_EXTS, DC_PRES_EXTS, univerDocToMarkdown } from "./lib/univer-doc-utils.js";
   import Workspace from "./components/Workspace.svelte";
+  import AppProxyView from "./components/AppProxyView.svelte";
   import Settings from "./components/Settings.svelte";
+  import {
+    APP_PROXY_MIME,
+    initAppProxyServiceWorkerBridge,
+    discoverNodeApps,
+    getCachedNodeAppItems,
+    mergeAppsIntoRootItems,
+    registerProxiedApp,
+    getProxiedApp,
+    closeAppProxyDrivesForNode
+  } from "./lib/app-proxy.js";
   import ChatApplet from "./components/ChatApplet.svelte";
   import SingleView from "./components/SingleView.svelte";
   import MarkdownViewer from "./components/MarkdownViewer.svelte";
@@ -126,6 +137,63 @@
   let rootName = "On My Disk";
   let terminalPort = 22;
   let activeDeviceId = null;
+  let activeWebApp = null; // { linkId, deviceName, slug, name, port, entryPath, icon }
+
+  function openProxiedWebApp(device, appMeta = {}) {
+    if (!device || !device.linkId) return;
+    const slug = String(appMeta.slug || appMeta.appSlug || "").trim().toLowerCase();
+    if (!slug) return;
+    const existing = getProxiedApp(device.linkId, slug);
+    const port = Number(appMeta.port || existing?.port || 0);
+    const entryPath = appMeta.entryPath || existing?.entryPath || "/";
+    const name = appMeta.name || existing?.name || slug;
+    const icon = appMeta.icon || existing?.icon || slug;
+    if (port > 0) {
+      registerProxiedApp(device.linkId, { slug, name, port, entryPath, icon });
+    }
+    if (isRealFileManagerFolder(currentFolderId)) {
+      lastFileManagerFolderId = currentFolderId;
+    }
+    if (currentApp !== "webapp") {
+      previousApp = currentApp;
+    }
+    activeDeviceId = device.linkId;
+    activeWebApp = {
+      linkId: device.linkId,
+      deviceName: device.name || device.linkId,
+      slug,
+      name,
+      port,
+      entryPath,
+      icon
+    };
+    currentApp = "webapp";
+    updateUrlHash(`#/app/${encodeURIComponent(device.linkId)}/${encodeURIComponent(slug)}`);
+  }
+
+  function refreshDeviceNodeApps(device, { force = false } = {}) {
+    if (!device || !device.linkId || device.local || device.isAiNode || isSharedRoute) return;
+    if (!device.drive || device.drive.authLevel !== "admin") return;
+
+    discoverNodeApps(device.linkId, { force })
+      .then((appItems) => {
+        if (!Array.isArray(appItems) || appItems.length === 0) return;
+        const prefix = device.prefix;
+        if (!prefix || !window._deviceItems) return;
+        const currentRoot = window._deviceItems[prefix] || [];
+        const merged = mergeAppsIntoRootItems(prefix, currentRoot, appItems);
+        window._deviceItems[prefix] = merged;
+        if (!window._folderItems) window._folderItems = {};
+        window._folderItems[prefix] = merged;
+        updateRootFilesData();
+        if (fmApi) {
+          try {
+            fmApi.exec("provide-data", { id: prefix, data: merged });
+          } catch (_) {}
+        }
+      })
+      .catch(() => {});
+  }
   // Brand follows the resolved deployment domain: "On My Chat" for the chat
   // applet and "On My Disk" everywhere else. Login widgets mirror this.
   $: brandName = appMode === APP_MODE_CHAT ? "On My Chat" : "On My Disk";
@@ -490,6 +558,36 @@
           if (appType === "terminal") terminalInitialPath = pathRest;
           else appFilePath = pathRest;
         }
+      } else if (hashPath.startsWith("/app/")) {
+        if (showAddDevicePanel) showAddDevicePanel = false;
+        const parts = hashPath.slice("/app/".length).split("/").filter(Boolean);
+        const rawDev = parts[0] ? decodeURIComponent(parts[0]) : "";
+        const rawSlug = parts[1] ? decodeURIComponent(parts[1]).toLowerCase() : "";
+        if (rawDev && rawSlug) {
+          const dev =
+            deviceRegistry.get(rawDev) ||
+            resolveDevice("/" + rawDev) ||
+            deviceRegistry.list().find((d) => d && (d.linkId === rawDev || d.name === rawDev));
+          const linkId = dev ? dev.linkId : rawDev;
+          let reg = getProxiedApp(linkId, rawSlug);
+          if (!reg) {
+            try {
+              await discoverNodeApps(linkId, { force: true });
+              reg = getProxiedApp(linkId, rawSlug);
+            } catch (_) {}
+          }
+          activeDeviceId = linkId;
+          activeWebApp = {
+            linkId,
+            deviceName: dev?.name || linkId,
+            slug: rawSlug,
+            name: reg?.name || rawSlug,
+            port: reg?.port || 0,
+            entryPath: reg?.entryPath || "/",
+            icon: reg?.icon || rawSlug
+          };
+          currentApp = "webapp";
+        }
       } else if (hashPath.startsWith("/settings")) {
         if (showAddDevicePanel) showAddDevicePanel = false;
         currentApp = "settings";
@@ -770,6 +868,7 @@
   });
 
   onMount(() => {
+    initAppProxyServiceWorkerBridge();
     initGalleryCaptionAutoHide();
 
     // Mark browser workspace as entered so future visits to `/` open the app directly
@@ -2261,7 +2360,9 @@
           if (hasChat && !caps.includes("chat")) caps.push("chat");
           device.capabilities = caps;
 
-          const deviceItems = rootItems.map(f => ({ ...f, id: device.prefix + f.id }));
+          const baseDeviceItems = rootItems.map(f => ({ ...f, id: device.prefix + f.id }));
+          const cachedApps = isAuthed ? getCachedNodeAppItems(linkId) : null;
+          const deviceItems = cachedApps ? mergeAppsIntoRootItems(device.prefix, baseDeviceItems, cachedApps) : baseDeviceItems;
           const devType = detectDeviceType(device.name, (identity && identity.devices && identity.devices.get(linkId)?.type) || device.type);
           const devIcon = getDeviceIcon(devType);
           device.deviceType = devType;
@@ -2288,6 +2389,9 @@
 
           if (!window._deviceItems) window._deviceItems = {};
           window._deviceItems[device.prefix] = deviceItems;
+          if (isAuthed) {
+            refreshDeviceNodeApps(device);
+          }
 
           const chatsSec = SERVICE_SECTIONS.find(s => s.id === "/chats");
           if (chatsSec && hasChat) {
@@ -3684,12 +3788,18 @@
                 }));
               if (!window._deviceItems) window._deviceItems = {};
               if (!window._folderItems) window._folderItems = {};
-              window._folderItems[fullId] = remapped;
+              let finalItems = remapped;
               if (folderPath === "/") {
-                window._deviceItems[device.prefix] = remapped;
+                const cachedApps = getCachedNodeAppItems(device.linkId);
+                if (cachedApps) {
+                  finalItems = mergeAppsIntoRootItems(device.prefix, remapped, cachedApps);
+                }
+                window._deviceItems[device.prefix] = finalItems;
                 updateRootFilesData();
+                refreshDeviceNodeApps(device);
               }
-              fmApi.exec("provide-data", { id: fullId, data: remapped });
+              window._folderItems[fullId] = finalItems;
+              fmApi.exec("provide-data", { id: fullId, data: finalItems });
             }
             _folderFailures.delete(fullPathKey);
           } catch (err) {
@@ -3734,6 +3844,7 @@
     const isLocal = dev && dev.local;
     
     // 1. Remove from device registry and disconnect drive
+    closeAppProxyDrivesForNode(linkId);
     deviceRegistry.delete(linkId);
     if (dev && dev.linkId && dev.linkId !== linkId) {
       deviceRegistry.delete(dev.linkId);
@@ -4655,6 +4766,22 @@
       ];
     }
 
+    if (
+      item &&
+      (item.mimeType === APP_PROXY_MIME ||
+        item.mimeType === "application/x-terminal" ||
+        item.mimeType === "application/x-chat" ||
+        item.itemType === "app")
+    ) {
+      return [
+        {
+          id: "open-app-item",
+          text: translate("open", {}, "Open"),
+          icon: "wxi-eye"
+        }
+      ];
+    }
+
     if (item && item.id && typeof item.id === "string" && item.parent === "/shared-to-me") {
       return [
         { id: "copy-share-url", text: translate("copy_share_url", {}, "Copy Share Link"), icon: "wxi-content-copy" },
@@ -4909,6 +5036,9 @@
         if (typeof device.drive.clearCache === "function") {
           try { await device.drive.clearCache(); } catch (_) {}
         }
+        if (parsed.path === "/") {
+          refreshDeviceNodeApps(device, { force: true });
+        }
       } else {
         const lastFail = _folderFailures.get(failKey) || 0;
         if (Date.now() - lastFail < FOLDER_RETRY_COOLDOWN) {
@@ -5155,6 +5285,14 @@ async function blobToBase64(blob) {
       return true;
     });
 
+    api.on("open-app-item", async ({ id }) => {
+      const file = api.getFile(id);
+      if (file) {
+        const parentPath = typeof file.parent === "string" ? file.parent : (file.parent ? file.parent.id : "");
+        await handleFileOpen(file, parentPath);
+      }
+    });
+
     // Device properties modal
     api.on("open-device-settings", ({ id }) => {
       const parsed = splitDeviceId(id);
@@ -5361,6 +5499,17 @@ async function blobToBase64(blob) {
       if (mime === "application/x-chat") {
         activeDeviceId = device.linkId;
         currentApp = "chat";
+        return;
+      }
+      if (mime === APP_PROXY_MIME) {
+        const attrs = file.customAttributes || {};
+        openProxiedWebApp(device, {
+          slug: attrs.appSlug || fileName.toLowerCase(),
+          name: fileName || attrs.appSlug,
+          port: attrs.port || 0,
+          entryPath: attrs.entryPath || "/",
+          icon: attrs.icon || attrs.appSlug || ""
+        });
         return;
       }
 
@@ -6362,6 +6511,10 @@ async function blobToBase64(blob) {
   // Bootstrap Icons glyphs reused from the legacy frontend (CSS mask style).
   const BI_TERMINAL_FILL = "M0 3a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm9.5 5.5h-3a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1m-6.354-.354a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708l-2-2a.5.5 0 1 0-.708.708L4.793 6.5z";
   const BI_CHAT_LEFT_TEXT_FILL = "M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4.414a1 1 0 0 0-.707.293L.854 15.146A.5.5 0 0 1 0 14.793zm3.5 1a.5.5 0 0 0 0 1h9a.5.5 0 0 0 0-1zm0 2.5a.5.5 0 0 0 0 1h9a.5.5 0 0 0 0-1zm0 2.5a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1z";
+  const BI_ROCKET_TAKEOFF_FILL = "M12.17 9.53c2.307-2.592 3.278-4.684 3.641-6.218.21-.887.214-1.58.16-2.065a3.6 3.6 0 0 0-.108-.563 2 2 0 0 0-.078-.23V.453c-.073-.164-.168-.234-.352-.295a2 2 0 0 0-.16-.045 4 4 0 0 0-.57-.093c-.49-.044-1.19-.03-2.08.188-1.536.374-3.618 1.343-6.161 3.604l-2.4.238h-.006a2.55 2.55 0 0 0-1.524.734L.15 7.17a.512.512 0 0 0 .433.868l1.896-.271c.28-.04.592.013.955.132.232.076.437.16.655.248l.203.083c.196.816.66 1.58 1.275 2.195.613.614 1.376 1.08 2.191 1.277l.082.202c.089.218.173.424.249.657.118.363.172.676.132.956l-.271 1.9a.512.512 0 0 0 .867.433l2.382-2.386c.41-.41.668-.949.732-1.526zm.11-3.699c-.797.8-1.93.961-2.528.362-.598-.6-.436-1.733.361-2.532.798-.799 1.93-.96 2.528-.361s.437 1.732-.36 2.531Z";
+  const BI_STICKIES_FILL = "M0 1.5V13a1 1 0 0 0 1 1V1.5a.5.5 0 0 1 .5-.5H14a1 1 0 0 0-1-1H1.5A1.5 1.5 0 0 0 0 1.5 M2 3.5A1.5 1.5 0 0 1 3.5 2h11A1.5 1.5 0 0 1 16 3.5v6.086a1.5 1.5 0 0 1-.44 1.06l-4.914 4.915a1.5 1.5 0 0 1-1.06.439H3.5A1.5 1.5 0 0 1 2 14.5zm8 8.5a1 1 0 0 0 1 1h3.5L10 8.5z";
+  const BI_FILE_EARMARK_CHECK_FILL = "M9.293 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.707A1 1 0 0 0 13.707 4L10 .293A1 1 0 0 0 9.293 0M9.5 3.5v-2l3 3h-2a1 1 0 0 1-1-1m1.354 4.354-3 3a.5.5 0 0 1-.708 0l-1.5-1.5a.5.5 0 1 1 .708-.708L7.5 9.793l2.646-2.647a.5.5 0 0 1 .708.708";
+  const BI_WINDOW_STACK = "M4.5 6a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1M6 6a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1m2-.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0 M12 1a2 2 0 0 1 2 2 2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2 2 2 0 0 1-2-2V3a2 2 0 0 1 2-2zM2 12V5a2 2 0 0 1 2-2h9a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1m1-4v5a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8zm12-1V5a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v2z";
   const BI_HDD_FILL = "M0 10a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm2.5 1a.5.5 0 1 0 0 1 .5.5 0 0 0 0-1m2 0a.5.5 0 1 0 0 1 .5.5 0 0 0 0-1M.91 7.204A3 3 0 0 1 2 7h12c.384 0 .752.072 1.09.204l-1.87-4.363A1 1 0 0 0 12.3 2.2H3.7a1 1 0 0 0-.92.641z";
   const BI_LAPTOP = "M13.5 3a.5.5 0 0 1 .5.5V11H2V3.5a.5.5 0 0 1 .5-.5zm-11-1A1.5 1.5 0 0 0 1 3.5V12h14V3.5A1.5 1.5 0 0 0 13.5 2zM0 12.5h16a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 12.5";
   const BI_PHONE = "M11 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zM5 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2z M8 14a1 1 0 1 0 0-2 1 1 0 0 0 0 2";
@@ -6389,6 +6542,13 @@ async function blobToBase64(blob) {
     }
     if (file.mimeType === "application/x-chat" || file.id === "subapp:chat" || file.id === "/chats" || file.itemType === "chat") {
       return biIconDataUri(BI_CHAT_LEFT_TEXT_FILL, appIconColor);
+    }
+    if (file.mimeType === APP_PROXY_MIME) {
+      const appIcon = String(file.customAttributes?.icon || file.customAttributes?.appSlug || "").toLowerCase();
+      if (appIcon === "autopilot") return biIconDataUri(BI_ROCKET_TAKEOFF_FILL, appIconColor);
+      if (appIcon === "memos") return biIconDataUri(BI_STICKIES_FILL, appIconColor);
+      if (appIcon === "docuseal") return biIconDataUri(BI_FILE_EARMARK_CHECK_FILL, appIconColor);
+      return biIconDataUri(BI_WINDOW_STACK, appIconColor);
     }
     if (file.id === "/shared-by-me" || file.itemType === "shared-by-me" || file.icon === "wxi-folder-links") {
       return biIconDataUri(BI_FOLDER_SYMLINK_FILL, brandColor);
@@ -6630,6 +6790,37 @@ async function blobToBase64(blob) {
                 try { fmApi.exec("set-path", { id: returnFolder }); } catch (_) {}
               }
             }} 
+          />
+        </div>
+      {/if}
+
+      {#if currentApp === 'webapp' && activeWebApp}
+        <div class="sub-app-container">
+          <AppProxyView
+            targetLinkId={activeWebApp.linkId}
+            deviceName={activeWebApp.deviceName}
+            appSlug={activeWebApp.slug}
+            appName={activeWebApp.name}
+            port={activeWebApp.port}
+            entryPath={activeWebApp.entryPath}
+            icon={activeWebApp.icon}
+            {isDarkTheme}
+            on:close={() => {
+              currentApp = previousApp || "filemanager";
+              previousApp = null;
+              activeWebApp = null;
+              if (typeof document !== "undefined") {
+                try { document.title = getDomainBrandTitle(); } catch (_) {}
+              }
+              let returnFolder = isRealFileManagerFolder(currentFolderId) ? currentFolderId : lastFileManagerFolderId;
+              if (!isRealFileManagerFolder(returnFolder)) returnFolder = "/";
+              currentFolderId = returnFolder;
+              const targetHash = currentApp === "chat" ? "#/chat" : filesHash(returnFolder);
+              updateUrlHash(targetHash);
+              if (currentApp === "filemanager" && fmApi) {
+                try { fmApi.exec("set-path", { id: returnFolder }); } catch (_) {}
+              }
+            }}
           />
         </div>
       {/if}

@@ -5014,6 +5014,33 @@ void HttpHandler::handleGet(bool asHead)
             replyNotFound();
         return;
     }
+
+    //Zero-config P2P App Proxy bootstrap: if a tab hard-reloads /__app/... bypassing
+    //the ServiceWorker, re-claim SW control and reload into the P2P tunnel.
+    if (urlPath.startsWith(QStringLiteral("/__app/")))
+    {
+        static const QByteArray appLoaderHtml(
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<title>Connecting P2P App…</title>"
+            "<style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;"
+            "background:#0f141b;color:#e6edf3;font:14px system-ui,sans-serif}</style></head>"
+            "<body>Connecting P2P App Proxy…<script>"
+            "(async()=>{"
+            "if(!('serviceWorker' in navigator))return;"
+            "const reg=await navigator.serviceWorker.register('/service-worker.js');"
+            "await navigator.serviceWorker.ready;"
+            "if(!navigator.serviceWorker.controller&&reg.active){"
+            "await new Promise(r=>{navigator.serviceWorker.addEventListener('controllerchange',r,{once:true});"
+            "reg.active.postMessage({type:'claim'});setTimeout(r,1500);});"
+            "}"
+            "if(navigator.serviceWorker.controller)location.reload();"
+            "})();"
+            "</script></body></html>"
+        );
+        m_resp->addHeader("Cache-Control", "no-store");
+        endReply(appLoaderHtml, "text/html; charset=UTF-8", qhttp::ESTATUS_OK);
+        return;
+    }
 #endif //SERVER
 
     QString subUrl = "";

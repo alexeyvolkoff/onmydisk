@@ -45,6 +45,7 @@
 		item.mimeType === "application/x-terminal" ||
 			item.mimeType === "application/x-chat" ||
 			item.mimeType === "application/x-code" ||
+			item.mimeType === "application/x-web-app" ||
 			(typeof item.id === "string" && item.id.startsWith("subapp:")) ||
 			item.itemType === "app"
 	);

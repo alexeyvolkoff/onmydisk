@@ -54,6 +54,7 @@ function concatBytes(a, b) {
 export class HttpResponseParser {
     constructor(callbacks) {
         this.cb = callbacks || {};
+        this.method = (this.cb.method ? String(this.cb.method) : 'GET').toUpperCase();
         this.buf = new Uint8Array(16384);
         this.len = 0;
         this.state = 'headers';
@@ -139,7 +140,7 @@ export class HttpResponseParser {
         }
         const connHeader = (this._getHeader('connection') || '').toLowerCase();
         if (connHeader.includes('close')) this.serverWillClose = true;
-        const noBody = this.status === 204 || this.status === 304 || (this.status >= 100 && this.status < 200);
+        const noBody = this.method === 'HEAD' || this.status === 204 || this.status === 205 || this.status === 304 || (this.status >= 100 && this.status < 200);
         if (noBody) {
             this._emitHeaders();
             this._finish();
@@ -412,10 +413,18 @@ class ChannelConn {
         this.busy = true;
         this._reuseOK = true;
 
-        let head = method + ' ' + path + ' HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\n';
-        for (const [k, v] of headers) head += k + ': ' + v + '\r\n';
         const body = bodyBytes || new Uint8Array(0);
-        if (method !== 'GET' && method !== 'HEAD' && body.length > 0) {
+        const hasHeader = (nameLower) => headers.some(([k]) => k.toLowerCase() === nameLower);
+        let head = method + ' ' + path + ' HTTP/1.1\r\n';
+        if (!hasHeader('host')) head += 'Host: localhost\r\n';
+        if (!hasHeader('accept-encoding')) head += 'Accept-Encoding: identity\r\n';
+        if (!hasHeader('connection')) head += 'Connection: keep-alive\r\n';
+        for (const [k, v] of headers) {
+            const kl = k.toLowerCase();
+            if (kl === 'content-length' || kl === 'transfer-encoding') continue;
+            head += k + ': ' + v + '\r\n';
+        }
+        if (body.length > 0 || method === 'POST' || method === 'PUT' || method === 'PATCH') {
             head += 'Content-Length: ' + body.length + '\r\n';
         }
         head += '\r\n';
@@ -454,6 +463,7 @@ class ChannelConn {
         };
 
         const parser = new HttpResponseParser({
+            method,
             onHeaders: (info) => {
                 settleHeadersOk(info);
             },
@@ -565,11 +575,14 @@ class ChannelConn {
             }
         });
 
-        return new Response(stream, {
+        const nullBodyStatus = info.status === 204 || info.status === 205 || info.status === 304 || (info.status >= 100 && info.status < 200);
+        const resp = new Response(nullBodyStatus ? null : stream, {
             status: info.status,
             statusText: info.statusText,
             headers: new Headers(info.headers)
         });
+        resp._rawHeaders = info.headers;
+        return resp;
     }
 
     async _sendAll(bytes, signal) {
@@ -604,10 +617,31 @@ async function encodeBody(body) {
     if (typeof body === 'string') return new TextEncoder().encode(body);
     if (body instanceof ArrayBuffer) return new Uint8Array(body);
     if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    if (typeof Blob !== 'undefined' && body instanceof Blob) {
+        return new Uint8Array(await body.arrayBuffer());
+    }
     if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
         return new TextEncoder().encode(body.toString());
     }
     throw new TypeError('Unsupported request body type');
+}
+
+function resolveStoredDidPub() {
+    if (typeof window !== 'undefined') {
+        const winDid = window.identity?.mainPub || window.identity?.pair?.pub;
+        if (winDid) return winDid;
+    }
+    if (typeof localStorage !== 'undefined') {
+        try {
+            const raw = localStorage.getItem('omd_identity');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                const pub = parsed?.mainPub || parsed?.pair?.pub || parsed?.pub;
+                if (typeof pub === 'string' && pub.trim()) return pub.trim();
+            }
+        } catch (_) {}
+    }
+    return null;
 }
 
 export class HttpDrive {
@@ -738,7 +772,7 @@ export class HttpDrive {
         if (activeToken && !headers.some(([k]) => k.toLowerCase() === 'token') && !headers.some(([k]) => k.toLowerCase() === 'authorization') && !headers.some(([k]) => k.toLowerCase() === 'x-omd-ai-token')) {
             headers.push(['Token', activeToken]);
         }
-        const effectiveDid = this.didPub || (typeof window !== 'undefined' && (window.identity?.mainPub || window.identity?.pair?.pub)) || null;
+        const effectiveDid = this.didPub || resolveStoredDidPub();
         if (effectiveDid && !headers.some(([k]) => k.toLowerCase() === 'x-omd-caller-did')) {
             headers.push(['X-OMD-Caller-DID', effectiveDid]);
         }
