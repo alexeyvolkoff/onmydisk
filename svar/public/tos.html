@@ -747,5 +747,25 @@
     </footer>
 
   </div>
+  <script>
+    (function () {
+      try {
+        var host = (window.location && window.location.hostname ? window.location.hostname : "")
+          .trim()
+          .toLowerCase()
+          .replace(/\.+$/, "");
+        var isChat = host === "onmychat.com" || /\.onmychat\.com$/.test(host);
+        var brand = isChat ? "On My Chat" : "On My Disk";
+        if (document.title.indexOf("{") !== -1) {
+          document.title = document.title.replace(/\{APPTITLE\}|\{TITLE\}/g, brand);
+        }
+        var brandLink = document.querySelector(".brand-logo-link[data-app]");
+        if (brandLink && (brandLink.getAttribute("data-app") || "").indexOf("{") !== -1) {
+          brandLink.setAttribute("data-app", brand);
+          brandLink.setAttribute("aria-label", brand);
+        }
+      } catch (e) {}
+    })();
+  </script>
 </body>
 </html>

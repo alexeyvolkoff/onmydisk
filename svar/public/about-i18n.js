@@ -1368,11 +1368,25 @@
     return ABOUT_LANGUAGES[0];
   }
 
+  function resolveBrandTitle() {
+    try {
+      var host = (window.location && window.location.hostname ? window.location.hostname : "")
+        .trim()
+        .toLowerCase()
+        .replace(/\.+$/, "");
+      if (host === "onmychat.com" || /\.onmychat\.com$/.test(host)) {
+        return "On My Chat";
+      }
+    } catch (e) {}
+    return "On My Disk";
+  }
+
   function applyAboutLang(code, persist) {
     var lang = normalizeLangCode(code) || "en";
     var dict = ABOUT_I18N[lang] || ABOUT_I18N.en;
     var fallback = ABOUT_I18N.en;
     var meta = findLangMeta(lang);
+    var brand = resolveBrandTitle();
 
     window.__aboutCurrentLang = lang;
     window.__aboutCurrentDict = dict;
@@ -1380,8 +1394,18 @@
     document.documentElement.setAttribute("lang", lang.replace("_", "-"));
     document.documentElement.setAttribute("dir", meta.dir || "ltr");
 
+    var brandEl = document.querySelector(".brand[data-app]");
+    if (brandEl) {
+      var curApp = brandEl.getAttribute("data-app") || "";
+      if (!curApp || curApp.indexOf("{") !== -1) {
+        brandEl.setAttribute("data-app", brand);
+        brandEl.setAttribute("aria-label", brand);
+      }
+    }
+
     if (dict.meta_title || fallback.meta_title) {
-      document.title = dict.meta_title || fallback.meta_title;
+      var rawTitle = dict.meta_title || fallback.meta_title;
+      document.title = rawTitle.replace(/^On My Chat\b/, brand);
     }
     var descMeta = document.querySelector('meta[name="description"]');
     if (descMeta && (dict.meta_desc || fallback.meta_desc)) {

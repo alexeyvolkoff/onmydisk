@@ -7659,6 +7659,7 @@ bool HttpHandler::serveHtmlTemplatePage(const QString& fileName, const QString& 
     QString companyUrl = TemplateParser::instance().staticVar("COMPANYURL").toString();
     if (companyUrl.isEmpty()) companyUrl = QStringLiteral("https://github.com/alexeyvolkoff/onmydisk");
 
+    pageTemplate.setVariable("TITLE", appTitle);
     pageTemplate.setVariable("APPTITLE", appTitle);
     pageTemplate.setVariable("SLOGAN", slogan);
     pageTemplate.setVariable("COMPANY", company);
