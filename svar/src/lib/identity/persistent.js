@@ -13,6 +13,45 @@ function accountDeletedError() {
 }
 
 /**
+ * Deterministic 4-character lowercase alphanumeric tag derived from a DID / SEA pubkey
+ * (e.g. "did:gun:8k2p..." -> "8k2p"), used as a decentralized visual discriminator.
+ */
+export function getDidTag(didOrPub) {
+  if (!didOrPub) return "";
+  const raw = String(didOrPub).replace(/^did:gun:/i, "").replace(/^~/, "");
+  const clean = raw.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  return clean.slice(0, 4);
+}
+
+/**
+ * Triggers a 1-click browser download of a JSON DID keyfile.
+ */
+export function downloadDidKeyfile(payload, filenameHint = "") {
+  if (typeof document === "undefined" || !payload) return false;
+  const tag = payload.tag || getDidTag(payload.mainPub || payload.did || payload?.pair?.pub || "");
+  const rawName = String(filenameHint || payload.name || payload.user || "identity")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "identity";
+  const fileName = `omd-did-${rawName}${tag ? "-" + tag : ""}.json`;
+  const jsonText = JSON.stringify(payload, null, 2);
+  const blob = new Blob([jsonText], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    try { document.body.removeChild(a); } catch (_) {}
+    try { URL.revokeObjectURL(url); } catch (_) {}
+  }, 400);
+  return true;
+}
+
+/**
  * Persistent identity — did:gun:<pub> backed by GunDB SEA.
  *
  * Flow:
@@ -33,6 +72,8 @@ export class PersistentIdentity {
     this.mainPub = null;
     /** @type {string|null} did:gun:<pub> */
     this.did = null;
+    /** @type {object|null} Master Gun.SEA keypair when available locally */
+    this.masterPair = null;
     /** @type {object|null} Gun.SEA keypair for this device */
     this.devicePair = null;
     /** @type {string|null} certificate from server */
@@ -66,6 +107,9 @@ export class PersistentIdentity {
    */
   async signProof(msg) {
     try {
+      if (this.masterPair && this.masterPair.priv) {
+        return await Gun.SEA.sign(msg, this.masterPair);
+      }
       const u = this.gun && this.gun.user && this.gun.user();
       const master = u && u._ && u._.sea;
       if (master && master.priv) {
@@ -80,6 +124,54 @@ export class PersistentIdentity {
     return null;
   }
 
+  buildKeyfilePayload() {
+    if (!this.mainPub) {
+      throw new Error("No active DID identity to export");
+    }
+    const u = this.gun && this.gun.user && this.gun.user();
+    const liveSea = u && u._ && u._.sea;
+    const master =
+      (this.masterPair && this.masterPair.priv && this.masterPair.pub === this.mainPub && this.masterPair) ||
+      (liveSea && liveSea.priv && liveSea.pub === this.mainPub && liveSea) ||
+      (this.devicePair && this.devicePair.priv && this.devicePair.pub === this.mainPub && this.devicePair) ||
+      null;
+    const tag = getDidTag(this.mainPub);
+    return {
+      type: "omd-did-keyfile",
+      version: 1,
+      did: this.did || `did:gun:${this.mainPub}`,
+      mainPub: this.mainPub,
+      tag,
+      name: (this.profile && (this.profile.name || this.profile.user)) || "",
+      user: (this.profile && this.profile.user) || "",
+      email: (this.profile && this.profile.email) || "",
+      omd_key: (this.profile && this.profile.omd_key) || "",
+      pair: master
+        ? {
+            pub: master.pub,
+            priv: master.priv,
+            epub: master.epub || "",
+            epriv: master.epriv || "",
+          }
+        : null,
+      devicePair: this.devicePair
+        ? {
+            pub: this.devicePair.pub,
+            priv: this.devicePair.priv,
+            epub: this.devicePair.epub || "",
+            epriv: this.devicePair.epriv || "",
+          }
+        : null,
+      certificate: this.certificate || null,
+      exportedAt: new Date().toISOString(),
+    };
+  }
+
+  downloadKeyfile() {
+    const payload = this.buildKeyfilePayload();
+    return downloadDidKeyfile(payload, this.profile?.name || this.profile?.user || "identity");
+  }
+
   async init() {
     const saved = this._loadLocal();
     if (!saved) {
@@ -89,6 +181,7 @@ export class PersistentIdentity {
 
     this.mainPub = saved.mainPub;
     this.did = saved.did || (saved.mainPub ? `did:gun:${saved.mainPub}` : null);
+    this.masterPair = saved.masterPair || null;
     this.devicePair = saved.devicePair;
     this.certificate = saved.certificate;
     this.deleteToken = saved.deleteToken || null;
@@ -169,6 +262,7 @@ export class PersistentIdentity {
         this._clearLocal();
         this.mainPub = null;
         this.did = null;
+        this.masterPair = null;
         this.devicePair = null;
         this.certificate = null;
         this.deleteToken = null;
@@ -387,31 +481,54 @@ export class PersistentIdentity {
       this.gun = Gun({ peers: [RELAY_URL], localStorage: false, radisk: false });
     }
 
-    const cleanAlias = (alias || "").trim();
+    const cleanAlias = (alias || "").replace(/#.*$/, "").trim() || (alias || "").trim();
     const normalizedAlias = cleanAlias.toLowerCase();
     const cleanPassword = password || "";
 
-    // Create new GunDB user (generates master keypair)
+    // Create new GunDB user (generates master keypair).
+    // Passing { already: true } bypasses Gun SEA's naive centralized "User already created!"
+    // check so nicknames work as true decentralized display names rather than unique accounts.
     const pair = await new Promise((resolve, reject) => {
-      this.gun.user().create(normalizedAlias, cleanPassword, (ack) => {
-        if (ack.err) return reject(new Error(ack.err));
-        resolve(this.gun.user()._.sea || ack.sea || { pub: ack.pub });
-      });
-      setTimeout(() => reject(new Error('Create timeout')), 6000);
+      this.gun.user().create(
+        normalizedAlias,
+        cleanPassword,
+        (ack) => {
+          if (ack.err) return reject(new Error(ack.err));
+          resolve(this.gun.user()._.sea || ack.sea || { pub: ack.pub });
+        },
+        { already: true }
+      );
+      setTimeout(() => reject(new Error('Create timeout')), 8000);
     });
 
     if (!pair || !pair.pub) throw new Error('Failed to create account');
 
-    // Authenticate with the newly created master user
+    // Authenticate directly with the newly minted master keypair (unambiguous even when
+    // multiple decentralized identities share the same display nickname in ~@alias).
     await new Promise((resolve, reject) => {
-      this.gun.user().auth(normalizedAlias, cleanPassword, (ack) => {
-        if (ack.err) return reject(new Error(ack.err));
-        resolve(this.gun.user()._.sea || ack.sea);
-      });
+      const authTarget = pair.priv ? pair : normalizedAlias;
+      const authCb = (ack) => {
+        if (ack && ack.err) return reject(new Error(ack.err));
+        resolve(this.gun.user()._.sea || ack?.sea || pair);
+      };
+      if (pair.priv) {
+        this.gun.user().auth(authTarget, authCb);
+      } else {
+        this.gun.user().auth(normalizedAlias, cleanPassword, authCb);
+      }
       setTimeout(() => reject(new Error('Auth timeout')), 5000);
     });
 
     const mainPub = pair.pub;
+    const tag = getDidTag(mainPub);
+
+    // Also register deterministic ~@alias#tag pointer so Name#tag resolves directly
+    if (normalizedAlias && tag) {
+      try {
+        const soulRef = "~" + mainPub;
+        this.gun.get(`~@${normalizedAlias}#${tag}`).put({ [soulRef]: { "#": soulRef } });
+      } catch (_) {}
+    }
 
     // Generate local device keypair for this browser session
     const devicePair = await Gun.SEA.pair();
@@ -440,6 +557,7 @@ export class PersistentIdentity {
 
     this.mainPub = mainPub;
     this.did = did;
+    this.masterPair = pair.priv ? pair : null;
     this.devicePair = devicePair;
     this.certificate = certificate;
     const activeLocale = locale || (typeof localStorage !== "undefined" ? localStorage.getItem("omd_locale") : "") || "en";
@@ -491,7 +609,8 @@ export class PersistentIdentity {
    */
   async passwordLogin(alias, password) {
     const cleanAlias = (alias || "").trim();
-    const normalizedAlias = cleanAlias.toLowerCase();
+    const normalizedAlias = cleanAlias.toLowerCase().replace(/\s*#\s*/, "#");
+    const isExplicitDidOrTag = normalizedAlias.includes("#") || /^did:gun:/i.test(cleanAlias) || (cleanAlias.startsWith("~") && cleanAlias.length > 50);
     const cleanPassword = password || "";
 
     if (!this.gun) {
@@ -537,7 +656,7 @@ export class PersistentIdentity {
         // (devices, keys, profile) omit `pub` from the wire chunk and cause recursive hangs.
         const cleanUser = (user || "").trim();
         let directPub = null;
-        const stripped = cleanUser.startsWith("~") ? cleanUser.slice(1) : cleanUser;
+        const stripped = cleanUser.replace(/^did:gun:/i, "").replace(/^~/, "");
         if (stripped.includes(".") && stripped.length > 50) {
           directPub = stripped;
         }
@@ -554,26 +673,41 @@ export class PersistentIdentity {
 
           let checked = 0;
           let wrongCount = 0;
+          const finishCandidate = () => {
+            checked++;
+            if (checked >= pubs.length && !settled) {
+              if (wrongCount > 0) {
+                done(new Error("Wrong user or password."));
+              } else {
+                this.gun.user().auth(user, pass, (ack) => {
+                  if (settled) return;
+                  if (ack.err) return done(new Error(ack.err));
+                  done(null, this.gun.user()._.sea || ack.sea || (ack.put && ack.put.sea));
+                });
+              }
+            }
+          };
 
           for (const pub of pubs) {
             const userNode = this.gun.get("~" + pub);
             userNode.get("auth").once(async (auth) => {
               if (settled) return;
               if (!auth) {
-                checked++;
-                if (checked >= pubs.length && wrongCount === 0) {
-                  this.gun.user().auth(user, pass, (ack) => {
-                    if (settled) return;
-                    if (ack.err) return done(new Error(ack.err));
-                    done(null, this.gun.user()._.sea || ack.sea || (ack.put && ack.put.sea));
-                  });
-                }
+                finishCandidate();
                 return;
               }
 
-              const authObj = typeof auth === "string" ? (JSON.parse(auth) || {}) : auth;
+              let authObj = auth;
+              if (typeof auth === "string") {
+                try {
+                  authObj = JSON.parse(auth) || {};
+                } catch (_) {
+                  finishCandidate();
+                  return;
+                }
+              }
               if (!authObj.s || !authObj.ek) {
-                checked++;
+                finishCandidate();
                 return;
               }
 
@@ -616,18 +750,12 @@ export class PersistentIdentity {
                     });
                   });
                 } else {
-                  checked++;
                   wrongCount++;
-                  if (checked >= pubs.length) {
-                    done(new Error("Wrong user or password."));
-                  }
+                  finishCandidate();
                 }
               } catch (e) {
-                checked++;
                 wrongCount++;
-                if (checked >= pubs.length) {
-                  done(new Error("Wrong user or password."));
-                }
+                finishCandidate();
               }
             });
           }
@@ -643,7 +771,7 @@ export class PersistentIdentity {
             }
             const pubs = [];
             for (const k of Object.keys(data)) {
-              if (k === "_" || !k) continue;
+              if (k === "_" || !k || !data[k]) continue;
               let p = k;
               if (p.startsWith("~")) p = p.slice(1);
               if (data[k] && typeof data[k] === "object" && data[k]["#"]) {
@@ -667,38 +795,40 @@ export class PersistentIdentity {
     let gatewayOk = false;
     let gatewayRejected = false;
     let gatewayDeleted = false;
-    try {
-      const resp = await fetch(AUTH_URL + "/api/auth/gateway-signin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(8000),
-        body: JSON.stringify({ username: cleanAlias, password: cleanPassword, devicePub: devicePair.pub }),
-      });
+    if (!isExplicitDidOrTag) {
+      try {
+        const resp = await fetch(AUTH_URL + "/api/auth/gateway-signin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(8000),
+          body: JSON.stringify({ username: cleanAlias, password: cleanPassword, devicePub: devicePair.pub }),
+        });
 
-      if (resp.status === 401) {
-        gatewayRejected = true;
-      }
-      if (resp.status === 410) {
-        gatewayDeleted = true;
-      }
-
-      if (resp.ok) {
-        const gatewayData = await resp.json();
-        if (gatewayData && (gatewayData.valid || gatewayData.mainPub || gatewayData.certificate)) {
-          gatewayOk = true;
-          profileData = gatewayData.profile || {};
-          const keyToken = gatewayData.token || profileData.omd_key || (gatewayData.profile && gatewayData.profile.omd_key);
-          if (keyToken) profileData.omd_key = keyToken;
-
-          if (gatewayData.mainPub) mainPub = gatewayData.mainPub;
-          if (gatewayData.certificate) certificate = gatewayData.certificate;
-          if (gatewayData.did) did = gatewayData.did;
+        if (resp.status === 401) {
+          gatewayRejected = true;
         }
-      } else {
-        console.log("[identity] gateway does not recognize user, checking native GunDB:", cleanAlias, resp.status);
+        if (resp.status === 410) {
+          gatewayDeleted = true;
+        }
+
+        if (resp.ok) {
+          const gatewayData = await resp.json();
+          if (gatewayData && (gatewayData.valid || gatewayData.mainPub || gatewayData.certificate)) {
+            gatewayOk = true;
+            profileData = gatewayData.profile || {};
+            const keyToken = gatewayData.token || profileData.omd_key || (gatewayData.profile && gatewayData.profile.omd_key);
+            if (keyToken) profileData.omd_key = keyToken;
+
+            if (gatewayData.mainPub) mainPub = gatewayData.mainPub;
+            if (gatewayData.certificate) certificate = gatewayData.certificate;
+            if (gatewayData.did) did = gatewayData.did;
+          }
+        } else {
+          console.log("[identity] gateway does not recognize user, checking native GunDB:", cleanAlias, resp.status);
+        }
+      } catch (gwErr) {
+        console.warn("[identity] gateway-signin unreachable:", gwErr.message);
       }
-    } catch (gwErr) {
-      console.warn("[identity] gateway-signin unreachable:", gwErr.message);
     }
 
     // 2. Native GunDB auth — for gun-native DIDs (created from scratch) or when
@@ -769,13 +899,15 @@ export class PersistentIdentity {
     }
 
     const resolvedKey = (profileData && profileData.omd_key) || readLegacyStorage() || generateOmdKey();
+    const displayFallback = cleanAlias.includes("#") ? cleanAlias.split("#")[0].trim() : cleanAlias;
     this.mainPub = mainPub;
     this.did = did || ('did:gun:' + mainPub);
+    this.masterPair = (pair && pair.priv && pair.pub === mainPub) ? pair : null;
     this.devicePair = gatewayOk ? devicePair : (pair || devicePair);
     this.certificate = certificate;
     this.profile = {
-      name: (profileData && (profileData.name || profileData.displayname)) || cleanAlias,
-      user: (profileData && profileData.user) || normalizedAlias,
+      name: (profileData && (profileData.name || profileData.displayname)) || displayFallback,
+      user: (profileData && profileData.user) || normalizedAlias.split("#")[0].trim(),
       email: (profileData && profileData.email) || "",
       image: (profileData && (profileData.image || profileData.profileimage || profileData.avatar)) || "",
       omd_key: resolvedKey,
@@ -879,6 +1011,145 @@ export class PersistentIdentity {
     return this;
   }
 
+  /**
+   * Instant 1-click sign-in / restoration from a saved JSON DID keyfile
+   * (supports both full omd-did-keyfile JSON and raw Gun SEA keypair JSON).
+   * @param {string|object} rawContent
+   */
+  async loginWithKeyfile(rawContent) {
+    let data = rawContent;
+    if (typeof rawContent === "string") {
+      try {
+        data = JSON.parse(rawContent);
+      } catch (_) {
+        throw new Error(translate("invalid_keyfile_json", {}, "Invalid keyfile: could not parse JSON."));
+      }
+    }
+    if (!data || typeof data !== "object") {
+      throw new Error(translate("invalid_keyfile_format", {}, "Invalid DID keyfile format."));
+    }
+
+    const masterPair =
+      (data.pair && typeof data.pair === "object" && data.pair.pub && data.pair.priv)
+        ? {
+            pub: String(data.pair.pub).trim(),
+            priv: String(data.pair.priv).trim(),
+            epub: String(data.pair.epub || "").trim(),
+            epriv: String(data.pair.epriv || "").trim(),
+          }
+        : (data.pub && data.priv
+            ? {
+                pub: String(data.pub).trim(),
+                priv: String(data.priv).trim(),
+                epub: String(data.epub || "").trim(),
+                epriv: String(data.epriv || "").trim(),
+              }
+            : null);
+
+    let mainPub = String(
+      (masterPair && masterPair.pub) ||
+      data.mainPub ||
+      (typeof data.did === "string" ? data.did.replace(/^did:gun:/i, "") : "")
+    ).trim();
+
+    if (!mainPub || mainPub.length < 20) {
+      throw new Error(translate("invalid_keyfile_missing_pub", {}, "Keyfile does not contain a valid DID keypair."));
+    }
+    if (!masterPair && !(data.devicePair && data.devicePair.pub && data.devicePair.priv)) {
+      throw new Error(translate("invalid_keyfile_missing_priv", {}, "Keyfile is missing private key material."));
+    }
+
+    const devicePair = await Gun.SEA.pair();
+    let certificate = data.certificate || null;
+    let resolvedDid = `did:gun:${mainPub}`;
+
+    try {
+      const resp = await fetch(AUTH_URL + "/api/auth/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mainPub, devicePub: devicePair.pub }),
+      });
+      if (resp.status === 410) throw accountDeletedError();
+      if (!resp.ok) throw new Error(`Keyfile link failed: ${resp.status}`);
+      const linkJson = await resp.json();
+      if (linkJson.certificate) certificate = linkJson.certificate;
+      if (linkJson.did) resolvedDid = linkJson.did;
+    } catch (e) {
+      if (e && e.message && e.message.includes("deleted")) throw e;
+      if (!certificate || !data.devicePair) throw e;
+      // Offline fallback to embedded devicePair + certificate if present
+    }
+
+    this.mainPub = mainPub;
+    this.did = resolvedDid;
+    this.masterPair = masterPair;
+    this.devicePair = certificate && (!data.certificate || certificate !== data.certificate)
+      ? devicePair
+      : (data.devicePair || devicePair);
+    this.certificate = certificate;
+
+    const fallbackName = String(data.name || data.user || "User").trim();
+    const fallbackUser = String(data.user || fallbackName).trim().toLowerCase();
+    const fallbackOmdKey = String(data.omd_key || readLegacyStorage() || generateOmdKey()).trim();
+
+    this.profile = {
+      name: fallbackName,
+      user: fallbackUser,
+      email: String(data.email || "").trim(),
+      image: String(data.image || "").trim(),
+      omd_key: fallbackOmdKey,
+      locale: String(data.locale || "").trim(),
+    };
+
+    this.gun = Gun({ peers: [RELAY_URL], localStorage: false, radisk: false });
+
+    // Pull latest profile from GunDB graph if available
+    await new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      const timer = setTimeout(done, 1500);
+      try {
+        this.gun.get("~" + mainPub).get("profile").once((remoteProf) => {
+          clearTimeout(timer);
+          if (remoteProf && typeof remoteProf === "object") {
+            if (remoteProf.name) this.profile.name = remoteProf.name;
+            if (remoteProf.user) this.profile.user = remoteProf.user;
+            if (remoteProf.email) this.profile.email = remoteProf.email;
+            if (remoteProf.image) this.profile.image = remoteProf.image;
+            if (remoteProf.omd_key) this.profile.omd_key = remoteProf.omd_key;
+            if (remoteProf.defaultStorage) this.profile.defaultStorage = remoteProf.defaultStorage;
+            if (remoteProf.locale) this.profile.locale = remoteProf.locale;
+          }
+          done();
+        });
+      } catch (_) {
+        clearTimeout(timer);
+        done();
+      }
+    });
+
+    this._saveLocal();
+
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 2500);
+      this.gun.user().auth(this.devicePair, (ack) => {
+        clearTimeout(timer);
+        if (ack && ack.err) console.warn("[identity] keyfile gun auth warn:", ack.err);
+        resolve(ack);
+      });
+    });
+
+    await this._listenDevices();
+    this._listenProfile();
+    console.log("[identity] signed in with JSON keyfile, did:", this.did);
+    return this;
+  }
+
   // ── Profile management ───────────────────────────────────────
 
   /**
@@ -935,6 +1206,22 @@ export class PersistentIdentity {
           .get("~" + this.mainPub)
           .get("profile")
           .put(data, null, putOptions);
+
+        // Keep decentralized ~@alias and ~@alias#tag soul pointers linked when user updates nickname
+        const tag = getDidTag(this.mainPub);
+        const soulRef = "~" + this.mainPub;
+        const aliasesToLink = new Set();
+        if (this.profile.user) aliasesToLink.add(String(this.profile.user).trim().toLowerCase());
+        if (this.profile.name) aliasesToLink.add(String(this.profile.name).trim().toLowerCase());
+        for (const al of aliasesToLink) {
+          if (!al) continue;
+          try {
+            this.gun.get("~@" + al).put({ [soulRef]: { "#": soulRef } });
+            if (tag) {
+              this.gun.get(`~@${al}#${tag}`).put({ [soulRef]: { "#": soulRef } });
+            }
+          } catch (_) {}
+        }
       }
     }
 
@@ -1209,6 +1496,7 @@ export class PersistentIdentity {
 
     this.mainPub = null;
     this.did = null;
+    this.masterPair = null;
     this.devicePair = null;
     this.certificate = null;
     this.deleteToken = null;
@@ -1234,6 +1522,7 @@ export class PersistentIdentity {
     this._clearLocal();
     this.mainPub = null;
     this.did = null;
+    this.masterPair = null;
     this.devicePair = null;
     this.certificate = null;
     this.deleteToken = null;
@@ -1439,6 +1728,7 @@ export class PersistentIdentity {
     const data = {
       mainPub: this.mainPub,
       did: this.did,
+      masterPair: this.masterPair || null,
       devicePair: this.devicePair,
       certificate: this.certificate,
       deleteToken: this.deleteToken,

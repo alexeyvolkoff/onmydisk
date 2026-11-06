@@ -12,7 +12,7 @@
   import { isNativeStorageAvailable, onStorageChanged } from "./lib/native-drive.js";
   import { startClientDeviceServer, stopClientDeviceServer } from "./lib/client-device-server.js";
   import { EphemeralIdentity } from "./lib/identity/ephemeral.js";
-  import { PersistentIdentity } from "./lib/identity/persistent.js";
+  import { PersistentIdentity, getDidTag } from "./lib/identity/persistent.js";
   import { loadMyDevices } from "./lib/identity/device-list.js";
   import { setSshIdentity, clearSshIdentity } from "./lib/identity/ssh-credentials.js";
   import { setMcpKeysIdentity, clearMcpKeysIdentity } from "./lib/mcp-keys.js";
@@ -1528,6 +1528,70 @@
     }
   }
 
+  let loginKeyfileInput = null;
+  let keyfileSavedOnce = false;
+
+  function handleSaveDidKeyfile() {
+    try {
+      if (identity && typeof identity.downloadKeyfile === "function") {
+        identity.downloadKeyfile();
+        keyfileSavedOnce = true;
+        showToast($_("keyfile_downloaded_toast", {}, "DID keyfile (.json) saved"));
+      }
+    } catch (e) {
+      console.error("[identity] keyfile export error:", e);
+      loginError = e.message || "Failed to save keyfile";
+    }
+  }
+
+  async function keyfileLogin(rawContent) {
+    loginLoading = true;
+    loginError = "";
+    try {
+      identity = new PersistentIdentity();
+      await identity.loginWithKeyfile(rawContent);
+      identityType = "persistent";
+      identityDid = identity.did || "";
+      authorized = true;
+      setSshIdentity(identity);
+      setOmdKeyIdentity(identity);
+      if (identity?.profile?.omd_key) {
+        try {
+          storeOmdKey(identity.profile.omd_key);
+        } catch (err) {
+          console.warn("[App] storeOmdKey notice:", err);
+        }
+      }
+      syncIdentityProfile();
+      identity = identity;
+      publishAllConnectedDevices();
+      await restoreLocalDeviceIfShares();
+      loginMode = "select";
+      legacyUser = "";
+      legacyPass = "";
+      startDeviceList();
+      checkTriggerOnboarding();
+      showToast($_("signed_in_with_keyfile_toast", {}, "Signed in with DID keyfile"));
+    } catch (e) {
+      console.error("[identity] keyfile login error:", e);
+      loginError = e.message || "Invalid DID keyfile";
+    } finally {
+      loginLoading = false;
+    }
+  }
+
+  async function handleKeyfileInputChange(e) {
+    const file = e?.target?.files?.[0];
+    if (e?.target) e.target.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      await keyfileLogin(text);
+    } catch (err) {
+      loginError = err?.message || "Could not read keyfile";
+    }
+  }
+
   async function passwordLogin() {
     loginLoading = true;
     loginError = "";
@@ -1630,6 +1694,7 @@
         return;
       }
       identity = new PersistentIdentity();
+      keyfileSavedOnce = false;
       const result = await identity.register(regUser, regPass, regEmail || null, regAvatar, $locale);
       identityType = "persistent";
       identityDid = result.did;
@@ -6598,7 +6663,8 @@ async function blobToBase64(blob) {
 
             on:googleLogin={(e) => handleGoogleCredential({ credential: e.detail.credential })}
             on:passwordLogin={(e) => { legacyUser = e.detail.user; legacyPass = e.detail.pass; passwordLogin(); }}
-            on:register={(e) => { regUser = e.detail.user; regPass = e.detail.pass; regPassConfirm = e.detail.pass; regEmail = e.detail.email; registerAccount(); }}
+            on:keyfileLogin={(e) => { keyfileLogin(e.detail.content); }}
+            on:register={(e) => { regUser = e.detail.user; regPass = e.detail.pass; regPassConfirm = e.detail.pass; regEmail = e.detail.email; regAvatar = e.detail.image || ""; registerAccount(); }}
             on:openQrScanner={() => { showQrScannerModal = true; }}
             on:restart-onboarding={() => { restartOnboardingFlow(); }}
           />
@@ -7117,6 +7183,14 @@ async function blobToBase64(blob) {
               <img src={brandLogoSrc} alt={brandName} height="60" />
             </div>
 
+            <input
+              type="file"
+              accept=".json,application/json"
+              bind:this={loginKeyfileInput}
+              on:change={handleKeyfileInputChange}
+              style="display: none;"
+            />
+
             {#if loginLoading}
               <div class="login-loading-centered">
                 <div class="login-spinner-circle mb-3"></div>
@@ -7130,6 +7204,23 @@ async function blobToBase64(blob) {
                   <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" style="flex-shrink:0"><path d="M0 8a4 4 0 0 1 7.465-2H14a.5.5 0 0 1 .354.146l1.5 1.5a.5.5 0 0 1 0 .708l-1.5 1.5a.5.5 0 0 1-.708 0L13 9.207l-.646.647a.5.5 0 0 1-.708 0L11 9.207l-.646.647a.5.5 0 0 1-.708 0L9 9.207l-.646.647A.5.5 0 0 1 8 10h-.535A4 4 0 0 1 0 8m4-3a3 3 0 1 0 2.712 4.285A.5.5 0 0 1 7.163 9h.63a.5.5 0 0 1 .354.146l.646.647.646-.647a.5.5 0 0 1 .708 0l.646.647.646-.647a.5.5 0 0 1 .708 0l.646.647.646-.647a.5.5 0 0 1 .5-.146H13l1-1-1-1H7.163a.5.5 0 0 1-.451-.285A3 3 0 0 0 4 5"/><path d="M4 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
                   <span>{$_("signin_with_id", {}, "Sign in with ID")}</span>
                 </button>
+
+                <!-- 1-click JSON Keyfile login -->
+                <div class="login-btn-row mb-3">
+                  <button
+                    type="button"
+                    class="btn btn-outline-secondary w-100 d-flex align-items-center justify-content-center gap-2"
+                    on:click={() => loginKeyfileInput && loginKeyfileInput.click()}
+                  >
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                      <polyline points="14 2 14 8 20 8"></polyline>
+                      <circle cx="10" cy="15" r="2"></circle>
+                      <path d="M12 15h4v2"></path>
+                    </svg>
+                    <span>{$_("signin_with_keyfile", {}, "Sign in with Keyfile (.json)")}</span>
+                  </button>
+                </div>
 
                 <!-- Google Sign-In -->
                 <div class="login-btn-row mb-3" style="position: relative; height: 44px;">
@@ -7219,12 +7310,12 @@ async function blobToBase64(blob) {
           {:else if loginMode === 'password'}
             <!-- Password entry (login-user.html style) -->
             <h2 class="login-title">{$_("signin_with_id", {}, "Sign in with ID")}</h2>
-            <p class="login-subtitle">{$_("login_enter_credentials", {}, "Enter your ID credentials")}</p>
+            <p class="login-subtitle">{$_("login_enter_credentials", {}, "Enter your nickname + password, or load your .json keyfile")}</p>
 
             <form on:submit|preventDefault={passwordLogin}>
               <div class="mb-3">
-                <label class="form-label" for="login-user">{$_("username", {}, "Username")}</label>
-                <input class="form-control" id="login-user" type="text" placeholder={$_("enter_username_placeholder", {}, "Enter username")} bind:value={legacyUser} autocapitalize="none" autocorrect="off" spellcheck="false" autofocus />
+                <label class="form-label" for="login-user">{$_("nickname_or_did", {}, "Nickname or DID")}</label>
+                <input class="form-control" id="login-user" type="text" placeholder={$_("enter_nickname_or_did_placeholder", {}, "Nickname (e.g. Judith), Name#tag, or did:gun:...")} bind:value={legacyUser} autocapitalize="none" autocorrect="off" spellcheck="false" autofocus />
               </div>
 
               <div class="mb-3">
@@ -7236,8 +7327,21 @@ async function blobToBase64(blob) {
                 <button type="button" class="small-link" on:click={() => { loginMode = 'select'; loginError = ''; }}>{$_("go_back", {}, "← Go back")}</button>
               </div>
 
-              <button class="btn btn-primary w-100 mb-3 d-flex align-items-center justify-content-center gap-2" type="submit">
+              <button class="btn btn-primary w-100 mb-2 d-flex align-items-center justify-content-center gap-2" type="submit">
                 <span>{$_("signin", {}, "Sign in")}</span>
+              </button>
+
+              <button
+                type="button"
+                class="btn btn-outline-secondary w-100 mb-3 d-flex align-items-center justify-content-center gap-2"
+                on:click={() => loginKeyfileInput && loginKeyfileInput.click()}
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>{$_("load_keyfile_btn", {}, "Load Keyfile (.json)")}</span>
               </button>
             </form>
 
@@ -7282,8 +7386,11 @@ async function blobToBase64(blob) {
               </div>
 
               <div class="mb-3">
-                <label class="form-label" for="reg-user">{$_("username", {}, "Username")}</label>
-                <input class="form-control" id="reg-user" type="text" placeholder={$_("choose_username_placeholder", {}, "Choose a username")} bind:value={regUser} autocapitalize="none" autocorrect="off" spellcheck="false" autofocus />
+                <label class="form-label" for="reg-user">{$_("display_nickname_label", {}, "Nickname / Display Name")}</label>
+                <input class="form-control" id="reg-user" type="text" placeholder={$_("choose_nickname_placeholder", {}, "Any display name (e.g. Judith)")} bind:value={regUser} autocorrect="off" spellcheck="false" autofocus />
+                <small class="text-secondary" style="display: block; margin-top: 5px; font-size: 11.5px; line-height: 1.35;">
+                  {$_("decentralized_nickname_hint", {}, "Doesn't need to be unique — your identity is a cryptographic keypair (DID), not a central server account.")}
+                </small>
               </div>
 
               <div class="mb-3">
@@ -7328,25 +7435,35 @@ async function blobToBase64(blob) {
             </div>
 
           {:else if loginMode === 'recovery'}
-            <!-- Recovery key display (after registration) -->
-            <h2 class="login-title">{$_("recovery_title", {}, "Save your recovery key")}</h2>
-            <p class="login-subtitle">{$_("recovery_subtitle", {}, "If you lose this key AND your password, your account cannot be recovered.")}</p>
+            <!-- Keyfile backup display (after registration) -->
+            <h2 class="login-title">{$_("save_did_keyfile_title", {}, "Save your DID keyfile")}</h2>
+            <p class="login-subtitle">{$_("save_did_keyfile_subtitle", {}, "Download your cryptographic keypair (.json) in one click to sign in or recover your DID on any device.")}</p>
+
+            <div class="recovery-did mb-2" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-radius: 10px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25);">
+              <span style="font-weight: 600; font-size: 14px;">{identity?.profile?.name || regUser || "User"}</span>
+              {#if getDidTag(identityDid)}
+                <code style="font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: rgba(99, 102, 241, 0.16); color: #6366f1;">#{getDidTag(identityDid)}</code>
+              {/if}
+            </div>
 
             <div class="recovery-did mb-3">
               <span class="recovery-label">{$_("your_did", {}, "Your DID")}</span>
               <code class="recovery-value">{identityDid}</code>
             </div>
 
-            <div class="recovery-key mb-4">
-              <span class="recovery-label">{$_("recovery_key_label", {}, "Recovery Key")}</span>
-              <code class="recovery-value recovery-value--key">{recoveryKey}</code>
-            </div>
-
             <div class="recovery-actions mt-3" style="display: flex; flex-direction: column; gap: 10px;">
-              <button class="btn btn-outline-secondary w-100" on:click={() => { navigator.clipboard.writeText(recoveryKey); showToast($_("copied", {}, "Copied to clipboard")); }}>
-                {$_("copy_key", {}, "Copy key")}
+              <button class="btn btn-primary w-100 d-flex align-items-center justify-content-center gap-2" on:click={handleSaveDidKeyfile}>
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>{keyfileSavedOnce ? $_("keyfile_saved_btn", {}, "✓ Keyfile Saved (.json)") : $_("save_keyfile_json_btn", {}, "Save Keyfile (.json)")}</span>
               </button>
-              <button class="btn btn-primary w-100" on:click={() => { loginMode = 'select'; showOnboardingModal = true; }}>
+              <button class="btn btn-outline-secondary w-100" on:click={() => { navigator.clipboard.writeText(identityDid); showToast($_("copied", {}, "Copied to clipboard")); }}>
+                {$_("copy_did", {}, "Copy DID")}
+              </button>
+              <button class="btn {keyfileSavedOnce ? 'btn-primary' : 'btn-outline-secondary'} w-100" on:click={() => { loginMode = 'select'; showOnboardingModal = true; }}>
                 {$_("continue_to_setup", {}, "Continue to setup →")}
               </button>
             </div>

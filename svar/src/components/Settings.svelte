@@ -4,6 +4,7 @@
   import { profileStore } from "../lib/profile-store.js";
   import { deviceRegistry } from "../lib/device-registry.js";
   import { omdKeyStore, storeOmdKey, clearOmdKey, isValidOmdKey, getGatewayBase } from "../lib/omd-key.js";
+  import { getDidTag } from "../lib/identity/persistent.js";
   import { sshCredsStore, saveSshCredential, clearSshCredential } from "../lib/identity/ssh-credentials.js";
   import { mcpKeysStore, saveMcpAppKey, removeMcpAppKey, PRESET_MCP_APPS, setMcpKeysIdentity } from "../lib/mcp-keys.js";
   import { fetchNearbyDevices } from "../lib/local-discovery.js";
@@ -644,6 +645,47 @@
         active = false;
       }
     };
+  }
+
+  let settingsKeyfileInput = null;
+  let keyfileExportMsg = "";
+  let keyfileExportErr = "";
+
+  $: if ($profileStore.isPersistent && authLoading) {
+    authLoading = false;
+  }
+
+  function handleExportDidKeyfile() {
+    keyfileExportMsg = "";
+    keyfileExportErr = "";
+    try {
+      if (identity && typeof identity.downloadKeyfile === "function") {
+        identity.downloadKeyfile();
+        keyfileExportMsg = $_("keyfile_downloaded_toast", {}, "DID keyfile (.json) saved");
+        setTimeout(() => { keyfileExportMsg = ""; }, 3500);
+      } else {
+        keyfileExportErr = "No active persistent DID session";
+      }
+    } catch (e) {
+      keyfileExportErr = e?.message || "Failed to export DID keyfile";
+    }
+  }
+
+  async function handleImportKeyfileChange(e) {
+    const file = e?.target?.files?.[0];
+    if (e?.target) e.target.value = "";
+    if (!file) return;
+    authLoading = true;
+    authError = "";
+    keyfileExportErr = "";
+    try {
+      const content = await file.text();
+      dispatch("keyfileLogin", { content });
+    } catch (err) {
+      authLoading = false;
+      authError = err?.message || "Could not read keyfile";
+      keyfileExportErr = authError;
+    }
   }
 
   function handlePasswordSignin() {
@@ -1981,6 +2023,15 @@
                       <span class="did-tag-dot"></span>
                       {$profileStore.isEphemeral ? $_("guest", {}, "Guest") : $_("did_verified", {}, "DID Verified")}
                     </span>
+                    {#if !$profileStore.isEphemeral && getDidTag($profileStore.did || identity?.did)}
+                      <span
+                        class="did-verified-tag"
+                        style="background: rgba(99, 102, 241, 0.14); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.32); font-family: monospace;"
+                        title={$_("did_tag_tooltip", {}, "4-character fingerprint derived from your public cryptographic key")}
+                      >
+                        #{getDidTag($profileStore.did || identity?.did)}
+                      </span>
+                    {/if}
                   </div>
                 </div>
               </div>
@@ -1999,6 +2050,9 @@
                       <code>{$profileStore.did || (identity?.did) || "did:gun:..."}</code>
                       <button class="copy-btn" on:click={() => copyToClipboard($profileStore.did || identity?.did, 'did')}>
                         {copiedField === 'did' ? $_("copied", {}, "Copied!") : $_("copy_did", {}, "Copy DID")}
+                      </button>
+                      <button class="copy-btn" style="background: rgba(99, 102, 241, 0.18); color: #a5b4fc; border-color: rgba(99, 102, 241, 0.38);" on:click={handleExportDidKeyfile}>
+                        {keyfileExportMsg ? "✓ .json" : $_("save_keyfile_json_btn", {}, "Save Keyfile (.json)")}
                       </button>
                     </div>
                   </div>
@@ -2196,8 +2250,8 @@
                 <!-- Username / Alias Row -->
                 <div class="setting-row">
                   <div class="row-text">
-                    <label class="row-label" for="sett-handle">{$_("username_handle", {}, "Username / Alias")}</label>
-                    <span class="row-sub">{$_("username_handle_sub", {}, "Unique short handle on the decentralized network")}</span>
+                    <label class="row-label" for="sett-handle">{$_("login_nickname_alias", {}, "Login Nickname / Alias")}</label>
+                    <span class="row-sub">{$_("login_nickname_alias_sub", {}, "Used with your password for quick sign-in — need not be unique (#tag distinguishes same names)")}</span>
                   </div>
                   <div class="row-input-wrap">
                     <div class="input-with-prefix">
@@ -2333,21 +2387,26 @@
                 {:else if authMode === 'password'}
                   <form class="auth-tab-pane" on:submit|preventDefault={handlePasswordSignin}>
                     <div class="form-group">
-                      <label class="form-label" for="sett-user">Username</label>
-                      <input class="text-input" id="sett-user" type="text" placeholder="Enter username" bind:value={signinUser} />
+                      <label class="form-label" for="sett-user">{$_("nickname_or_did", {}, "Nickname or DID")}</label>
+                      <input class="text-input" id="sett-user" type="text" placeholder={$_("enter_nickname_or_did_placeholder", {}, "Nickname (e.g. Judith), Name#tag, or did:gun:...")} bind:value={signinUser} />
                     </div>
                     <div class="form-group">
-                      <label class="form-label" for="sett-pass">Password</label>
-                      <input class="text-input" id="sett-pass" type="password" placeholder="Enter password" bind:value={signinPass} />
+                      <label class="form-label" for="sett-pass">{$_("password", {}, "Password")}</label>
+                      <input class="text-input" id="sett-pass" type="password" placeholder={$_("enter_password_placeholder", {}, "Enter password")} bind:value={signinPass} />
                     </div>
-                    <button class="btn-primary-action" type="submit" disabled={authLoading}>
-                      {#if authLoading}
-                        <div class="login-spinner"></div>
-                        <span>Signing in...</span>
-                      {:else}
-                        <span>Sign In with ID</span>
-                      {/if}
-                    </button>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                      <button class="btn-primary-action" type="submit" disabled={authLoading}>
+                        {#if authLoading}
+                          <div class="login-spinner"></div>
+                          <span>{$_("signin", {}, "Signing in...")}</span>
+                        {:else}
+                          <span>{$_("signin_with_id", {}, "Sign In with ID")}</span>
+                        {/if}
+                      </button>
+                      <button type="button" class="btn-secondary-action" disabled={authLoading} on:click={() => settingsKeyfileInput && settingsKeyfileInput.click()}>
+                        <span>{$_("signin_with_keyfile", {}, "Sign in with Keyfile (.json)")}</span>
+                      </button>
+                    </div>
                   </form>
                 {:else if authMode === 'register'}
                   <form class="auth-tab-pane" on:submit|preventDefault={handleRegisterNew}>
@@ -2380,8 +2439,11 @@
                     </div>
 
                     <div class="form-group">
-                      <label class="form-label" for="sett-reg-user">Username</label>
-                      <input class="text-input" id="sett-reg-user" type="text" placeholder="Choose a username" bind:value={regUser} disabled={authLoading} />
+                      <label class="form-label" for="sett-reg-user">{$_("display_nickname_label", {}, "Nickname / Display Name")}</label>
+                      <input class="text-input" id="sett-reg-user" type="text" placeholder={$_("choose_nickname_placeholder", {}, "Any display name (e.g. Judith)")} bind:value={regUser} disabled={authLoading} />
+                      <span class="row-sub" style="display: block; margin-top: 4px;">
+                        {$_("decentralized_nickname_hint", {}, "Doesn't need to be unique — your identity is a cryptographic keypair (DID), not a central server account.")}
+                      </span>
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="sett-reg-email">Email (optional, for recovery)</label>
@@ -3460,6 +3522,31 @@
 
           <div class="card-group">
             <div class="card">
+              <h4 class="card-title">{$_("did_keyfile_backup_title", {}, "DID Keypair Backup (.json)")}</h4>
+              <p class="omd-key-hint">
+                {$_("did_keyfile_backup_desc", {}, "Export your cryptographic DID keypair as a portable .json file in one click. You can use this file to sign in instantly on any browser or device without entering a password.")}
+              </p>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px;">
+                {#if identity?.mainPub}
+                  <button class="btn-primary-action btn-sm" on:click={handleExportDidKeyfile} style="display: inline-flex; align-items: center; gap: 6px;">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                    <span>{$_("save_keyfile_json_btn", {}, "Save Keyfile (.json)")}</span>
+                  </button>
+                {/if}
+                <button class="btn-secondary-action btn-sm" on:click={() => settingsKeyfileInput && settingsKeyfileInput.click()} style="display: inline-flex; align-items: center; gap: 6px;">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                  <span>{$_("load_keyfile_btn", {}, "Load Keyfile (.json)")}</span>
+                </button>
+                {#if keyfileExportMsg}
+                  <span class="save-feedback-success">{keyfileExportMsg}</span>
+                {/if}
+                {#if keyfileExportErr}
+                  <span class="save-feedback-error">{keyfileExportErr}</span>
+                {/if}
+              </div>
+            </div>
+
+            <div class="card">
               <h4 class="card-title">{$_("device_public_key", {}, "Device Public Key")}</h4>
               <div class="setting-row">
                 <div class="row-text">
@@ -3978,6 +4065,14 @@
     </div>
   </div>
 {/if}
+
+<input
+  type="file"
+  accept=".json,application/json"
+  bind:this={settingsKeyfileInput}
+  on:change={handleImportKeyfileChange}
+  style="display: none;"
+/>
 
 {#if showDeleteAccountModal}
   <!-- svelte-ignore a11y-click-events-have-key-events -->
