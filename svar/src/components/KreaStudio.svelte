@@ -232,6 +232,8 @@
   // Gallery Story Subfolder Filter
   let storyFolders = [];
   let activeStorySubfolder = "";
+  let hoveredVideoId = null;
+  let playingVideoId = null;
 
   function getKreaFetch() {
     return (httpDrive && typeof httpDrive.fetch === "function")
@@ -2431,8 +2433,9 @@
         await httpDrive.fetch(readmePath, { method: "DELETE" }).catch(() => {});
         if (coverPath) await httpDrive.fetch(coverPath, { method: "DELETE" }).catch(() => {});
       }
-      if (activeVideoModalItem && activeVideoModalItem.id === item.id) {
-        activeVideoModalItem = null;
+      if (hoveredVideoId === item.id) {
+        hoveredVideoId = null;
+        playingVideoId = null;
       }
       items = items.filter((x) => x.id !== item.id);
       dispatch("count-change", items.length);
@@ -2598,7 +2601,7 @@
     const dev = activeDevSegment || getDevSegment();
     const cleanPath = (item.path || "").startsWith("/") ? item.path : `/${item.path || ""}`;
     const coverPath = cleanPath.replace(/\.[^/.]+$/, "") + ".cover.jpg";
-    return `/p2p/${dev}${encodeURI(coverPath)}`;
+    return `/p2p/${dev}${encodeURI(coverPath)}?resize=true&width=480&height=480`;
   }
 
   function getViewImageUrl(item) {
@@ -2750,6 +2753,84 @@
 
     // All fallbacks failed — stop spinner so broken/missing cards stay idle at 0% CPU
     e?.target?.parentElement?.classList.remove("thumb-loading");
+  }
+
+  async function handleVideoPosterError(item, e) {
+    if (!item || item._posterFallbackTried) {
+      e?.target?.parentElement?.classList.remove("thumb-loading");
+      return;
+    }
+    if (!e || !e.target || !e.target.src || e.target.src === window.location.href) return;
+    item._posterFallbackTried = true;
+
+    const coverPath = (item.path || "").replace(/\.[^/.]+$/, "") + ".cover.jpg";
+    const coverName = (item.name || "").replace(/\.[^/.]+$/, "") + ".cover.jpg";
+    const coverKey = (item.path || item.name || "") + ":cover";
+    const applyPoster = (url) => {
+      item.coverBlobUrl = url;
+      thumbBlobCache[coverKey] = url;
+      if (e && e.target) e.target.src = url;
+    };
+
+    // 1. Try resized .cover.jpg via WebRTC getFileContent, then full .cover.jpg
+    const webrtcCoverThumb = await fetchImageBlobViaWebRTC(coverPath, "resize=true&width=480&height=480");
+    if (webrtcCoverThumb) {
+      applyPoster(webrtcCoverThumb);
+      return;
+    }
+    const webrtcCoverFull = await fetchImageBlobViaWebRTC(coverPath, "");
+    if (webrtcCoverFull) {
+      applyPoster(webrtcCoverFull);
+      return;
+    }
+
+    // 2. Fallback to OnMyDisk's native P2P video frame extractor (?poster) for external .mp4 files
+    const webrtcNativePoster = await fetchImageBlobViaWebRTC(item.path, "poster");
+    if (webrtcNativePoster) {
+      applyPoster(webrtcNativePoster);
+      return;
+    }
+
+    // 3. Try reading .cover.jpg via drive.homeRead
+    const drive = getTargetDrive();
+    if (drive && typeof drive.homeRead === "function") {
+      try {
+        const b64 = await drive.homeRead(coverPath);
+        if (b64) {
+          applyPoster(`data:image/jpeg;base64,${b64}`);
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // 4. Ephemeral /chat/image/{coverName} fallback
+    try {
+      const fetchFn = (httpDrive && typeof httpDrive.fetch === "function")
+        ? (p, opts) => httpDrive.fetch(p, opts)
+        : (p, opts) => fetch(p, opts);
+      const blob = await fetchLargeImageBlob(fetchFn, `/chat/image/${coverName}`, "image/jpeg");
+      if (blob && blob.size > 0 && String(blob.type || "").startsWith("image/")) {
+        applyPoster(URL.createObjectURL(blob));
+        return;
+      }
+    } catch (_) {}
+
+    e?.target?.parentElement?.classList.remove("thumb-loading");
+  }
+
+  async function handleVideoPreviewError(item, e) {
+    if (!item || item._videoPreviewFallbackTried) return;
+    item._videoPreviewFallbackTried = true;
+    const webrtcVideoUrl = await fetchImageBlobViaWebRTC(item.path, "");
+    if (webrtcVideoUrl) {
+      item.blobUrl = webrtcVideoUrl;
+      imageBlobCache[item.path] = webrtcVideoUrl;
+      imageBlobCache[item.name] = webrtcVideoUrl;
+      if (e && e.target && hoveredVideoId === item.id) {
+        e.target.src = webrtcVideoUrl;
+        e.target.play().catch(() => {});
+      }
+    }
   }
 
   function buildDevicePush() {
@@ -5418,24 +5499,45 @@
                 <!-- svelte-ignore a11y-no-static-element-interactions -->
                 <div
                   class="gallery-card-thumb-wrap"
-                  class:thumb-ready={item.isVideo}
                   role="button"
                   tabindex="0"
                   on:click={() => openGallery(item)}
                   on:keydown={(e) => e.key === "Enter" && openGallery(item)}
+                  on:mouseenter={() => {
+                    if (item.isVideo) hoveredVideoId = item.id;
+                  }}
+                  on:mouseleave={() => {
+                    if (item.isVideo && hoveredVideoId === item.id) {
+                      hoveredVideoId = null;
+                      playingVideoId = null;
+                    }
+                  }}
                 >
                   {#if item.isVideo}
-                    <video
-                      src={getFullImageUrl(item)}
-                      poster={getVideoPosterUrl(item)}
-                      muted
-                      loop
-                      playsinline
-                      preload="metadata"
-                      class="gallery-thumb gallery-video-thumb thumb-loaded"
-                      on:mouseenter={(e) => e.currentTarget.play().catch(() => {})}
-                      on:mouseleave={(e) => { try { e.currentTarget.pause(); } catch (_) {} }}
-                    ></video>
+                    <img
+                      src=""
+                      alt={item.title || item.prompt}
+                      use:lazyLoad={(activeDevSegment, getVideoPosterUrl(item))}
+                      class="gallery-thumb"
+                      loading="lazy"
+                      on:error={(e) => handleVideoPosterError(item, e)}
+                    />
+                    {#if hoveredVideoId === item.id}
+                      <video
+                        src={(activeDevSegment, getFullImageUrl(item))}
+                        autoplay
+                        muted
+                        loop
+                        playsinline
+                        preload="auto"
+                        class="gallery-video-hover-layer"
+                        class:is-playing={playingVideoId === item.id}
+                        on:playing={() => {
+                          if (hoveredVideoId === item.id) playingVideoId = item.id;
+                        }}
+                        on:error={(e) => handleVideoPreviewError(item, e)}
+                      ></video>
+                    {/if}
                     <div class="video-card-badge" title={$_("krea_video_stereo_badge", {}, "Видео со стереозвуком MiniMax-H3 (клик для просмотра со звуком)")}>
                       <span>🎬 MP4 · 🔊</span>
                       {#if item.duration}
@@ -5446,7 +5548,7 @@
                     <img
                       src=""
                       alt={item.title || item.prompt}
-                      use:lazyLoad={getThumbnailUrl(item)}
+                      use:lazyLoad={(activeDevSegment, getThumbnailUrl(item))}
                       class="gallery-thumb"
                       loading="lazy"
                       on:error={(e) => handleImageError(item, e)}
@@ -8684,7 +8786,7 @@
     gap: 5px;
     flex-wrap: wrap;
     pointer-events: none;
-    z-index: 2;
+    z-index: 3;
   }
 
   .persona-tag {
@@ -13630,12 +13732,25 @@
     }
   }
 
-  .gallery-video-thumb {
+  .gallery-video-hover-layer {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     display: block;
     object-fit: cover;
-    background: #0b0f17;
+    opacity: 0;
+    transition: opacity 0.22s ease, transform 0.3s ease;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .gallery-video-hover-layer.is-playing {
+    opacity: 1;
+  }
+
+  .gallery-card:hover .gallery-video-hover-layer {
+    transform: scale(1.03);
   }
 
   .video-card-badge {
