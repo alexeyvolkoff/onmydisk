@@ -70,11 +70,18 @@ function isRateLimited(ip, alias) {
   return null; // Disabled for development and testing
 }
 
+// Ephemeral single-use OAuth handoff sessions for mobile system-browser bridge
+const mobileOauthSessions = new Map(); // session → { idToken, email, createdAt }
+const MOBILE_OAUTH_TTL_MS = 3 * 60 * 1000; // 3 minutes
+
 // Cleanup old entries every 5 min
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of rateLimits) {
     if (now > entry.resetAt) rateLimits.delete(key);
+  }
+  for (const [sid, entry] of mobileOauthSessions) {
+    if (now - entry.createdAt > MOBILE_OAUTH_TTL_MS) mobileOauthSessions.delete(sid);
   }
 }, 5 * 60 * 1000);
 
@@ -1119,6 +1126,74 @@ async function handleGoogleLink(req, res) {
   });
 
   console.log('[auth] google cert →', devicePub.slice(0, 12) + '...', '→ did:gun:' + mainPub, 'omd_key:', omdKey ? 'set' : 'none');
+}
+
+// ── Auth: Mobile System-Browser OAuth Handoff ──────────────────
+
+async function handleMobileOauthComplete(req, res) {
+  let body;
+  try { body = await readBody(req); }
+  catch { return json(res, 400, { error: 'Invalid JSON' }); }
+
+  const session = typeof body?.session === 'string' ? body.session.trim() : '';
+  const idToken = typeof body?.idToken === 'string' ? body.idToken.trim() : '';
+  if (!/^[a-zA-Z0-9_-]{16,128}$/.test(session) || !idToken) {
+    return json(res, 400, { error: 'Missing or invalid session or idToken' });
+  }
+
+  let googleUser;
+  try {
+    googleUser = await verifyGoogleToken(idToken);
+  } catch (e) {
+    return json(res, 401, { error: 'Google auth failed: ' + e.message });
+  }
+
+  // Cap map size to prevent unbounded growth
+  if (mobileOauthSessions.size >= 500) {
+    const now = Date.now();
+    for (const [sid, entry] of mobileOauthSessions) {
+      if (now - entry.createdAt > MOBILE_OAUTH_TTL_MS) mobileOauthSessions.delete(sid);
+    }
+    if (mobileOauthSessions.size >= 500) {
+      const oldestKey = mobileOauthSessions.keys().next().value;
+      if (oldestKey) mobileOauthSessions.delete(oldestKey);
+    }
+  }
+
+  mobileOauthSessions.set(session, {
+    idToken,
+    email: googleUser.email || '',
+    createdAt: Date.now(),
+  });
+
+  console.log('[auth] mobile oauth handoff stored for:', googleUser.email);
+  return json(res, 200, { ok: true, email: googleUser.email || '' });
+}
+
+function handleMobileOauthPoll(req, res) {
+  const parsed = new URL(req.url, 'http://localhost');
+  const session = (parsed.searchParams.get('session') || '').trim();
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  if (!/^[a-zA-Z0-9_-]{16,128}$/.test(session)) {
+    return res.end(JSON.stringify({ pending: false, error: 'invalid_session' }));
+  }
+  const entry = mobileOauthSessions.get(session);
+  if (!entry) {
+    return res.end(JSON.stringify({ pending: true }));
+  }
+  if (Date.now() - entry.createdAt > MOBILE_OAUTH_TTL_MS) {
+    mobileOauthSessions.delete(session);
+    return res.end(JSON.stringify({ pending: true }));
+  }
+  // Single-use: consume immediately
+  mobileOauthSessions.delete(session);
+  return res.end(JSON.stringify({ pending: false, idToken: entry.idToken }));
 }
 
 // ── Auth: Apple Link ───────────────────────────────────────────
@@ -2594,6 +2669,10 @@ async function handler(req, res) {
   // Auth routes
   if (req.method === 'POST' && req.url === '/api/auth/google-link')
     return handleGoogleLink(req, res);
+  if (req.method === 'POST' && req.url === '/api/auth/mobile-oauth-complete')
+    return handleMobileOauthComplete(req, res);
+  if (req.method === 'GET' && req.url.startsWith('/api/auth/mobile-oauth-poll'))
+    return handleMobileOauthPoll(req, res);
   if (req.method === 'POST' && req.url === '/api/auth/apple-link')
     return handleAppleLink(req, res);
   if (req.method === 'POST' && req.url === '/api/auth/legacy-link')

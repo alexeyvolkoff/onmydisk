@@ -16,6 +16,7 @@
     "@capacitor-community/apple-sign-in": "^6.0.0",
     "@capacitor/core": "^6.2.1",
     "@capacitor/push-notifications": "^6.0.5",
+    "@capgo/capacitor-social-login": "^6.0.1",
     "@capgo/capacitor-updater": "^6.50.2",
     "@svar-ui/filemanager-locales": "^2.6.0",
     "@svar-ui/lib-dom": "^0.13.1",

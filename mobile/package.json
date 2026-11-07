@@ -19,6 +19,7 @@
     "@capacitor-community/apple-sign-in": "^6.0.0",
     "@capacitor/core": "^6.0.0",
     "@capacitor/push-notifications": "^6.0.5",
+    "@capgo/capacitor-social-login": "^6.0.1",
     "@capgo/capacitor-updater": "^6.4.0"
   }
 }

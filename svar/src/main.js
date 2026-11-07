@@ -22,9 +22,13 @@ if (typeof document !== 'undefined') {
 
 import { mount } from 'svelte';
 import App from './App.svelte';
+import { mountMobileGoogleBridgeIfRequested } from './lib/identity/googleMobileAuth.js';
 
-const app = mount(App, {
-  target: document.getElementById('app'),
-});
+const appTarget = document.getElementById('app');
+const app = mountMobileGoogleBridgeIfRequested(appTarget)
+  ? null
+  : mount(App, {
+      target: appTarget,
+    });
 
 export default app;

@@ -13,6 +13,7 @@
 -keep class net.onmydisk.app.** { *; }
 -keep class com.capacitorjs.plugins.pushnotifications.** { *; }
 -keep class ee.forgr.capacitor_updater.** { *; }
+-keep class ee.forgr.capacitor.social.login.** { *; }
 -keep class com.getcapacitor.community.applesignin.** { *; }
 
 # Keep WebView @JavascriptInterface bridges
