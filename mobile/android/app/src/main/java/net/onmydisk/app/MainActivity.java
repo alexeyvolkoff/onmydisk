@@ -19,6 +19,14 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 
+import androidx.activity.EdgeToEdge;
+import androidx.activity.SystemBarStyle;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebChromeClient;
 
@@ -42,6 +50,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NativeStoragePlugin.class);
+        enableModernEdgeToEdge();
         super.onCreate(savedInstanceState);
 
         // Match system navigation bar and status bar to system dark/light theme
@@ -119,28 +128,13 @@ public class MainActivity extends BridgeActivity {
                                     android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                     android.view.ViewGroup.LayoutParams.MATCH_PARENT));
 
-                            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-
-                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                getWindow().setDecorFitsSystemWindows(false);
-                                android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
-                                if (insetsController != null) {
-                                    insetsController.setSystemBarsBehavior(
-                                            android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                                    insetsController.hide(android.view.WindowInsets.Type.systemBars());
-                                }
-                            } else {
-                                decor.setSystemUiVisibility(
-                                        View.SYSTEM_UI_FLAG_FULLSCREEN |
-                                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-                                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-                            }
+                            WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), decor);
+                            insetsController.setSystemBarsBehavior(
+                                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                            insetsController.hide(WindowInsetsCompat.Type.systemBars());
                             View contentView = findViewById(android.R.id.content);
-                            if (contentView != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
-                                contentView.requestApplyInsets();
+                            if (contentView != null) {
+                                ViewCompat.requestApplyInsets(contentView);
                             }
                         } catch (Exception e) {
                             Log.e(TAG, "onShowCustomView failed", e);
@@ -159,21 +153,13 @@ public class MainActivity extends BridgeActivity {
                             android.view.ViewGroup decor = (android.view.ViewGroup) getWindow().getDecorView();
                             decor.removeView(customView);
                             customView = null;
-                            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                getWindow().setDecorFitsSystemWindows(true);
-                                android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
-                                if (insetsController != null) {
-                                    insetsController.show(android.view.WindowInsets.Type.systemBars());
-                                }
-                            } else {
-                                decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-                            }
+                            WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), decor);
+                            insetsController.show(WindowInsetsCompat.Type.systemBars());
                             applySystemBarsTheme();
                             View contentView = findViewById(android.R.id.content);
-                            if (contentView != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
-                                contentView.requestApplyInsets();
+                            if (contentView != null) {
+                                ViewCompat.requestApplyInsets(contentView);
                             }
                         } catch (Exception e) {
                             Log.e(TAG, "onHideCustomView failed", e);
@@ -206,21 +192,13 @@ public class MainActivity extends BridgeActivity {
                 android.view.ViewGroup decor = (android.view.ViewGroup) getWindow().getDecorView();
                 decor.removeView(customView);
                 customView = null;
-                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    getWindow().setDecorFitsSystemWindows(true);
-                    android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
-                    if (insetsController != null) {
-                        insetsController.show(android.view.WindowInsets.Type.systemBars());
-                    }
-                } else {
-                    decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-                }
+                WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), decor);
+                insetsController.show(WindowInsetsCompat.Type.systemBars());
                 applySystemBarsTheme();
                 View contentView = findViewById(android.R.id.content);
-                if (contentView != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
-                    contentView.requestApplyInsets();
+                if (contentView != null) {
+                    ViewCompat.requestApplyInsets(contentView);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "exitFullscreen failed", e);
@@ -454,71 +432,57 @@ public class MainActivity extends BridgeActivity {
         applySystemBarsTheme();
     }
 
+    private void enableModernEdgeToEdge() {
+        int nightModeFlags = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        boolean isNight = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        int darkColor = android.graphics.Color.parseColor("#101C22");
+        int lightColor = android.graphics.Color.parseColor("#F6F8F9");
+
+        SystemBarStyle statusBarStyle = isNight
+            ? SystemBarStyle.dark(darkColor)
+            : SystemBarStyle.light(lightColor, darkColor);
+        SystemBarStyle navBarStyle = isNight
+            ? SystemBarStyle.dark(darkColor)
+            : SystemBarStyle.light(lightColor, darkColor);
+
+        EdgeToEdge.enable(this, statusBarStyle, navBarStyle);
+    }
+
     private void setupEdgeToEdgeInsets() {
-        if (Build.VERSION.SDK_INT >= 35) {
-            View contentView = findViewById(android.R.id.content);
-            if (contentView != null) {
-                contentView.setOnApplyWindowInsetsListener((v, windowInsets) -> {
-                    if (customView != null) {
-                        v.setPadding(0, 0, 0, 0);
-                        return windowInsets;
-                    }
-                    android.graphics.Insets insets = windowInsets.getInsets(
-                        android.view.WindowInsets.Type.systemBars()
-                        | android.view.WindowInsets.Type.displayCutout()
-                        | android.view.WindowInsets.Type.ime()
-                    );
-                    v.setPadding(insets.left, insets.top, insets.right, insets.bottom);
-                    return android.view.WindowInsets.CONSUMED;
-                });
-            }
+        View contentView = findViewById(android.R.id.content);
+        if (contentView != null) {
+            ViewCompat.setOnApplyWindowInsetsListener(contentView, (v, windowInsets) -> {
+                if (customView != null) {
+                    v.setPadding(0, 0, 0, 0);
+                    return windowInsets;
+                }
+                Insets insets = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout()
+                    | WindowInsetsCompat.Type.ime()
+                );
+                v.setPadding(insets.left, insets.top, insets.right, insets.bottom);
+                return WindowInsetsCompat.CONSUMED;
+            });
+            ViewCompat.requestApplyInsets(contentView);
         }
     }
 
     private void applySystemBarsTheme() {
         int nightModeFlags = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
         boolean isNight = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        int barBgColor = android.graphics.Color.parseColor(isNight ? "#101C22" : "#F6F8F9");
 
-        int navColor = android.graphics.Color.parseColor(isNight ? "#101C22" : "#F6F8F9");
-        int statusColor = android.graphics.Color.parseColor(isNight ? "#101C22" : "#F6F8F9");
-
-        getWindow().getDecorView().setBackgroundColor(statusColor);
+        View decorView = getWindow().getDecorView();
+        decorView.setBackgroundColor(barBgColor);
         View contentView = findViewById(android.R.id.content);
         if (contentView != null) {
-            contentView.setBackgroundColor(statusColor);
+            contentView.setBackgroundColor(barBgColor);
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().setNavigationBarColor(navColor);
-            getWindow().setStatusBarColor(statusColor);
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
-            if (insetsController != null) {
-                int appearance = 0;
-                if (!isNight) {
-                    appearance = android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS |
-                                 android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
-                }
-                insetsController.setSystemBarsAppearance(
-                    appearance,
-                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS |
-                    android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                );
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            android.view.View decorView = getWindow().getDecorView();
-            int flags = decorView.getSystemUiVisibility();
-            if (isNight) {
-                flags &= ~android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                flags &= ~android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            } else {
-                flags |= android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                flags |= android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            }
-            decorView.setSystemUiVisibility(flags);
-        }
+        WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), decorView);
+        insetsController.setAppearanceLightStatusBars(!isNight);
+        insetsController.setAppearanceLightNavigationBars(!isNight);
     }
 
     private void createPushNotificationChannels() {
@@ -777,7 +741,13 @@ public class MainActivity extends BridgeActivity {
                 );
                 win.setGravity(android.view.Gravity.BOTTOM);
                 win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
-                win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                ViewCompat.setOnApplyWindowInsetsListener(root, (v, windowInsets) -> {
+                    Insets imeOrNav = windowInsets.getInsets(
+                        WindowInsetsCompat.Type.ime() | WindowInsetsCompat.Type.navigationBars()
+                    );
+                    v.setPadding(0, 0, 0, imeOrNav.bottom);
+                    return WindowInsetsCompat.CONSUMED;
+                });
             }
 
             dialog.setOnKeyListener((d, keyCode, event) -> {
