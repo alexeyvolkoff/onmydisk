@@ -1,5 +1,15 @@
 apply plugin: 'com.android.application'
 
+def keystoreProps = new Properties()
+def keystorePropsCandidates = [
+    System.getenv("KEYSTORE_PROPERTIES") ? file(System.getenv("KEYSTORE_PROPERTIES")) : null,
+    rootProject.file("keystore.properties"),
+    file("/home/alexey/projects/omd/etc/android/keystore.properties")
+].findAll { it != null && it.exists() }
+if (!keystorePropsCandidates.isEmpty()) {
+    keystorePropsCandidates[0].withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace "net.onmydisk.app"
     compileSdk rootProject.ext.compileSdkVersion
@@ -18,8 +28,21 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (keystoreProps.getProperty("storeFile")) {
+            release {
+                storeFile file(keystoreProps.getProperty("storeFile"))
+                storePassword keystoreProps.getProperty("storePassword")
+                keyAlias keystoreProps.getProperty("keyAlias")
+                keyPassword keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         release {
+            if (keystoreProps.getProperty("storeFile")) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

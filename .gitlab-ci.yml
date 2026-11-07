@@ -540,6 +540,9 @@ build_node_mxe:
       scp -o StrictHostKeyChecking=accept-new \
           bin/onmychat-latest.zip \
           repo@forge.onmydisk.net:/opt/repo/Windows/
+      scp -o StrictHostKeyChecking=accept-new \
+          bin/onmychat-latest.zip \
+          repo@forge.onmydisk.net:/opt/repo/OnMyChat/
     fi
   - 'echo "== PUBLISH 3/3 - verify files on server (job fails if missing)"'
   - |-
@@ -594,7 +597,7 @@ build-android:
         export ANDROID_HOME="/opt/android-sdk";
         export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH";
         yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses;
-        sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0";
+        sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-36" "build-tools;36.0.0";
       fi
     # 3. Build Svelte Static Frontend in svar
     #    (no pre-compressed .gz siblings: Android AAPT2 rejects foo.js.gz as a
@@ -610,21 +613,39 @@ build-android:
     - npx cap sync android
     - chmod +x android/gradlew || true
   script:
-    # 5. Compile Android Debug APK
+    # 5. Compile Android Release Bundle (.aab) + APK (or fallback Debug APK)
     - cd android
     - ./gradlew --stop
     - ./gradlew clean
     - export BUILD_NUMBER=${CI_PIPELINE_IID}
-    - ./gradlew assembleDebug
+    - if [ -f "/home/alexey/projects/omd/etc/android/keystore.properties" ] || [ -n "${KEYSTORE_PROPERTIES:-}" ]; then
+        ./gradlew bundleRelease assembleRelease;
+      else
+        ./gradlew assembleDebug;
+      fi
     - cd ..
-    # 6. Copy final APK to OnMyDisk.apk
-    - cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/OnMyDisk.apk
+    # 6. Copy final APK & AAB artifacts
+    - mkdir -p build_android
+    - if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+        cp android/app/build/outputs/apk/release/app-release.apk build_android/OnMyDisk.apk;
+      else
+        cp android/app/build/outputs/apk/debug/app-debug.apk build_android/OnMyDisk.apk;
+      fi
+    - if [ -f android/app/build/outputs/bundle/release/app-release.aab ]; then
+        cp android/app/build/outputs/bundle/release/app-release.aab build_android/OnMyDisk.aab;
+      fi
+    - chmod 664 build_android/*
     # 7. Upload to central binary repository
     - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "mkdir -p /opt/repo/OnMyDisk/Android"
-    - scp -o StrictHostKeyChecking=no android/app/build/outputs/apk/debug/OnMyDisk.apk repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Android/OnMyDisk.apk
+    - scp -o StrictHostKeyChecking=no build_android/OnMyDisk.apk repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Android/OnMyDisk.apk
+    - if [ -f build_android/OnMyDisk.aab ]; then
+        scp -o StrictHostKeyChecking=no build_android/OnMyDisk.aab repo@forge.onmydisk.net:/opt/repo/OnMyDisk/Android/OnMyDisk.aab;
+      fi
+    - ssh -o StrictHostKeyChecking=no repo@forge.onmydisk.net "chmod 664 /opt/repo/OnMyDisk/Android/OnMyDisk.*"
   artifacts:
     paths:
-      - mobile/android/app/build/outputs/apk/debug/OnMyDisk.apk
+      - mobile/build_android/OnMyDisk.apk
+      - mobile/build_android/OnMyDisk.aab
   when: manual
 
 build-ios:

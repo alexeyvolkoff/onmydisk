@@ -145,3 +145,8 @@ mobile/ios/capacitor-cordova-ios-plugins/
 fcm-service-account.json
 apns.json
 *.p8
+*.jks
+*.keystore
+keystore.properties
+*.aab
+*.apk
