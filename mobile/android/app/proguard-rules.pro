@@ -13,8 +13,13 @@
 -keep class net.onmydisk.app.** { *; }
 -keep class com.capacitorjs.plugins.pushnotifications.** { *; }
 -keep class ee.forgr.capacitor_updater.** { *; }
--keep class ee.forgr.capacitor.social.login.** { *; }
 -keep class com.getcapacitor.community.applesignin.** { *; }
+
+# Keep AndroidX Credential Manager & Google Identity reflection providers
+-keep class androidx.credentials.** { *; }
+-keep class com.google.android.libraries.identity.googleid.** { *; }
+-keep class com.google.android.gms.auth.** { *; }
+-keep class com.google.android.gms.common.** { *; }
 
 # Keep WebView @JavascriptInterface bridges
 -keepclassmembers class * {

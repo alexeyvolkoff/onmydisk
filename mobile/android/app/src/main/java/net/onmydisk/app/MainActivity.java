@@ -49,9 +49,20 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        androidx.core.splashscreen.SplashScreen.installSplashScreen(this);
+        setTheme(R.style.AppTheme_NoActionBar);
+        supportRequestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         registerPlugin(NativeStoragePlugin.class);
-        enableModernEdgeToEdge();
+        registerPlugin(NativeGoogleAuthPlugin.class);
         super.onCreate(savedInstanceState);
+
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().hide();
+        }
+        if (getActionBar() != null) {
+            getActionBar().hide();
+        }
+        enableModernEdgeToEdge();
 
         // Match system navigation bar and status bar to system dark/light theme
         applySystemBarsTheme();

@@ -1,4 +1,4 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 
 export const GOOGLE_WEB_CLIENT_ID =
   "959849209352-vbi0vfimrqj904598felj8ieeb6to8s2.apps.googleusercontent.com";
@@ -6,7 +6,8 @@ export const GOOGLE_WEB_CLIENT_ID =
 const HUB_AUTH_URL = "https://direct.onmydisk.net:8765";
 const MOBILE_BRIDGE_BASE_URL = "https://direct.onmydisk.net";
 
-let socialLoginInitPromise = null;
+const NativeGoogleAuth = registerPlugin("NativeGoogleAuth");
+
 let activeBridgeAbort = null;
 
 export function isNativeMobilePlatform() {
@@ -63,30 +64,13 @@ function openExternalAuthUrl(url, isSyncGesture = true) {
   }
 }
 
-async function ensureSocialLoginInitialized() {
-  if (socialLoginInitPromise) return socialLoginInitPromise;
-  socialLoginInitPromise = (async () => {
-    const { SocialLogin } = await import("@capgo/capacitor-social-login");
-    await SocialLogin.initialize({
-      google: {
-        webClientId: GOOGLE_WEB_CLIENT_ID,
-      },
-    });
-    return SocialLogin;
-  })().catch((err) => {
-    socialLoginInitPromise = null;
-    throw err;
-  });
-  return socialLoginInitPromise;
-}
-
 /**
  * Opens https://direct.onmydisk.net/?mobile_google_auth=<session> in the
  * system browser (Safari on iOS / Chrome on Android) and polls gun-hub for the
  * verified single-use Google ID token.
  *
- * Used automatically on untouched iOS 3.0 binaries (where SocialLogin is not
- * compiled in) and as a seamless fallback on Android if Play Services / GCP
+ * Used automatically on untouched iOS 3.0 binaries (where NativeGoogleAuth is
+ * not compiled in) and as a seamless fallback on Android if Play Services / GCP
  * SHA-1 credentials are unavailable.
  */
 export function startBrowserGoogleOAuthBridge(isSyncGesture = true) {
@@ -98,7 +82,10 @@ export function startBrowserGoogleOAuthBridge(isSyncGesture = true) {
   }
 
   const session = makeSessionId();
-  const lang = (typeof navigator !== "undefined" && navigator.language) ? navigator.language.slice(0, 5) : "en";
+  const lang =
+    typeof navigator !== "undefined" && navigator.language
+      ? navigator.language.slice(0, 5)
+      : "en";
   const bridgeUrl = `${MOBILE_BRIDGE_BASE_URL}/?mobile_google_auth=${encodeURIComponent(session)}&lang=${encodeURIComponent(lang)}`;
 
   // Open synchronously before any await so iOS WKWebView never popup-blocks it
@@ -167,7 +154,7 @@ export function startBrowserGoogleOAuthBridge(isSyncGesture = true) {
     }
 
     function onForeground() {
-      if (!settled && (!document.hidden)) {
+      if (!settled && !document.hidden) {
         pollOnce();
       }
     }
@@ -185,36 +172,34 @@ export function startBrowserGoogleOAuthBridge(isSyncGesture = true) {
 
 /**
  * Signs in with Google on native Capacitor mobile platforms:
- * 1. Uses native @capgo/capacitor-social-login when compiled into the binary (Android 5336+).
+ * 1. Uses native Android CredentialManager (NativeGoogleAuth plugin) when compiled into the binary.
  * 2. Falls back seamlessly to the system-browser bridge on https://direct.onmydisk.net
- *    when SocialLogin is absent (e.g. untouched iOS 3.0 release) or Play Services config fails.
+ *    when NativeGoogleAuth is absent (e.g. untouched iOS 3.0 release) or Play Services config fails.
  */
 export async function signInWithGoogleMobile() {
-  const hasNativeSocialPlugin =
+  const hasNativeGooglePlugin =
     typeof Capacitor.isPluginAvailable === "function" &&
-    Capacitor.isPluginAvailable("SocialLogin");
+    Capacitor.isPluginAvailable("NativeGoogleAuth");
 
-  if (!hasNativeSocialPlugin) {
+  if (!hasNativeGooglePlugin) {
     // Synchronous call preserves user gesture on iOS WKWebView
     return await startBrowserGoogleOAuthBridge(true);
   }
 
   try {
-    const SocialLogin = await ensureSocialLoginInitialized();
-    const res = await SocialLogin.login({
-      provider: "google",
-      options: {},
+    const res = await NativeGoogleAuth.signIn({
+      webClientId: GOOGLE_WEB_CLIENT_ID,
     });
-    const idToken = res?.result?.idToken;
+    const idToken = res?.idToken;
     if (idToken) {
       return idToken;
     }
-    throw new Error("No idToken returned from native Google Sign-In");
+    throw new Error("No idToken returned from NativeGoogleAuth");
   } catch (err) {
     if (isGoogleSignInCanceledError(err)) {
       throw err;
     }
-    console.warn("[GoogleAuth] Native SocialLogin unavailable or unconfigured, falling back to browser OAuth bridge:", err?.message || err);
+    console.warn("[GoogleAuth] NativeGoogleAuth unavailable or unconfigured, falling back to browser OAuth bridge:", err?.message || err);
     return await startBrowserGoogleOAuthBridge(false);
   }
 }
